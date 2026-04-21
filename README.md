@@ -43,6 +43,7 @@ It is not trying to be WordPress, Ghost, or a multi-tenant SaaS. It is aimed at 
 
 - **CBWIRE** — server-rendered reactive components, no heavy JavaScript framework in the admin
 - **EasyMDE** Markdown editor with live preview rendered on the server
+- **bx-ai** authoring assistance in the editor — "Create from Idea" generates a draft from a short description, "Review & Suggest" offers per-paragraph editorial suggestions the author accepts or rejects. Provider-agnostic (OpenAI, Anthropic, Google, etc.); operator configures provider, API key, and per-user monthly token budgets. Feature is off by default; operator opts in.
 - **cbauth** + **cbsecurity** for authentication and authorization
 - **cbvalidation** for input validation
 - **bcrypt** for password hashing, two-factor auth schema-ready from Phase 1
@@ -74,7 +75,8 @@ Designed for MVP, reserved for later phases:
 - **`MediaService`** — image backend is swappable (bx-image today, Thumbnailator via cbjavaloader later).
 - **`ISearchProvider`** — MySQL FULLTEXT today, Elasticsearch later.
 - **`Authenticator`** strategy — form login today, OAuth / Google / Microsoft / GitHub SSO later.
-- Interception points for comments, newsletters, passkeys, and real-time features are named up front so the roadmap work doesn't require core rewrites.
+- **`AiAssistantService`** — the Phase-2 editor buttons are the first uses; later phases add alt-text auto-suggest, SEO meta generation, tag suggestion, translation, and comment moderation on the same seam.
+- Interception points for comments, newsletters, passkeys, AI actions, and real-time features are named up front so the roadmap work doesn't require core rewrites.
 
 ## Principles
 
