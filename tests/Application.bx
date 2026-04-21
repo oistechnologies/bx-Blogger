@@ -1,0 +1,56 @@
+/**
+ * bx-Blogger — Test Suite Application Bootstrap
+ *
+ * Spins a ColdBox Virtual Application for every test request, pointing at the
+ * same /app code tree the real app uses. Short timeouts + page-pool clearing
+ * ensure test freshness.
+ *
+ * Mappings for /app, /modules, /coldbox, etc. are declared in
+ * runtime/boxlang.json and inherited here.
+ */
+class {
+
+	this.name               = "bx-Blogger-TestingSuite";
+	this.sessionManagement  = true;
+	this.setClientCookies   = true;
+	this.sessionTimeout     = createTimespan( 0, 0, 15, 0 );
+	this.applicationTimeout = createTimespan( 0, 0, 15, 0 );
+
+	// Tests-tree mapping (app mappings come from runtime/boxlang.json)
+	_testsRoot          = getDirectoryFromPath( getCurrentTemplatePath() );
+	this.mappings[ "/tests" ] = _testsRoot;
+
+	/**
+	 * Fires on every test request. Builds a ColdBox Virtual Application.
+	 */
+	public boolean function onRequestStart( targetPage ) output="true" {
+		// Plenty of time for slow integration / E2E runs
+		bx:setting requestTimeout="9999";
+		pagePoolClear();
+
+		request.coldBoxVirtualApp = new coldbox.system.testing.VirtualApp(
+			appMapping = "/app",
+			webMapping = "/public"
+		);
+
+		// Boot the virtual app only for runner + specs requests
+		if ( getBaseTemplatePath().replace( expandPath( "/tests" ), "" ).reFindNoCase( "(runner|specs)" ) ) {
+			request.coldBoxVirtualApp.startup( true );
+		}
+
+		// Reload for fresh results
+		if ( structKeyExists( url, "fwreinit" ) ) {
+			request.coldBoxVirtualApp.restart();
+		}
+
+		return true;
+	}
+
+	/**
+	 * Shutdown the virtual app at end of request.
+	 */
+	public void function onRequestEnd( required targetPage ) {
+		request.coldBoxVirtualApp.shutdown();
+	}
+
+}

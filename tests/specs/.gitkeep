@@ -1,0 +1,3 @@
+# Placeholder — ensures tests/specs/ exists in git.
+# Phase 0 ships no specs; Phase 1+ populates this directory.
+# cfformat scans this directory as part of `box run-script format:check`.

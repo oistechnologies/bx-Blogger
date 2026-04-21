@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format-check:
+    name: Format Check (cfformat)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run cfformat:check via Ortus BoxLang image
+        # Uses the same runtime image the app runs on, so formatter rules
+        # are exercised in the same BoxLang version we deploy. commandbox-cfformat
+        # is installed ad-hoc so we don't pay to fetch the full 27-module
+        # dependency tree just for a format check.
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/app" \
+            -w /app \
+            ortussolutions/commandbox:boxlang \
+            sh -c "box install commandbox-cfformat --verbose && box run-script format:check"
+
+  docker-build:
+    name: Docker Build (R15 acceptance gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build app image
+        # Validates the full multi-stage build — Node asset builder stage
+        # plus the Ortus BoxLang runtime stage with `box install --production`.
+        # This exercises R15 (Phase-0 acceptance gate) on every push:
+        # if any module fails to resolve on BoxLang, CI catches it.
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: resources/docker/Dockerfile
+          push: false
+          tags: bx-blogger-app:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
