@@ -71,7 +71,7 @@ Build stages: `node:lts-alpine` (theme asset compilation via Vite) → `ortussol
 
 ### CBWire `livewire.js` 404 — fixed via `server.json` aliases
 
-The `cbtemplate-boxlang` layout puts the web root at `public/` and modules at `app/modules/`. That's deliberate — module internals should not be reachable by URL. But CBWire injects `<script src="/modules/cbwire/includes/js/livewire.js">` on every wire-rendered page; without an alias, the browser 404s and every wire silently fails with `Livewire is not defined` in the console.
+The `cbtemplate-boxlang` layout puts the web root at `public/` and installs third-party modules to `lib/modules/` (per the template's `installPathConventions.modules`). That's deliberate — module internals should not be reachable by URL. But CBWire injects `<script src="/modules/cbwire/includes/js/livewire.js">` on every wire-rendered page; without an alias, the browser 404s and every wire silently fails with `Livewire is not defined` in the console.
 
 The project's `server.json` ships narrow per-module aliases for any module that publishes JS/CSS:
 
@@ -80,9 +80,9 @@ The project's `server.json` ships narrow per-module aliases for any module that 
   "web": {
     "webroot": "./public",
     "aliases": {
-      "/modules/cbwire/includes":           "./app/modules/cbwire/includes",
-      "/modules/cbdebugger/includes":       "./app/modules/cbdebugger/includes",
-      "/modules/route-visualizer/includes": "./app/modules/route-visualizer/includes"
+      "/modules/cbwire/includes":           "./lib/modules/cbwire/includes",
+      "/modules/cbdebugger/includes":       "./lib/modules/cbdebugger/includes",
+      "/modules/route-visualizer/includes": "./lib/modules/route-visualizer/includes"
     }
   }
 }
@@ -90,13 +90,15 @@ The project's `server.json` ships narrow per-module aliases for any module that 
 
 **When adding a new module that ships web assets:**
 
-1. `docker compose exec app box install {newModule}` — installs into `app/modules/{newModule}/`.
-2. Check if `app/modules/{newModule}/includes/` exists and contains JS/CSS.
-3. If yes, add `"/modules/{newModule}/includes": "./app/modules/{newModule}/includes"` to `server.json` `web.aliases`.
+1. `docker compose exec app box install {newModule}` — installs into `lib/modules/{newModule}/`.
+2. Check if `lib/modules/{newModule}/includes/` exists and contains JS/CSS.
+3. If yes, add `"/modules/{newModule}/includes": "./lib/modules/{newModule}/includes"` to `server.json` `web.aliases`.
 4. `docker compose restart app` — MiniServer re-reads `server.json` on start.
 5. Verify: `curl -I http://localhost:8080/modules/{newModule}/includes/...` should return 200.
 
-**Never blanket-alias `/modules → ./app/modules`** — that would expose `ModuleConfig.bx`, handler CFCs, model files, and any stray `.json` / `.yaml` / `.env-sample` files. Narrow per-module `includes/` aliases only.
+**Never blanket-alias `/modules → ./lib/modules`** — that would expose `ModuleConfig.bx`, handler CFCs, model files, and any stray `.json` / `.yaml` / `.env-sample` files. Narrow per-module `includes/` aliases only.
+
+**Note on app-owned HMVC modules:** our own modules (admin, frontend, custom modules we write) live at `app/modules/` — separate from third-party. They rarely need public JS/CSS since CBWire handles wire asset delivery, so they typically don't need their own aliases.
 
 ## Where the plan lives
 

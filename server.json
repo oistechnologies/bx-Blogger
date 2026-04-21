@@ -1,0 +1,30 @@
+{
+	"name":"bx-blogger",
+	"app":{
+		"cfengine":"boxlang@1",
+		"engineConfigFile":"./runtime/boxlang.json"
+	},
+	"jvm":{
+		"heapSize":"512",
+		"javaVersion":"openjdk21_jre"
+	},
+	"web":{
+		"webroot":"./public",
+		"http":{
+			"port":8080
+		},
+		"rewrites":{
+			"enable":true
+		},
+		"aliases":{
+			"/coldbox/system/exceptions":"./lib/coldbox/system/exceptions/",
+			"/modules/cbwire/includes":"./lib/modules/cbwire/includes",
+			"/modules/cbdebugger/includes":"./lib/modules/cbdebugger/includes",
+			"/modules/route-visualizer/includes":"./lib/modules/route-visualizer/includes",
+			"/tests":"./tests/"
+		}
+	},
+	"scripts":{
+		"onServerInitialInstall":"install bx-esapi"
+	}
+}

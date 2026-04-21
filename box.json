@@ -1,0 +1,87 @@
+{
+	"name":"bx-Blogger",
+	"version":"0.1.0",
+	"slug":"bx-blogger",
+	"author":"Michael Rigsby",
+	"location":"",
+	"type":"mvc",
+	"language":"boxlang",
+	"private":true,
+	"shortDescription":"BoxLang + ColdBox 8 CMS with swappable themes, markdown authoring, and AI authoring assistance.",
+	"ignore":[
+		".github/ISSUE_TEMPLATE",
+		".github/CONTRIBUTING.md",
+		".github/FUNDING.YML",
+		".github/PULL_REQUEST_TEMPLATE.md",
+		"DEV-NOTES/",
+		"tests/results/",
+		"node_modules/"
+	],
+	"dependencies":{
+		"coldbox":"^8.1.0",
+		"cbsecurity":"^3.7.0",
+		"cbauth":"^7.0.0",
+		"bcrypt":"^3.2.0",
+		"cbvalidation":"^4.8.0",
+		"cbwire":"^5.0.3",
+		"bx-compat-cfml":"^1.32.0",
+		"bx-esapi":"^1.7.0",
+		"bx-markdown":"^1.0.0",
+		"bx-image":"^1.5.0",
+		"bx-ai":"^3.1.0",
+		"qb":"^13.1.0",
+		"quick":"^12.0.12",
+		"cfmigrations":"^5.1.1",
+		"cbfs":"^1.1.4",
+		"cbq":"^5.0.7",
+		"cbmailservices":"^2.9.0",
+		"cbcsrf":"^3.2.0",
+		"cbantisamy":"^2.2.0",
+		"cbpaginator":"^2.8.3",
+		"cbi18n":"^3.5.0",
+		"cbfeeds":"^2.0.0",
+		"cbmessagebox":"^4.1.0",
+		"mementifier":"^3.7.0",
+		"cbjavaloader":"^2.5.0",
+		"hyper":"^8.2.0",
+		"cbstorages":"^3.5.0"
+	},
+	"devDependencies":{
+		"testbox":"^7.0.0",
+		"cbmockdata":"^4.1.0",
+		"cbplaywright":"^1.52.1",
+		"cbdebugger":"^4.4.0",
+		"route-visualizer":"^2.2.0",
+		"commandbox-boxlang":"^1.22.0",
+		"commandbox-cfformat":"^0.21.0",
+		"commandbox-migrations":"^5.3.0"
+	},
+	"installPathConventions":{
+		"modules":"lib/modules"
+	},
+	"installPaths":{
+		"coldbox":"lib/coldbox/",
+		"testbox":"lib/testbox/",
+		"route-visualizer":"lib/modules/route-visualizer/",
+		"cbdebugger":"lib/modules/cbdebugger/",
+		"cbwire":"lib/modules/cbwire/"
+	},
+	"scripts":{
+		"format":"cfformat run app/,tests/specs/,*.bx --overwrite --verbose",
+		"format:check":"cfformat check app/,tests/specs/,*.bx ./.cfformat.json --verbose",
+		"format:watch":"cfformat watch path='app/,tests/specs/,*.bx' settingsPath='.cfformat.json'",
+		"test":"testbox run",
+		"test:e2e":"cbplaywright:run",
+		"migrate":"migrate up",
+		"seed":"recipe ./resources/database/seed.boxr",
+		"queue:work":"cbq:work --tries=3",
+		"docker:build":"!docker compose build",
+		"docker:up":"!docker compose up -d",
+		"docker:down":"!docker compose down",
+		"docker:logs":"!docker compose logs -f app",
+		"docker:bash":"!docker compose exec app bash"
+	},
+	"testbox":{
+		"runner":"/tests/runner.bxm"
+	}
+}
