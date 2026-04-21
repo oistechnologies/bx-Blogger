@@ -1,0 +1,7 @@
+# Internal developer notes — planning docs, research, memories, todos
+# Never ships with the application.
+DEV-NOTES/
+
+# Per-developer Claude Code settings (tool permissions, etc.)
+# Team-wide settings (if introduced) would go in .claude/settings.json
+.claude/settings.local.json
