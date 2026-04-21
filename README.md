@@ -43,7 +43,7 @@ It is not trying to be WordPress, Ghost, or a multi-tenant SaaS. It is aimed at 
 
 - **CBWIRE** — server-rendered reactive components, no heavy JavaScript framework in the admin
 - **EasyMDE** Markdown editor with live preview rendered on the server
-- **bx-ai** authoring assistance in the editor — "Create from Idea" generates a draft from a short description, "Review & Suggest" offers per-paragraph editorial suggestions the author accepts or rejects. Provider-agnostic (OpenAI, Anthropic, Google, etc.); operator configures provider, API key, and per-user monthly token budgets. Feature is off by default; operator opts in.
+- **bx-ai** authoring assistance in the editor — "Create from Idea" generates a draft from a short description, "Review & Suggest" offers per-paragraph editorial suggestions the author accepts or rejects, and "Generate Image" produces previews for inline or featured images that the author picks from a grid. Provider-agnostic (OpenAI, Anthropic, Google, etc.); text and image providers can be configured independently so the best model for each task can be chosen. Operator configures provider(s), API key(s), and per-user monthly budgets (separate caps for text tokens and image generations). Both text assistance and image generation are off by default and independently toggleable; operator opts into each.
 - **cbauth** + **cbsecurity** for authentication and authorization
 - **cbvalidation** for input validation
 - **bcrypt** for password hashing, two-factor auth schema-ready from Phase 1
