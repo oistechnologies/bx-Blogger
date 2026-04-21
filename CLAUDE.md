@@ -48,7 +48,7 @@ Build stages: `node:lts-alpine` (theme asset compilation via Vite) → `ortussol
 ## Compose services
 
 | Service | Purpose | Host port |
-|---|---|---|
+| --- | --- | --- |
 | `app` | BoxLang application (ColdBox 8 + MiniServer) | `8080` |
 | `worker` | cbq background job worker | — |
 | `mysql` | MySQL 8.4 database | `3306` |
@@ -67,9 +67,40 @@ Build stages: `node:lts-alpine` (theme asset compilation via Vite) → `ortussol
 - MailHog inbox: <http://localhost:8025>
 - MinIO console: <http://localhost:9001>
 
+## Known gotchas
+
+### CBWire `livewire.js` 404 — fixed via `server.json` aliases
+
+The `cbtemplate-boxlang` layout puts the web root at `public/` and modules at `app/modules/`. That's deliberate — module internals should not be reachable by URL. But CBWire injects `<script src="/modules/cbwire/includes/js/livewire.js">` on every wire-rendered page; without an alias, the browser 404s and every wire silently fails with `Livewire is not defined` in the console.
+
+The project's `server.json` ships narrow per-module aliases for any module that publishes JS/CSS:
+
+```jsonc
+{
+  "web": {
+    "webroot": "./public",
+    "aliases": {
+      "/modules/cbwire/includes":           "./app/modules/cbwire/includes",
+      "/modules/cbdebugger/includes":       "./app/modules/cbdebugger/includes",
+      "/modules/route-visualizer/includes": "./app/modules/route-visualizer/includes"
+    }
+  }
+}
+```
+
+**When adding a new module that ships web assets:**
+
+1. `docker compose exec app box install {newModule}` — installs into `app/modules/{newModule}/`.
+2. Check if `app/modules/{newModule}/includes/` exists and contains JS/CSS.
+3. If yes, add `"/modules/{newModule}/includes": "./app/modules/{newModule}/includes"` to `server.json` `web.aliases`.
+4. `docker compose restart app` — MiniServer re-reads `server.json` on start.
+5. Verify: `curl -I http://localhost:8080/modules/{newModule}/includes/...` should return 200.
+
+**Never blanket-alias `/modules → ./app/modules`** — that would expose `ModuleConfig.bx`, handler CFCs, model files, and any stray `.json` / `.yaml` / `.env-sample` files. Narrow per-module `includes/` aliases only.
+
 ## Where the plan lives
 
 - **Public:** `README.md` — outward-facing overview.
-- **Private:** `DEV-NOTES/PLAN.md` — full architecture, phase breakdown, interception points, risk register, verification log. `DEV-NOTES/` is gitignored by design; it never ships with the repo.
+- **Private:** `DEV-NOTES/PLAN.md` — full architecture, phase breakdown, interception points, risk register (incl. R34 for the CBWire gotcha above), verification log. `DEV-NOTES/` is gitignored by design; it never ships with the repo.
 
 If you're working on a feature and need design context, read `DEV-NOTES/PLAN.md` §17 for the full Docker / dev-env detail. Everything outside that file is either public-facing or scaffold.
