@@ -1,0 +1,22 @@
+/**
+ * bx-Blogger — Scheduled Tasks
+ *
+ * Phase 0: empty. Tasks registered in the phase that introduces their consumer:
+ *   - Phase 6: ScheduledPostPublishTask, GenerateThumbnailsJob, BackupDatabaseJob,
+ *              SitemapWarmingTask, NotificationDigestEmailJob
+ *   - Phase 7: OgImageRefreshTask
+ *   - Phase 11: NewsletterDigestTask
+ */
+class extends="coldbox.system.Scheduler" {
+
+	function configure() {
+		setTimezone( "UTC" );
+	}
+
+	function onStartup() {
+		// Phase 0: no scheduled tasks. Extended in Phase 6.
+	}
+
+	function onShutdown() {}
+
+}

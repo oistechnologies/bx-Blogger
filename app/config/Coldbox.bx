@@ -1,0 +1,256 @@
+/**
+ * bx-Blogger — ColdBox Configuration
+ *
+ * The filename must be `Coldbox.bx` (capital C, lowercase "oldbox") to match
+ * ColdBox's convention lookup. The class-level `variables` scope IS the
+ * config object — ColdBox reads `variables.coldbox`, `variables.settings`,
+ * `variables.modules`, etc. after `configure()` runs.
+ *
+ * This file carries PRODUCTION defaults. Override per environment via the
+ * `development()`, `staging()`, and `production()` methods at the bottom.
+ */
+class {
+
+	function configure() {
+		/**
+		 * ----------------------------------------------------------------
+		 * ColdBox Directives
+		 * ----------------------------------------------------------------
+		 */
+		variables.coldbox = {
+			// Application Setup
+			appName                  : getSystemSetting( "APPNAME", "bx-Blogger" ),
+			eventName                : "event",
+			// Reinit
+			reinitPassword           : getSystemSetting( "APP_REINIT_PASSWORD", "" ),
+			reinitKey                : "fwreinit",
+			handlersIndexAutoReload  : true,
+			// Implicit Events
+			defaultEvent             : "Main.index",
+			requestStartHandler      : "Main.onRequestStart",
+			requestEndHandler        : "",
+			applicationStartHandler  : "Main.onAppInit",
+			applicationEndHandler    : "",
+			sessionStartHandler      : "",
+			sessionEndHandler        : "",
+			missingTemplateHandler   : "",
+			// Extension Points
+			applicationHelper        : "/app/helpers/ApplicationHelper.bxm",
+			viewsHelper              : "",
+			modulesExternalLocation  : [ "/modules" ],
+			viewsExternalLocation    : "",
+			layoutsExternalLocation  : "",
+			handlersExternalLocation : "",
+			requestContextDecorator  : "",
+			controllerDecorator      : "",
+			// Error/Exception Handling
+			invalidHTTPMethodHandler : "",
+			exceptionHandler         : "Main.onException",
+			invalidEventHandler      : "",
+			customErrorTemplate      : "",
+			// Application Aspects
+			handlerCaching           : false,
+			eventCaching             : false,
+			viewCaching              : false,
+			autoMapModels            : true,
+			jsonPayloadToRC          : true
+		};
+
+		/**
+		 * ----------------------------------------------------------------
+		 * Custom Settings (accessed via getSetting() in handlers/services)
+		 * ----------------------------------------------------------------
+		 */
+		variables.settings = {
+			// AI feature toggles — master off until admin enables in Settings UI
+			"ai.enabled"        : false,
+			"ai.image.enabled"  : false,
+			// Version marker for /__health and admin UI
+			"app.version"       : "0.1.0",
+			"app.phase"         : "0"
+		};
+
+		/**
+		 * ----------------------------------------------------------------
+		 * Module Loading
+		 * ----------------------------------------------------------------
+		 */
+		variables.modules = {
+			include : [],
+			exclude : []
+		};
+
+		/**
+		 * ----------------------------------------------------------------
+		 * Application Logging (https://logbox.ortusbooks.com)
+		 * ----------------------------------------------------------------
+		 * Phase 0 ships console-only. Phase 10 (B14/B15) hardens with file
+		 * appenders + per-category levels.
+		 */
+		variables.logBox = {
+			appenders : {
+				coldboxTracer : { class : "coldbox.system.logging.appenders.ConsoleAppender" }
+			},
+			root : { levelmax : "INFO", appenders : "*" },
+			info : [ "coldbox.system" ]
+		};
+
+		/**
+		 * ----------------------------------------------------------------
+		 * Layout Settings
+		 * ----------------------------------------------------------------
+		 */
+		variables.layoutSettings = {
+			defaultLayout : "Main",
+			defaultView   : ""
+		};
+
+		/**
+		 * ----------------------------------------------------------------
+		 * Custom Interception Points (PLAN §11 — bxBlogger.* namespace)
+		 * ----------------------------------------------------------------
+		 * Declared up front so modules landing at Phases 1–11 can hook them
+		 * without the config needing changes. None are fired by Phase 0
+		 * code; this is scaffolding.
+		 */
+		variables.interceptorSettings = {
+			customInterceptionPoints : [
+				// Auth
+				"bxBlogger.preLogin", "bxBlogger.postLogin",
+				"bxBlogger.loginFailed",
+				"bxBlogger.preLogout", "bxBlogger.postLogout",
+				"bxBlogger.preRegister", "bxBlogger.postRegister",
+				"bxBlogger.preEmailVerify", "bxBlogger.postEmailVerify",
+				"bxBlogger.prePasswordReset", "bxBlogger.postPasswordReset",
+				"bxBlogger.preTwoFactorChallenge", "bxBlogger.postTwoFactorChallenge",
+				"bxBlogger.rateLimitTriggered",
+				// Posts / Pages lifecycle
+				"bxBlogger.prePostSave", "bxBlogger.postPostSave",
+				"bxBlogger.prePostPublish", "bxBlogger.postPostPublish",
+				"bxBlogger.prePostUnpublish", "bxBlogger.postPostUnpublish",
+				"bxBlogger.prePostDelete", "bxBlogger.postPostDelete",
+				"bxBlogger.postPostHardDelete",
+				"bxBlogger.prePostRestore", "bxBlogger.postPostRestore",
+				"bxBlogger.prePostRevisionCreate", "bxBlogger.postPostRevisionCreate",
+				"bxBlogger.prePostSubmitReview", "bxBlogger.postPostSubmitReview",
+				"bxBlogger.prePostAutosave", "bxBlogger.postPostAutosave",
+				"bxBlogger.prePostPreviewShare", "bxBlogger.postPostPreviewShare",
+				"bxBlogger.preReadingTimeCompute", "bxBlogger.postReadingTimeCompute",
+				"bxBlogger.relatedPostsFor",
+				// Markdown pipeline
+				"bxBlogger.preMarkdownCompile", "bxBlogger.postMarkdownCompile",
+				"bxBlogger.preMarkdownSanitize", "bxBlogger.postMarkdownSanitize",
+				// Comments (declared; ships Phase 11)
+				"bxBlogger.preCommentSubmit", "bxBlogger.postCommentSubmit",
+				"bxBlogger.preCommentApprove", "bxBlogger.postCommentApprove",
+				"bxBlogger.preCommentSpam", "bxBlogger.postCommentSpam",
+				// Media
+				"bxBlogger.preMediaUpload", "bxBlogger.postMediaUpload",
+				"bxBlogger.preMediaDelete", "bxBlogger.postMediaDelete",
+				"bxBlogger.preThumbnailGenerate", "bxBlogger.postThumbnailGenerate",
+				"bxBlogger.preWebpConvert", "bxBlogger.postWebpConvert",
+				"bxBlogger.preOgImageGenerate", "bxBlogger.postOgImageGenerate",
+				"bxBlogger.preOembedResolve", "bxBlogger.postOembedResolve",
+				// Theming
+				"bxBlogger.preThemeSwitch", "bxBlogger.postThemeSwitch",
+				"bxBlogger.themeAssetsBuild",
+				"bxBlogger.preThemeRender", "bxBlogger.postThemeRender",
+				// Public render
+				"bxBlogger.preRenderPost", "bxBlogger.postRenderPost",
+				"bxBlogger.preRenderPage", "bxBlogger.postRenderPage",
+				"bxBlogger.preRenderArchive", "bxBlogger.postRenderArchive",
+				"bxBlogger.contentShortcode",
+				// Search
+				"bxBlogger.preSearch", "bxBlogger.postSearch",
+				// SEO
+				"bxBlogger.seoMetaBuild",
+				"bxBlogger.preSitemapGenerate", "bxBlogger.postSitemapGenerate",
+				"bxBlogger.preRssGenerate", "bxBlogger.postRssGenerate",
+				// Caching
+				"bxBlogger.preCacheStore", "bxBlogger.postCacheStore",
+				"bxBlogger.cacheInvalidate",
+				// AI authoring (Phase 2)
+				"bxBlogger.preAiRequest", "bxBlogger.postAiResponse",
+				"bxBlogger.aiBudgetExceeded",
+				"bxBlogger.preImageGenerate", "bxBlogger.postImageGenerate",
+				"bxBlogger.imageGenerationBudgetExceeded",
+				// Admin shell extensibility
+				"bxBlogger.adminMenuBuild",
+				"bxBlogger.adminDashboardWidgets",
+				"bxBlogger.adminPostEditorPanels",
+				"bxBlogger.adminEditorToolbar",
+				"bxBlogger.notificationCreated",
+				"bxBlogger.preAdminRender", "bxBlogger.postAdminRender",
+				// Privacy / GDPR
+				"bxBlogger.preUserDataExport", "bxBlogger.postUserDataExport",
+				"bxBlogger.preUserPurge", "bxBlogger.postUserPurge"
+			]
+		};
+
+		/**
+		 * ----------------------------------------------------------------
+		 * Application Interceptors
+		 * ----------------------------------------------------------------
+		 * Phase 0: none. Phases 1+ register SecurityInterceptor,
+		 * RateLimitInterceptor, TrustedProxyInterceptor, etc.
+		 */
+		variables.interceptors = [];
+
+		/**
+		 * ----------------------------------------------------------------
+		 * Module Settings
+		 * ----------------------------------------------------------------
+		 * Populated per-module in later phases.
+		 */
+		variables.moduleSettings = {};
+
+		/**
+		 * ----------------------------------------------------------------
+		 * Flash Scope Settings
+		 * ----------------------------------------------------------------
+		 */
+		variables.flash = {
+			scope        : "session",
+			properties   : {},
+			inflateToRC  : true,
+			inflateToPRC : false,
+			autoPurge    : true,
+			autoSave     : true
+		};
+
+		/**
+		 * ----------------------------------------------------------------
+		 * Conventions
+		 * ----------------------------------------------------------------
+		 */
+		variables.conventions = {
+			handlersLocation : "handlers",
+			viewsLocation    : "views",
+			layoutsLocation  : "layouts",
+			modelsLocation   : "models",
+			eventAction      : "index"
+		};
+	}
+
+	/**
+	 * Development environment overrides (matched via ENVIRONMENT=development)
+	 */
+	function development() {
+		variables.coldbox.customErrorTemplate   = "/coldbox/system/exceptions/Whoops.cfm";
+		variables.coldbox.handlersIndexAutoReload = true;
+		variables.coldbox.handlerCaching        = false;
+		variables.coldbox.eventCaching          = false;
+		variables.coldbox.viewCaching           = false;
+	}
+
+	/**
+	 * Production environment overrides (matched via ENVIRONMENT=production)
+	 */
+	function production() {
+		variables.coldbox.handlersIndexAutoReload = false;
+		variables.coldbox.handlerCaching        = true;
+		variables.coldbox.eventCaching          = true;
+		// viewCaching still off by default; enabled per-view via setView( cache=true )
+	}
+
+}

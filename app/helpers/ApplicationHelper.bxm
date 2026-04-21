@@ -1,0 +1,8 @@
+<!---
+    ApplicationHelper.bxm — global UDFs available in every handler, layout, and view.
+
+    Phase 0: empty. Add cross-cutting helpers here in later phases
+    (e.g., themeAsset(), siteUrl(), escapeHtml()).
+
+    Referenced from app/config/Coldbox.bx as `applicationHelper`.
+--->

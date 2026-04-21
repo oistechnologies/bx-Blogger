@@ -1,0 +1,83 @@
+/**
+ * bx-Blogger — Main Handler (Phase 0 scaffold)
+ *
+ * Actions:
+ *   index   — placeholder home page until Phase 3 themes replace it
+ *   health  — /__health JSON response for Docker probes + uptime monitors
+ *
+ * Implicit event handlers (onAppInit, onRequestStart, onRequestEnd,
+ * onException, onSessionStart, onSessionEnd) are declared to satisfy
+ * ColdBox's implicit-event contract. Bodies are Phase-0 no-ops; phases
+ * 1+ populate them (cbauth session init, RateLimitInterceptor integration,
+ * TrustedProxyInterceptor, etc.).
+ */
+class extends="coldbox.system.EventHandler" {
+
+	/**
+	 * Phase-0 placeholder home page.
+	 */
+	function index( event, rc, prc ) {
+		prc.appName    = getSetting( "AppName" );
+		prc.appVersion = getSetting( "app.version" );
+		prc.appPhase   = getSetting( "app.phase" );
+		event.setView( "main/index" );
+	}
+
+	/**
+	 * /__health — lightweight healthcheck.
+	 *
+	 * Returns HTTP 200 + JSON body when the app is responsive. Used by Docker
+	 * healthchecks and external uptime monitors. Full health endpoint (db,
+	 * cache, queue, disk metrics) ships in Phase 10 at `/__health/full`.
+	 */
+	function health( event, rc, prc ) {
+		event.renderData(
+			type       = "json",
+			data       = {
+				"status"    : "ok",
+				"version"   : getSetting( "app.version" ),
+				"phase"     : getSetting( "app.phase" ),
+				"timestamp" : dateTimeFormat( now(), "iso" )
+			},
+			statusCode = 200
+		);
+	}
+
+	/**
+	 * ------------------------------------------------------------------
+	 * Implicit events (PLAN §11 — all ColdBox hooks)
+	 * ------------------------------------------------------------------
+	 */
+
+	function onAppInit( event, rc, prc ) {
+		// Phase 0: no-op. Phase 1+ wires cbauth, TrustedProxyInterceptor, etc.
+	}
+
+	function onRequestStart( event, rc, prc ) {
+		// Phase 0: no-op.
+	}
+
+	function onRequestEnd( event, rc, prc ) {
+		// Phase 0: no-op.
+	}
+
+	function onSessionStart( event, rc, prc ) {
+		// Phase 0: no-op.
+	}
+
+	function onSessionEnd( event, rc, prc ) {
+		// Phase 0: no-op.
+	}
+
+	/**
+	 * Global exception handler — wired via coldbox.exceptionHandler in
+	 * app/config/Coldbox.bx. Logs and returns a friendly 500. Replaced by
+	 * B8 custom error page in Phase 10.
+	 */
+	function onException( event, rc, prc ) {
+		event.setHTTPHeader( statusCode = 500 );
+		prc.exception = prc.exception ?: {};
+		event.setView( "main/index" ); // Phase 0 fallback; Phase 10 ships a real error view.
+	}
+
+}

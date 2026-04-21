@@ -1,0 +1,110 @@
+/**
+ * bx-Blogger — Application Bootstrap
+ *
+ * Front-controller Application.bx. Loaded by the BoxLang MiniServer for every
+ * request to the web root. Responsible for bootstrapping ColdBox and delegating
+ * request processing to it.
+ *
+ * All real configuration lives in `app/config/Coldbox.bx` (and its siblings).
+ * This file is the minimum scaffold BoxLang / ColdBox need at the web-server
+ * layer to start the app — adapted from cbtemplate-boxlang with bx-Blogger
+ * identity + session naming.
+ */
+class {
+
+	/**
+	 * --------------------------------------------------------------------------
+	 * Application Properties
+	 * --------------------------------------------------------------------------
+	 */
+	this.name                 = getSystemSetting( "APPNAME", "bx-Blogger" ) & "_" & hash( getCurrentTemplatePath() );
+	this.sessionManagement    = true;
+	this.sessionTimeout       = createTimespan( 0, 1, 0, 0 );
+	this.setClientCookies     = true;
+	this.setDomainCookies     = true;
+	this.timezone             = "UTC";
+	this.whiteSpaceManagement = "smart";
+
+	/**
+	 * --------------------------------------------------------------------------
+	 * ColdBox Bootstrap Settings
+	 * --------------------------------------------------------------------------
+	 * DO NOT CHANGE unless this file is not at the web root of the app.
+	 * https://coldbox.ortusbooks.com/getting-started/configuration/bootstrapper-application.cfc
+	 */
+	// Root path for ColdBox app code (resolves via runtime/boxlang.json mappings)
+	COLDBOX_APP_ROOT_PATH = expandPath( "/app" );
+	// BoxLang mapping name for ColdBox app code
+	COLDBOX_APP_MAPPING   = "/app";
+	// Web root-relative path; empty when the app IS the web root
+	COLDBOX_WEB_MAPPING   = "/";
+	// Explicit config file path; "" = use convention (config/Coldbox.bx)
+	COLDBOX_CONFIG_FILE   = "";
+	// App key override; "" = derive from this.name
+	COLDBOX_APP_KEY       = "";
+	// Fail fast on reinit if a request hits mid-reinit
+	COLDBOX_FAIL_FAST     = true;
+
+	/**
+	 * --------------------------------------------------------------------------
+	 * Default Datasource
+	 * --------------------------------------------------------------------------
+	 * Registered in runtime/boxlang.json `datasources.coldbox`; env-driven.
+	 */
+	this.datasource = "coldbox";
+
+	/**
+	 * Fires when the application starts.
+	 */
+	public boolean function onApplicationStart() {
+		bx:setting requestTimeout="300";
+		application.cbBootstrap = new coldbox.system.Bootstrap(
+			COLDBOX_CONFIG_FILE,
+			COLDBOX_APP_ROOT_PATH,
+			COLDBOX_APP_KEY,
+			COLDBOX_APP_MAPPING,
+			COLDBOX_FAIL_FAST,
+			COLDBOX_WEB_MAPPING
+		);
+		application.cbBootstrap.loadColdbox();
+		return true;
+	}
+
+	/**
+	 * Fires when the application ends.
+	 */
+	public void function onApplicationEnd( struct appScope ) {
+		arguments.appScope.cbBootstrap.onApplicationEnd( arguments.appScope );
+	}
+
+	/**
+	 * Delegate request processing to ColdBox.
+	 */
+	public boolean function onRequestStart( string targetPage ) output=true {
+		return application.cbBootstrap.onRequestStart( arguments.targetPage );
+	}
+
+	/**
+	 * Session start hook.
+	 */
+	public void function onSessionStart() {
+		if ( !isNull( application.cbBootstrap ) ) {
+			application.cbBootstrap.onSessionStart();
+		}
+	}
+
+	/**
+	 * Session end hook.
+	 */
+	public void function onSessionEnd( struct sessionScope, struct appScope ) {
+		arguments.appScope.cbBootstrap.onSessionEnd( argumentCollection = arguments );
+	}
+
+	/**
+	 * Missing-template handler — delegates to ColdBox's onMissingTemplate flow.
+	 */
+	public boolean function onMissingTemplate( template ) {
+		return application.cbBootstrap.onMissingTemplate( argumentCollection = arguments );
+	}
+
+}

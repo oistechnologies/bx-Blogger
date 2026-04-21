@@ -1,0 +1,33 @@
+/**
+ * bx-Blogger — URL Router
+ * https://coldbox.ortusbooks.com/the-basics/routing
+ *
+ * Phase 0 routes:
+ *   /         → Main.index (placeholder home)
+ *   /__health → Main.health (Docker healthcheck + uptime monitors)
+ *
+ * Full routing (per PLAN §8) ships across phases:
+ *   Phase 2: /admin/* (admin HMVC module routes)
+ *   Phase 3: /:slug, /blog, /category/:slug, /tag/:slug, /author/:username,
+ *            /archive/:year/:month?, /search, /feed.xml
+ *   Phase 7: /sitemap.xml, /robots.txt (dynamic), /__health/full
+ *   Phase 11: /api/v1/* (REST API)
+ */
+class {
+
+	function configure() {
+		/**
+		 * Health endpoint — lightweight, public, returns 200 + JSON status.
+		 * Phase 0 lite; full version (DB + cache + queue + disk metrics) in
+		 * Phase 10 (B24) as `/__health/full` gated by `system.health` permission.
+		 */
+		route( "/__health" ).to( "main.health" );
+
+		/**
+		 * Conventions-based routing — resolves /:handler/:action against
+		 * app/handlers/{Handler}.bx. Phase 0's only handler is Main.bx.
+		 */
+		route( ":handler/:action?" ).end();
+	}
+
+}

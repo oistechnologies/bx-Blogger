@@ -1,0 +1,7 @@
+/**
+ * Protects app/ from being accessed directly by the web server.
+ * The real front controller is public/Application.bx.
+ */
+class {
+	abort;
+}

@@ -1,0 +1,28 @@
+/**
+ * bx-Blogger — WireBox Configuration
+ *
+ * Phase 0: defaults. Manual bindings are added in their respective phases
+ * (e.g., ISearchProvider binding in Phase 3, AiAssistantService in Phase 2).
+ */
+class extends="coldbox.system.ioc.config.Binder" {
+
+	function configure() {
+		variables.wireBox = {
+			// Register a WireBox injector on the application scope
+			scopeRegistration : {
+				enabled : true,
+				scope   : "application",
+				key     : "wireBox"
+			},
+			customDSL      : {},
+			customScopes   : {},
+			scanLocations  : [],
+			stopRecursions : [],
+			parentInjector : "",
+			listeners      : []
+		};
+
+		// Map bindings below (none at Phase 0).
+	}
+
+}
