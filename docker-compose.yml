@@ -1,0 +1,137 @@
+# =============================================================================
+# bx-Blogger — Development Compose Stack
+#
+# All development commands run via this compose file. Never invoke `box` /
+# `commandbox` / `testbox` directly on the host — see CLAUDE.md for the
+# full dev-workflow rule.
+#
+# Services:
+#   app      — BoxLang MiniServer on :8080 (bind-mounted for hot-reload)
+#   worker   — cbq job worker (disabled by default — enabled via `worker` profile)
+#   mysql    — MySQL 8.4 on :3306, persistent via mysql-data named volume
+#   minio    — S3-compatible object storage on :9000 (API) + :9001 (console)
+#   mailhog  — SMTP capture + web inbox on :1025 + :8025
+#
+# Production uses docker-compose.prod.yml — a separate, self-contained file.
+# =============================================================================
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: resources/docker/Dockerfile
+    image: bx-blogger-app:dev
+    container_name: bx-blogger-app
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      # Bind-mounted source for hot-reload during dev
+      - ./app:/app/app
+      - ./public:/app/public
+      - ./resources:/app/resources
+      - ./runtime:/app/runtime
+      - ./tests:/app/tests
+      - ./box.json:/app/box.json
+      - ./server.json:/app/server.json
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      mailhog:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - bx-blogger
+
+  worker:
+    build:
+      context: .
+      dockerfile: resources/docker/Dockerfile
+    image: bx-blogger-app:dev
+    container_name: bx-blogger-worker
+    env_file: .env
+    command: [ "box", "cbq:work", "--tries=3" ]
+    volumes:
+      - ./app:/app/app
+      - ./resources:/app/resources
+      - ./runtime:/app/runtime
+      - ./box.json:/app/box.json
+      - backup-data:/var/backups/bx-blogger
+    depends_on:
+      app:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - bx-blogger
+    # Disabled by default — cbq tables don't exist until Phase 1 migrations
+    # ship. Enable after Phase 6 with:
+    #   COMPOSE_PROFILES=worker docker compose up -d
+    profiles:
+      - worker
+
+  mysql:
+    image: mysql:8.4
+    container_name: bx-blogger-mysql
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE}
+      MYSQL_USER: ${DB_USERNAME}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # `mysqladmin ping` returns success whenever the server responds,
+      # regardless of auth — which is exactly the signal we want.
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - bx-blogger
+
+  minio:
+    image: minio/minio:latest
+    container_name: bx-blogger-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"   # S3 API — app and SDKs speak to this
+      - "9001:9001"   # Admin console — DEV ONLY (prod must not expose; see R35)
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      - bx-blogger
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: bx-blogger-mailhog
+    ports:
+      - "1025:1025"   # SMTP — app sends here; MailHog captures
+      - "8025:8025"   # Web UI — human inspects at http://localhost:8025
+    restart: unless-stopped
+    networks:
+      - bx-blogger
+
+volumes:
+  mysql-data:      # MySQL 8 data directory — persistent across restarts
+  minio-data:      # MinIO object storage — persistent; seeds Phase 2 media
+  backup-data:     # BackupDatabaseJob dump destination — persistent (worker)
+
+networks:
+  bx-blogger:
+    driver: bridge
