@@ -58,8 +58,8 @@ It is not trying to be WordPress, Ghost, or a multi-tenant SaaS. It is aimed at 
 
 ### Media
 
-- **cbfs** file abstraction — MinIO in dev for parity, S3 in production
-- Production bucket is fully private; public reads served through CloudFront with Origin Access Control, never directly from S3
+- **cbfs** file abstraction — endpoint-configurable S3-compatible backend, selected by a single `.env` variable. Defaults: MinIO container in dev, AWS S3 + CloudFront in production
+- **Operator choice of backend in prod:** AWS S3 (the documented default, private bucket served through CloudFront with Origin Access Control), self-hosted MinIO (no cloud bill, NGINX-proxied), Cloudflare R2 (zero egress), DigitalOcean Spaces, Backblaze B2, Wasabi — all supported without any application code changes
 - Auto-generated thumbnails, WebP variants, and Open Graph share cards per post
 
 ### Deployment

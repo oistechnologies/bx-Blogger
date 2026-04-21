@@ -52,7 +52,7 @@ Build stages: `node:lts-alpine` (theme asset compilation via Vite) → `ortussol
 | `app` | BoxLang application (ColdBox 8 + MiniServer) | `8080` |
 | `worker` | cbq background job worker | — |
 | `mysql` | MySQL 8.4 database | `3306` |
-| `minio` | S3-compatible object storage (dev-prod parity for media, mirrors real AWS S3 in production) | `9000` / `9001` |
+| `minio` | S3-compatible object storage in dev (default). In prod, operators choose AWS S3 (default, via env override), self-hosted MinIO (same container pattern), or any S3-compatible provider (R2, Spaces, B2, Wasabi) — switched via the `S3_ENDPOINT` env var alone | `9000` / `9001` (dev only) |
 | `mailhog` | SMTP capture + inbox UI (all outbound email goes here in dev; never leaves the machine) | `1025` SMTP / `8025` UI |
 
 ## Mail routing
