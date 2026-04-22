@@ -20,6 +20,7 @@
     "dependencies":{
         "coldbox":"^8.0.0",
         "cbauth":"^7.0.0",
+        "cbsecurity":"^3.7.0",
         "cbvalidation":"^4.8.0+30",
         "qb":"^13.1.0",
         "quick":"^12.0.12",
@@ -47,7 +48,8 @@
     },
     "installPaths":{
         "coldbox":"coldbox/",
-        "testbox":"testbox/"
+        "testbox":"testbox/",
+        "cbsecurity":"modules/cbsecurity/"
     },
     "scripts":{
         "format":"cfformat run config/,handlers/,interceptors/,models/,modules_app/,tests/specs/,*.bx ./.cfformat.json --overwrite",

@@ -221,6 +221,41 @@ class {
 				// isValidCredentials / retrieveUserByUsername / retrieveUserById.
 				// Short alias works because autoMapModels=true + unique class names.
 				"userServiceClass" : "UserService"
+			},
+			"cbsecurity" : {
+				// Delegate authentication state to cbauth
+				"authentication" : {
+					"provider" : "authenticationService@cbauth"
+				},
+				// Global firewall — protects /admin/* by redirecting anonymous
+				// visitors to /login?returnTo=<original>. Phase 2 layers on
+				// permission checks via handler annotations (@secured).
+				"firewall" : {
+					"autoLoadFirewall"             : true,
+					// Event invoked when a rule blocks an unauthenticated request.
+					// security.login renders our login view + captures returnTo.
+					"invalidAuthenticationEvent"   : "security.login",
+					"defaultAuthenticationAction"  : "redirect",
+					"rules" : [
+						{
+							// Anything under /admin requires authentication.
+							// Regex matches event.getCurrentRoutedURL() which returns
+							// paths without a leading slash (e.g. "admin/", "admin/users").
+							"securelist" : "^admin.*",
+							"match"      : "url",
+							"action"     : "redirect"
+						}
+					]
+				},
+				// CSRF module config (Phase 2 uses for form protection; minimal now)
+				"csrf" : {},
+				// Disable the built-in security headers interceptor for Phase 1 —
+				// Phase 10 (B14 NGINX + CSP) owns our security header strategy.
+				// Leaving enabled=false prevents it from colliding with our
+				// bespoke CSP policy later.
+				"securityHeaders" : {
+					"enabled" : false
+				}
 			}
 		};
 

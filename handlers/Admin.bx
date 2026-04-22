@@ -1,12 +1,13 @@
 /**
- * bx-Blogger — Admin handler (Phase 1 Chunk 1.E placeholder)
+ * bx-Blogger — Admin handler (Phase 1 Chunk 1.F)
  *
- * A minimal placeholder proving post-login redirect works. Chunk 1.F
- * installs cbsecurity which will firewall /admin/*; for now the handler
- * itself checks cbauth.isLoggedIn() and redirects unauth requests to
- * the login page.
+ * cbsecurity's firewall (configured in config/Coldbox.bx moduleSettings)
+ * gates every /admin* route — unauthenticated requests redirect to /login
+ * BEFORE the handler is invoked. This handler therefore never needs to
+ * check isLoggedIn() itself.
  *
- * Phase 2 rebuilds this as a real dashboard with CBWire widgets.
+ * Phase 2 rebuilds this as a real dashboard with CBWire widgets and
+ * adds permission annotations (@secured="posts.list", etc.).
  */
 class extends="coldbox.system.EventHandler" {
 
@@ -17,10 +18,6 @@ class extends="coldbox.system.EventHandler" {
     };
 
     function index( event, rc, prc ) {
-        if ( !cbauth.isLoggedIn() ) {
-            relocate( uri = "login", queryString = "returnTo=" & urlEncodedFormat( "/admin" ) );
-            return;
-        }
         prc.pageTitle = "Admin Dashboard";
         prc.user      = cbauth.getUser();
         event.setView( view = "admin/index", layout = "Admin" );
