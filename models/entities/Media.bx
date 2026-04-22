@@ -1,0 +1,73 @@
+/**
+ * bx-Blogger — Media entity (Quick)
+ *
+ * Maps to the `media` table. Every uploaded file is one row. The file's
+ * bytes live on a cbfs disk (local / minio / s3) at (`disk`, `path`);
+ * this entity only carries the metadata. Thumbnails are stored as JSON
+ * so Phase 3 themes can declare their own size set without a migration.
+ *
+ * Phase 2.I extends this entity with source / aiPrompt / aiProvider /
+ * aiModel properties when the AI image-generation schema ships.
+ */
+// Quick's auto-pluralization treats "Media" as singular and hits
+// `medias`. Pin the real table name via class-level `table` metadata,
+// which Quick reads when building the entity's query base.
+class extends="quick.models.BaseEntity" accessors="true" table="media" {
+
+    property name="id"               column="id"                insert=false update=false;
+    property name="uploaderId"       column="uploader_id";
+    property name="disk"             column="disk";
+    property name="path"             column="path";
+    property name="filename"         column="filename";
+    property name="originalFilename" column="original_filename";
+    property name="mimeType"         column="mime_type";
+    property name="sizeBytes"        column="size_bytes";
+    property name="width"            column="width";
+    property name="height"           column="height";
+    property name="hash"             column="hash";
+    property name="focalX"           column="focal_x";
+    property name="focalY"           column="focal_y";
+    property name="altText"          column="alt_text";
+    property name="title"            column="title";
+    property name="caption"          column="caption";
+    property name="thumbnailsJson"   column="thumbnails_json";
+    property name="deletedAt"        column="deleted_at";
+    property name="createdAt"        column="created_at";
+    property name="updatedAt"        column="updated_at";
+
+    /**
+     * User who uploaded this file.
+     */
+    function uploader() {
+        return belongsTo( relationName = "User", foreignKey = "uploader_id" );
+    }
+
+    /**
+     * Decoded thumbnails map; returns empty struct if no thumbs yet.
+     */
+    function getThumbnails() {
+        var raw = getThumbnailsJson() ?: "";
+        if ( !len( raw ) ) return {};
+        try {
+            return deserializeJSON( raw );
+        } catch ( any e ) {
+            return {};
+        }
+    }
+
+    this.memento = {
+        defaultIncludes: [
+            "id", "uploaderId", "disk", "path", "filename", "originalFilename",
+            "mimeType", "sizeBytes", "width", "height",
+            "focalX", "focalY", "altText", "title", "caption",
+            "createdAt", "updatedAt"
+        ],
+        defaultExcludes: [ "hash", "deletedAt", "thumbnailsJson" ],
+        profiles: {
+            "public": {
+                defaultIncludes: [ "id", "path", "altText", "width", "height" ]
+            }
+        }
+    };
+
+}

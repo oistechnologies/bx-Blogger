@@ -1,0 +1,43 @@
+/**
+ * bx-Blogger — PostMeta entity (Quick)
+ *
+ * Key/value extension for posts (B1). `valueType` is a hint for callers
+ * deserializing `metaValue` — the column itself is LONGTEXT, so numbers
+ * and booleans round-trip as strings unless you cast them.
+ */
+class extends="quick.models.BaseEntity" accessors="true" table="post_meta" {
+
+    property name="id"         column="id"         insert=false update=false;
+    property name="postId"     column="post_id";
+    property name="metaKey"    column="meta_key";
+    property name="metaValue"  column="meta_value";
+    property name="valueType"  column="value_type";
+    property name="createdAt"  column="created_at";
+    property name="updatedAt"  column="updated_at";
+
+    function post() {
+        return belongsTo( relationName = "Post", foreignKey = "post_id" );
+    }
+
+    /**
+     * Deserialize `metaValue` according to `valueType`. Returns the raw
+     * string for `string`/`text`, a boolean for `bool`, a number for
+     * `int`, the parsed struct/array for `json`.
+     */
+    function getTypedValue() {
+        var raw = getMetaValue() ?: "";
+        switch ( getValueType() ) {
+            case "bool":   return isBoolean( raw ) && raw;
+            case "int":    return isNumeric( raw ) ? val( raw ) : 0;
+            case "json":
+                try { return deserializeJSON( raw ); }
+                catch ( any e ) { return {}; }
+            default:       return raw;
+        }
+    }
+
+    this.memento = {
+        defaultIncludes: [ "id", "postId", "metaKey", "metaValue", "valueType", "updatedAt" ]
+    };
+
+}

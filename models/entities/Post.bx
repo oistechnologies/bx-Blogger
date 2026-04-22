@@ -1,0 +1,159 @@
+/**
+ * bx-Blogger — Post entity (Quick)
+ *
+ * Maps to the `posts` table. Covers both posts and pages via `postType`;
+ * pages use `parentId` for hierarchy. All business rules (slug uniqueness,
+ * publish transitions, reading-time computation) live in PostService —
+ * this entity stays persistence-focused.
+ */
+class extends="quick.models.BaseEntity" accessors="true" {
+
+    property name="id"                  column="id"                  insert=false update=false;
+    property name="postType"            column="post_type";
+    property name="parentId"            column="parent_id";
+    property name="authorId"            column="author_id";
+
+    property name="title"               column="title";
+    property name="slug"                column="slug";
+    property name="excerpt"             column="excerpt";
+
+    property name="bodyMarkdown"        column="body_markdown";
+    property name="bodyHtml"            column="body_html";
+    property name="bodyCompiledAt"      column="body_compiled_at";
+    property name="contentVersion"      column="content_version";
+
+    property name="status"              column="status";
+    property name="visibility"          column="visibility";
+    property name="passwordHash"        column="password_hash";
+
+    property name="featuredMediaId"     column="featured_media_id";
+    property name="menuOrder"           column="menu_order";
+    property name="templateOverride"    column="template_override";
+
+    property name="seoTitle"            column="seo_title";
+    property name="seoDescription"      column="seo_description";
+    property name="seoCanonical"        column="seo_canonical";
+    property name="ogImageId"           column="og_image_id";
+    property name="allowIndexing"       column="allow_indexing";
+
+    property name="viewCount"           column="view_count";
+    property name="readingTimeMinutes"  column="reading_time_minutes";
+    property name="wordCount"           column="word_count";
+
+    property name="publishedAt"         column="published_at";
+    property name="scheduledAt"         column="scheduled_at";
+
+    property name="deletedAt"           column="deleted_at";
+    property name="createdAt"           column="created_at";
+    property name="updatedAt"           column="updated_at";
+
+    // --------------------------------------------------------------------
+    // Relationships
+    // --------------------------------------------------------------------
+
+    function author() {
+        return belongsTo( relationName = "User", foreignKey = "author_id" );
+    }
+
+    function parent() {
+        return belongsTo( relationName = "Post", foreignKey = "parent_id" );
+    }
+
+    function children() {
+        return hasMany( relationName = "Post", foreignKey = "parent_id" );
+    }
+
+    function featuredMedia() {
+        return belongsTo( relationName = "Media", foreignKey = "featured_media_id" );
+    }
+
+    function ogImage() {
+        return belongsTo( relationName = "Media", foreignKey = "og_image_id" );
+    }
+
+    function revisions() {
+        return hasMany( relationName = "PostRevision", foreignKey = "post_id" );
+    }
+
+    function meta() {
+        return hasMany( relationName = "PostMeta", foreignKey = "post_id" );
+    }
+
+    function categories() {
+        return belongsToMany(
+            relationName    = "Category",
+            table           = "post_categories",
+            foreignPivotKey = "post_id",
+            relatedPivotKey = "category_id"
+        );
+    }
+
+    function tags() {
+        return belongsToMany(
+            relationName    = "Tag",
+            table           = "post_tags",
+            foreignPivotKey = "post_id",
+            relatedPivotKey = "tag_id"
+        );
+    }
+
+    // --------------------------------------------------------------------
+    // Convenience predicates
+    // --------------------------------------------------------------------
+
+    function isPublished() {
+        return getStatus() == "published";
+    }
+
+    function isDraft() {
+        return getStatus() == "draft";
+    }
+
+    function isPage() {
+        return getPostType() == "page";
+    }
+
+    this.memento = {
+        defaultIncludes: [
+            "id", "postType", "parentId", "authorId",
+            "title", "slug", "excerpt",
+            "status", "visibility",
+            "featuredMediaId",
+            "menuOrder", "templateOverride",
+            "seoTitle", "seoDescription", "seoCanonical", "ogImageId", "allowIndexing",
+            "viewCount", "readingTimeMinutes", "wordCount",
+            "publishedAt", "scheduledAt",
+            "contentVersion", "createdAt", "updatedAt"
+        ],
+        defaultExcludes: [
+            "bodyMarkdown", "bodyHtml", "bodyCompiledAt",
+            "passwordHash", "deletedAt"
+        ],
+        profiles: {
+            // Public shape — safe to return via feeds / public API
+            "public": {
+                defaultIncludes: [
+                    "id", "title", "slug", "excerpt",
+                    "readingTimeMinutes", "publishedAt",
+                    "featuredMediaId", "ogImageId"
+                ]
+            },
+            // Full editor shape — includes the compiled body for the preview pane
+            "editor": {
+                defaultIncludes: [
+                    "id", "postType", "parentId", "authorId",
+                    "title", "slug", "excerpt",
+                    "bodyMarkdown", "bodyHtml",
+                    "status", "visibility",
+                    "featuredMediaId", "ogImageId",
+                    "menuOrder", "templateOverride",
+                    "seoTitle", "seoDescription", "seoCanonical", "allowIndexing",
+                    "readingTimeMinutes", "wordCount",
+                    "publishedAt", "scheduledAt",
+                    "contentVersion", "createdAt", "updatedAt"
+                ]
+            }
+        }
+    };
+
+}

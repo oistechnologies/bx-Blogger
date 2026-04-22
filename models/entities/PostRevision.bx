@@ -1,0 +1,36 @@
+/**
+ * bx-Blogger — PostRevision entity (Quick)
+ *
+ * Append-only snapshot of a post's title + body at a point in time.
+ * `changeSummary='autosave'` flags autosaves (Chunk 2.G); anything else
+ * is a deliberate save and is kept for the full retention window.
+ */
+class extends="quick.models.BaseEntity" accessors="true" table="post_revisions" {
+
+    property name="id"             column="id"              insert=false update=false;
+    property name="postId"         column="post_id";
+    property name="editorId"       column="editor_id";
+    property name="title"          column="title";
+    property name="bodyMarkdown"   column="body_markdown";
+    property name="bodyHtml"       column="body_html";
+    property name="changeSummary"  column="change_summary";
+    property name="createdAt"      column="created_at";
+
+    function post() {
+        return belongsTo( relationName = "Post", foreignKey = "post_id" );
+    }
+
+    function editor() {
+        return belongsTo( relationName = "User", foreignKey = "editor_id" );
+    }
+
+    function isAutosave() {
+        return ( getChangeSummary() ?: "" ) == "autosave";
+    }
+
+    this.memento = {
+        defaultIncludes: [ "id", "postId", "editorId", "title", "changeSummary", "createdAt" ],
+        defaultExcludes: [ "bodyMarkdown", "bodyHtml" ]
+    };
+
+}

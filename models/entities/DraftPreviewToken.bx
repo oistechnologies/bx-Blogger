@@ -1,0 +1,38 @@
+/**
+ * bx-Blogger — DraftPreviewToken entity (Quick) — B2.
+ *
+ * One row per share-a-draft-preview link. Only the SHA-256 hash of the
+ * token is persisted; the plaintext rides in the URL we hand the user.
+ * Default 7-day expiry; a Phase 6 scheduler purges rows where
+ * `expiresAt < now()`.
+ */
+class extends="quick.models.BaseEntity" accessors="true" table="draft_preview_tokens" {
+
+    property name="id"          column="id"           insert=false update=false;
+    property name="postId"      column="post_id";
+    property name="tokenHash"   column="token_hash";
+    property name="createdBy"   column="created_by";
+    property name="expiresAt"   column="expires_at";
+    property name="lastUsedAt"  column="last_used_at";
+    property name="createdAt"   column="created_at";
+
+    function post() {
+        return belongsTo( relationName = "Post", foreignKey = "post_id" );
+    }
+
+    function creator() {
+        return belongsTo( relationName = "User", foreignKey = "created_by" );
+    }
+
+    function isExpired() {
+        var exp = getExpiresAt() ?: "";
+        if ( !len( exp ) ) return true;
+        return dateCompare( exp, now() ) != 1;
+    }
+
+    this.memento = {
+        defaultIncludes: [ "id", "postId", "createdBy", "expiresAt", "lastUsedAt", "createdAt" ],
+        defaultExcludes: [ "tokenHash" ]
+    };
+
+}

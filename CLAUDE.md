@@ -147,6 +147,9 @@ Hard-won lessons from Chunks 1.E → 1.I. Read these before adding new handlers,
 - **`entity.save()` persists *every* field currently in memory.** If service code runs a qb update and then calls `entity.save()`, the save overwrites the qb-updated values with whatever the entity holds. Order operations so qb-only updates happen *after* any entity.save() calls, or reload the entity in between.
 - **Don't call `.where( closure ).first()` on a Quick entity** with an unscoped inner where/orWhere chain — Quick tries to resolve it via its relation builder and can trigger an unrelated INSERT. Drop to qb for grouped where clauses: `qb.from("users").where( function( q ) { q.where(...).orWhere(...); } ).get()`.
 - **`isNull( quickEntity )` is reliable; `quickEntity ?: "default"` can mis-behave** depending on loader state. When checking whether a `.first()` found a row, use `isNull( row )`.
+- **Entity → table inference uses English singular→plural.** It's wrong for already-plural words (`Media` → `medias`) and for unusual pivots (`PostMeta` → `post_metas`). Pin explicitly via the class-level attribute: `class extends="quick.models.BaseEntity" accessors="true" table="media" {`. Don't use `this.table = "foo"` — Quick reads the metadata attribute, not the `this` scope.
+- **Class-body ordering: `property` declarations must come before any `this.xxx = ...` assignment.** BoxLang throws `'property' was unexpected` if you put `this.table = "..."` at the top and then declare properties. Put all `property` lines first, then the `this.memento = {...}` and other `this.` assignments at the bottom.
+- **Quick pluralizes JSON columns away.** If a JSON column holds `{...}` and you call `entity.getXxx()` you may get either a string or a pre-deserialized struct depending on whether Quick's column-caster fired. Wrap reads in a try/catch + `isStruct` check rather than blindly calling `deserializeJSON` on the result.
 
 ### ColdBox
 
@@ -164,3 +167,6 @@ Hard-won lessons from Chunks 1.E → 1.I. Read these before adding new handlers,
 
 - `tests/support/` is outside the runner's spec-glob — put `BaseIntegrationSpec` and other non-runnable base classes there, not under `tests/specs/`.
 - Integration specs hit the real MySQL container. Always create throwaway users (UUID in the email) and clean them up in `afterAll()`; never mutate the dev admin seed (`id=1`).
+- **Global BIFs from inside TestBox `it()` closures are unreliable.** Calling `serializeJSON(x)` from within `function() { ... }` passed to `it()` dispatches as a method on BaseSpec, which throws `The method serializeJSON does not exist.` Move BIF calls into a spec class method (declared outside any `it()`), or construct the value as a literal string, or wrap in try/catch. Same risk applies to other globals.
+- **qb multi-alias select lists can collapse.** `.select( "roles.slug AS role_slug", "permissions.slug AS perm_slug" )` sometimes returns only the first alias. Fetch each table separately and join in-memory when the query is simple enough, or use `.selectRaw( "roles.slug AS role_slug, permissions.slug AS perm_slug" )`.
+- **Don't hardcode "X permissions" / "Y rows" counts in assertions** — later phases add more. Use `toBeGTE` for minimums or query `count()` from the DB and compare to the entity's relation size.

@@ -1,0 +1,314 @@
+/**
+ * bx-Blogger — ContentEntitiesSpec (Chunk 2.A)
+ *
+ * Smoke-test wiring for the Phase 2 schema + Quick entities:
+ *   - each entity resolves via WireBox auto-mapping
+ *   - create + find round-trips for every table
+ *   - post ↔ media, post ↔ author, post ↔ categories, post ↔ tags relations
+ *   - post_meta key/value + typed-value deserialization
+ *   - draft preview token storage + expiry predicate
+ *   - new content permissions were seeded and attached to roles
+ *
+ * Follow-up chunks (2.C+) layer PostService business rules — slug
+ * uniqueness, scheduled→published, reading-time, etc. This spec only
+ * proves the persistence layer works; business logic tests come later.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        // Hand teardown off to the base spec, then clean the content-only
+        // rows this file created (base spec only tracks users it made).
+        try {
+            if ( arrayLen( variables.createdIds.posts       ?: [] ) ) getInstance( "QueryBuilder@qb" ).newQuery().from( "posts"              ).whereIn( "id", variables.createdIds.posts      ).delete();
+            if ( arrayLen( variables.createdIds.media       ?: [] ) ) getInstance( "QueryBuilder@qb" ).newQuery().from( "media"              ).whereIn( "id", variables.createdIds.media      ).delete();
+            if ( arrayLen( variables.createdIds.categories  ?: [] ) ) getInstance( "QueryBuilder@qb" ).newQuery().from( "categories"         ).whereIn( "id", variables.createdIds.categories ).delete();
+            if ( arrayLen( variables.createdIds.tags        ?: [] ) ) getInstance( "QueryBuilder@qb" ).newQuery().from( "tags"               ).whereIn( "id", variables.createdIds.tags       ).delete();
+        } catch ( any e ) {
+            writeLog( file = "testbox", text = "ContentEntitiesSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.createdIds = { "posts" : [], "media" : [], "categories" : [], "tags" : [] };
+    }
+
+    function run() {
+        describe( "Phase 2 content entities", function() {
+
+            describe( "Media", function() {
+                it( "resolves via WireBox and round-trips a row", function() {
+                    var user = createTestUser();
+                    var Media = getInstance( "Media" );
+                    var m = Media.create( {
+                        uploaderId:       user.getId(),
+                        disk:             "local",
+                        path:             "uploads/test-#createUUID()#.png",
+                        filename:         "test.png",
+                        originalFilename: "original.png",
+                        mimeType:         "image/png",
+                        sizeBytes:        1024,
+                        width:            640,
+                        height:           480
+                    } );
+                    variables.createdIds.media.append( m.getId() );
+
+                    var reloaded = Media.find( m.getId() );
+                    expect( isNull( reloaded ) ).toBeFalse();
+                    expect( reloaded.getMimeType() ).toBe( "image/png" );
+                    expect( reloaded.getFocalX() ).toBe( 0.5 );  // default
+                } );
+
+                it( "stores and retrieves focal point defaults", function() {
+                    var user = createTestUser();
+                    var m = getInstance( "Media" ).create( {
+                        uploaderId:       user.getId(),
+                        disk:             "local",
+                        path:             "uploads/focal-#createUUID()#.png",
+                        filename:         "t.png",
+                        originalFilename: "t.png",
+                        mimeType:         "image/png",
+                        sizeBytes:        512,
+                        focalX:           0.25,
+                        focalY:           0.75
+                    } );
+                    variables.createdIds.media.append( m.getId() );
+
+                    var reloaded = getInstance( "Media" ).find( m.getId() );
+                    expect( reloaded.getFocalX() ).toBe( 0.25 );
+                    expect( reloaded.getFocalY() ).toBe( 0.75 );
+                } );
+            } );
+
+            describe( "Post", function() {
+                it( "creates a post tied to an author + featured media", function() {
+                    var author = createTestUser();
+                    var media  = makeMedia( author.getId() );
+                    var post   = makePost( authorId = author.getId(), featuredMediaId = media.getId() );
+
+                    var reloaded = getInstance( "Post" ).find( post.getId() );
+                    expect( reloaded.getTitle() ).toBe( post.getTitle() );
+                    expect( reloaded.isDraft() ).toBeTrue();
+                    expect( reloaded.getAuthor().getId() ).toBe( author.getId() );
+                    expect( reloaded.getFeaturedMedia().getId() ).toBe( media.getId() );
+                    expect( reloaded.getPostType() ).toBe( "post" );
+                    expect( reloaded.isPage() ).toBeFalse();
+                    expect( reloaded.getContentVersion() ).toBe( 1 );  // default
+                } );
+
+                it( "creates a page with parent hierarchy", function() {
+                    var author = createTestUser();
+                    var parent = makePost( authorId = author.getId(), overrides = { "postType" : "page" } );
+                    var child  = makePost( authorId = author.getId(), overrides = { "postType" : "page", "parentId" : parent.getId() } );
+
+                    expect( child.getParent().getId() ).toBe( parent.getId() );
+                    expect( parent.getChildren().len() ).toBe( 1 );
+                } );
+
+                // NOTE: service-layer slug uniqueness tests ship with the
+                // PostService spec (Chunk 2.C). MySQL's unique key treats
+                // two NULL parent_id rows as distinct, so the DB-level
+                // constraint only protects `(post_type=page, parent_id=N)`
+                // collisions; the general-case check is PostService's job.
+            } );
+
+            describe( "PostRevision", function() {
+                it( "attaches a revision row to a post and flags autosaves", function() {
+                    var author = createTestUser();
+                    var post   = makePost( authorId = author.getId() );
+
+                    var rev = getInstance( "PostRevision" ).create( {
+                        postId:        post.getId(),
+                        editorId:      author.getId(),
+                        title:         post.getTitle(),
+                        bodyMarkdown:  "autosave body",
+                        bodyHtml:      "<p>autosave body</p>",
+                        changeSummary: "autosave"
+                    } );
+
+                    expect( rev.isAutosave() ).toBeTrue();
+                    expect( getInstance( "Post" ).find( post.getId() ).getRevisions().len() ).toBe( 1 );
+                } );
+            } );
+
+            describe( "PostMeta", function() {
+                it( "round-trips typed values", function() {
+                    var author = createTestUser();
+                    var post   = makePost( authorId = author.getId() );
+
+                    var pm = getInstance( "PostMeta" ).create( {
+                        postId:    post.getId(),
+                        metaKey:   "featured_color",
+                        metaValue: "##2c5aa0",
+                        valueType: "string"
+                    } );
+                    expect( pm.getTypedValue() ).toBe( "##2c5aa0" ); // preserved
+
+                    var pmInt = getInstance( "PostMeta" ).create( {
+                        postId:    post.getId(),
+                        metaKey:   "view_count_override",
+                        metaValue: "42",
+                        valueType: "int"
+                    } );
+                    expect( pmInt.getTypedValue() ).toBe( 42 );
+
+                    var pmBool = getInstance( "PostMeta" ).create( {
+                        postId:    post.getId(),
+                        metaKey:   "is_featured",
+                        metaValue: "true",
+                        valueType: "bool"
+                    } );
+                    expect( pmBool.getTypedValue() ).toBeTrue();
+                } );
+            } );
+
+            describe( "Category + Tag pivots", function() {
+                it( "attaches categories and tags to a post via the pivot tables", function() {
+                    var author = createTestUser();
+                    var post   = makePost( authorId = author.getId() );
+
+                    var cat = getInstance( "Category" ).create( {
+                        name:      "Spec Cat #createUUID()#",
+                        slug:      "spec-cat-" & left( createUUID(), 8 ),
+                        path:      "spec-cat-" & left( createUUID(), 8 ),
+                        sortOrder: 0
+                    } );
+                    variables.createdIds.categories.append( cat.getId() );
+
+                    var tag = getInstance( "Tag" ).create( {
+                        name: "Spec Tag #createUUID()#",
+                        slug: "spec-tag-" & left( createUUID(), 8 )
+                    } );
+                    variables.createdIds.tags.append( tag.getId() );
+
+                    post.categories().attach( cat.getId() );
+                    post.tags().attach( tag.getId() );
+
+                    var reloaded = getInstance( "Post" ).find( post.getId() );
+                    expect( reloaded.getCategories().len() ).toBe( 1 );
+                    expect( reloaded.getTags().len() ).toBe( 1 );
+                    expect( reloaded.getCategories()[ 1 ].getId() ).toBe( cat.getId() );
+                } );
+
+                it( "Category.isRoot() returns true for top-level categories", function() {
+                    var cat = getInstance( "Category" ).create( {
+                        name: "Root Cat #createUUID()#",
+                        slug: "root-cat-" & left( createUUID(), 8 ),
+                        path: "root-cat-" & left( createUUID(), 8 ),
+                        sortOrder: 0
+                    } );
+                    variables.createdIds.categories.append( cat.getId() );
+
+                    expect( cat.isRoot() ).toBeTrue();
+                } );
+            } );
+
+            describe( "DraftPreviewToken", function() {
+                it( "stores a row and exposes an expiry predicate", function() {
+                    var author = createTestUser();
+                    var post   = makePost( authorId = author.getId() );
+
+                    var active = getInstance( "DraftPreviewToken" ).create( {
+                        postId:    post.getId(),
+                        tokenHash: lCase( hash( "spec:" & createUUID(), "SHA-256" ) ),
+                        createdBy: author.getId(),
+                        expiresAt: dateAdd( "d", 7, now() )
+                    } );
+                    expect( active.isExpired() ).toBeFalse();
+
+                    var stale = getInstance( "DraftPreviewToken" ).create( {
+                        postId:    post.getId(),
+                        tokenHash: lCase( hash( "spec-stale:" & createUUID(), "SHA-256" ) ),
+                        createdBy: author.getId(),
+                        expiresAt: dateAdd( "n", -5, now() )
+                    } );
+                    expect( stale.isExpired() ).toBeTrue();
+                } );
+            } );
+
+            describe( "Phase 2 content permissions seeded", function() {
+                it( "seeded expected role/permission rows", function() {
+                    var grants = permissionMatrix();
+                    expect( grants ).toHaveKey( "super_admin|posts.create" );
+                    expect( grants ).toHaveKey( "admin|posts.create" );
+                    expect( grants ).toHaveKey( "editor|posts.create" );
+                    expect( grants ).toHaveKey( "author|posts.create" );
+                    expect( grants ).toHaveKey( "contributor|posts.create" );
+                    expect( grants ).notToHaveKey( "subscriber|posts.create" );
+
+                    expect( grants ).toHaveKey( "editor|posts.publish.others" );
+                    expect( grants ).notToHaveKey( "author|posts.publish.others" );
+                    expect( grants ).notToHaveKey( "contributor|posts.publish.others" );
+                } );
+            } );
+
+        } );
+    }
+
+    // --------------------------------------------------------------------
+    // Helpers
+    // --------------------------------------------------------------------
+
+    /**
+     * Builds a single lookup struct of every (role.slug, permission.slug)
+     * grant currently seeded. Keys are `"roleSlug|permSlug"`. Using one
+     * struct for the whole matrix sidesteps per-query lookup quirks
+     * inside TestBox closures: we load it once, assert via toHaveKey.
+     */
+    private struct function permissionMatrix() {
+        var qb = getInstance( "QueryBuilder@qb" );
+        // Pull roles and permissions separately, then walk role_permissions
+        // once — sidesteps qb's two-alias select-list quirk.
+        var roles = {};
+        for ( var r in qb.newQuery().from( "roles" ).get() ) roles[ r.id ] = r.slug;
+        var perms = {};
+        for ( var p in qb.newQuery().from( "permissions" ).get() ) perms[ p.id ] = p.slug;
+
+        var grants = {};
+        for ( var rp in qb.newQuery().from( "role_permissions" ).get() ) {
+            if ( structKeyExists( roles, rp.role_id ) && structKeyExists( perms, rp.permission_id ) ) {
+                grants[ roles[ rp.role_id ] & "|" & perms[ rp.permission_id ] ] = true;
+            }
+        }
+        return grants;
+    }
+
+    private any function makeMedia( required numeric uploaderId ) {
+        var m = getInstance( "Media" ).create( {
+            uploaderId:       arguments.uploaderId,
+            disk:             "local",
+            path:             "uploads/spec-#createUUID()#.png",
+            filename:         "s.png",
+            originalFilename: "s.png",
+            mimeType:         "image/png",
+            sizeBytes:        1
+        } );
+        variables.createdIds.media.append( m.getId() );
+        return m;
+    }
+
+    private any function makePost(
+        required numeric authorId,
+                 struct  overrides = {},
+                 numeric featuredMediaId = 0
+    ) {
+        var fields = {
+            postType:        "post",
+            authorId:        arguments.authorId,
+            title:           "Spec Post #createUUID()#",
+            slug:            "spec-post-" & left( createUUID(), 10 ),
+            bodyMarkdown:    "## Hello",
+            bodyHtml:        "<h1>Hello</h1>",
+            bodyCompiledAt:  now(),
+            status:          "draft"
+        };
+        structAppend( fields, arguments.overrides, true );
+        if ( arguments.featuredMediaId ) fields.featuredMediaId = arguments.featuredMediaId;
+
+        var post = getInstance( "Post" ).create( fields );
+        variables.createdIds.posts.append( post.getId() );
+        return post;
+    }
+
+}

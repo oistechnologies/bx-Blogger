@@ -1,0 +1,57 @@
+/**
+ * bx-Blogger — Category entity (Quick)
+ *
+ * Hierarchical via `parentId`. `path` is a materialized slash-separated
+ * trail of slugs (e.g. `news/politics/election-2026`) maintained by
+ * CategoryService on create/move; lets us answer "everything under X"
+ * with a single `LIKE 'x/%'` scan.
+ */
+class extends="quick.models.BaseEntity" accessors="true" {
+
+    property name="id"              column="id"              insert=false update=false;
+    property name="parentId"        column="parent_id";
+    property name="name"            column="name";
+    property name="slug"            column="slug";
+    property name="path"            column="path";
+    property name="description"     column="description";
+    property name="seoTitle"        column="seo_title";
+    property name="seoDescription"  column="seo_description";
+    property name="ogImageId"       column="og_image_id";
+    property name="sortOrder"       column="sort_order";
+    property name="createdAt"       column="created_at";
+    property name="updatedAt"       column="updated_at";
+
+    function parent() {
+        return belongsTo( relationName = "Category", foreignKey = "parent_id" );
+    }
+
+    function children() {
+        return hasMany( relationName = "Category", foreignKey = "parent_id" );
+    }
+
+    function ogImage() {
+        return belongsTo( relationName = "Media", foreignKey = "og_image_id" );
+    }
+
+    function posts() {
+        return belongsToMany(
+            relationName    = "Post",
+            table           = "post_categories",
+            foreignPivotKey = "category_id",
+            relatedPivotKey = "post_id"
+        );
+    }
+
+    function isRoot() {
+        return isNull( getParentId() ) || !len( getParentId() ?: "" );
+    }
+
+    this.memento = {
+        defaultIncludes: [
+            "id", "parentId", "name", "slug", "path", "description",
+            "seoTitle", "seoDescription", "ogImageId", "sortOrder",
+            "createdAt", "updatedAt"
+        ]
+    };
+
+}

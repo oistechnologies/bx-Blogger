@@ -33,12 +33,19 @@ class extends="coldbox.system.testing.BaseTestCase" {
                 expect( superAdmin.getIsSystem() ).toBeTrue();
             } );
 
-            it( "loads the 11 permissions attached to super_admin", function() {
+            it( "attaches every seeded permission to super_admin", function() {
                 var Role = getInstance( "Role" );
                 var superAdmin = Role.where( "slug", "super_admin" ).first();
                 var perms = superAdmin.getPermissions();
+                var qb = getInstance( "QueryBuilder@qb" ).newQuery();
+                var totalSeeded = qb.from( "permissions" ).count();
 
-                expect( perms.len() ).toBe( 11, "super_admin should have 11 permissions per PLAN §10" );
+                // super_admin carries every permission the app has seeded
+                // across all phases — the hard floor is the Phase 1
+                // identity set. The count is open-ended so this spec
+                // stays green as later phases add permissions.
+                expect( perms.len() ).toBeGTE( 11, "super_admin should have at least the Phase 1 permissions" );
+                expect( perms.len() ).toBe( totalSeeded, "super_admin should carry every permission that exists" );
             } );
 
             it( "hasPermission() returns true for granted slug and false for unknown", function() {

@@ -1,0 +1,30 @@
+/**
+ * bx-Blogger — Tag entity (Quick)
+ *
+ * Flat list (no hierarchy). Merging two tags is a one-off admin action
+ * that moves post_tags rows from source → target and deletes the source
+ * tag (owned by TagService in Chunk 2.E).
+ */
+class extends="quick.models.BaseEntity" accessors="true" {
+
+    property name="id"           column="id"           insert=false update=false;
+    property name="name"         column="name";
+    property name="slug"         column="slug";
+    property name="description"  column="description";
+    property name="createdAt"    column="created_at";
+    property name="updatedAt"    column="updated_at";
+
+    function posts() {
+        return belongsToMany(
+            relationName    = "Post",
+            table           = "post_tags",
+            foreignPivotKey = "tag_id",
+            relatedPivotKey = "post_id"
+        );
+    }
+
+    this.memento = {
+        defaultIncludes: [ "id", "name", "slug", "description", "createdAt", "updatedAt" ]
+    };
+
+}
