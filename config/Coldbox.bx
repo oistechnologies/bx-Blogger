@@ -279,14 +279,20 @@ class {
 				// etc. Dev stays local for fast iteration; prod points
 				// the same disk id at S3/MinIO via env vars so handler
 				// code keeps using `cbfs:disk:media` regardless.
+				//
+				// NOTE on `diskUrl`: cbfs's Local provider concatenates
+				// `diskUrl + path` without inserting a separator. The
+				// trailing slash here is load-bearing — without it,
+				// path `uploads/foo.png` ends up rendered as
+				// `/includes/public/mediauploads/foo.png` (no slash
+				// between "media" and "uploads") and 404s. Provider
+				// quirk, not ours to change; the slash stays.
 				"disks" : {
 					"media" : {
 						"provider"   : "Local",
 						"properties" : {
 							"path"    : getSystemSetting( "CBFS_MEDIA_DISK_PATH", expandPath( "/includes/public/media" ) ),
-							"diskUrl" : function() {
-								return "/includes/public/media";
-							}
+							"diskUrl" : "/includes/public/media/"
 						}
 					}
 				}
