@@ -26,6 +26,12 @@ MIGRATIONS_DIR="${APP_DIR}/resources/database/migrations"
 # Check for actual migration files (*.cfc / *.bx) — the directory may have
 # only a .gitkeep placeholder and in that case we skip migrate.
 if [ -d "$MIGRATIONS_DIR" ] && [ -n "$(find "$MIGRATIONS_DIR" -maxdepth 1 -type f \( -name '*.cfc' -o -name '*.bx' \) 2>/dev/null)" ]; then
+    echo "[bx-blogger] Ensuring migration tracker table exists..."
+    # `migrate install` is idempotent; swallow error if table already exists.
+    # This runs non-interactively (no TTY in container), so the install prompt
+    # from `migrate up` never fires when the tracker table is already present.
+    box migrate install 2>&1 | grep -v "already installed" || true
+
     echo "[bx-blogger] Running database migrations..."
     box migrate up --force
 else
