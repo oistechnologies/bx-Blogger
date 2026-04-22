@@ -160,6 +160,13 @@ Hard-won lessons from Chunks 1.E → 1.I. Read these before adding new handlers,
 - **HMVC module routes live in `modules_app/{name}/config/Router.bx`**, not in `routes = [...]` inside ModuleConfig. Declaring `routes` inside the module's `configure()` method is silently ignored by ColdBox — it looks for the Router.bx / Router.cfc file convention instead. Without a router, the module falls back to `:handler/:action?` conventions, which means bare `/{entryPoint}` (no sub-path) fails to resolve.
 - **ModuleService auto-registers the entry-point route** via `addModuleRoutes(pattern=entryPoint, append=false)` — you don't need `route("/admin").moduleRouting("admin")` in the app router. Just set `this.entryPoint = "admin"` in ModuleConfig.bx and drop a `config/Router.bx` in the module.
 
+### BoxLang string / regex literals
+
+- **`chr(n)` does not exist — use `char(n)`.** `chr( 10 )` for a newline character throws `Function [chr] not found` at runtime. Applies everywhere: service code, wires, specs.
+- **Literal `#` in a double-quoted string must be doubled.** `"### Hello"` triggers `Unterminated hash expression` at parse time because BoxLang reads the first `#` as an interpolation marker. `"###### Hello"` produces a literal `### Hello` (each `##` collapses to one `#`).
+- **Backslash escapes inside double-quoted strings bite regex.** `"[\r\n\t]+"` trips a parse error (`Invalid syntax near '[\'`). Use the POSIX `"[\s]+"` class for whitespace, or build the regex by concatenating `char(13) & char(10)` etc.
+- **Escaped double quotes inside a string** (`"\"style\""`) also trip the parser in some contexts. Rewrite prose to use slashes or bullet lists (`"one of style / clarity / grammar"`) instead of quoted alternatives.
+
 ### BoxLang + MySQL
 
 - **`users.password_hash` is exactly `VARCHAR(60)` for bcrypt.** Test-fixture placeholder hashes must be exactly 60 chars or MySQL throws "Data too long for column".

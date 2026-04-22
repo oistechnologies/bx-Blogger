@@ -22,7 +22,19 @@ class extends="coldbox.system.ioc.config.Binder" {
 			listeners      : []
 		};
 
-		// Map bindings below (none at Phase 0).
+		// --------------------------------------------------------------
+		// AI provider (Chunk 2.H)
+		// --------------------------------------------------------------
+		// AiAssistantService depends on an `AiProvider` alias so the
+		// service stays provider-agnostic. Default binding is the
+		// deterministic MockAiProvider — zero network, safe for dev
+		// and CI. Operators flip to BxAiProvider (real aiChat() call)
+		// by setting AI_PROVIDER=bx in the environment; this reads
+		// that at app boot.
+		var aiProviderClass = ( getSystemSetting( "AI_PROVIDER", "mock" ) == "bx" )
+			? "models.ai.BxAiProvider"
+			: "models.ai.MockAiProvider";
+		map( "AiProvider" ).to( aiProviderClass ).asSingleton();
 	}
 
 }

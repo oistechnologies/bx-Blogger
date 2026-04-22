@@ -1,0 +1,139 @@
+/**
+ * bx-Blogger — BxAiProvider (Chunk 2.H)
+ *
+ * Thin adapter around the `aiChat()` BIF that bx-ai exposes. Keeps
+ * AiAssistantService provider-agnostic: swap this for a different
+ * backend (a local model, a custom broker, etc.) by binding the
+ * `AiProvider` alias to a different class in WireBox.
+ *
+ * Real providers split request shaping from token counting —
+ * bx-ai's aiChat() returns its own token accounting in the `raw`
+ * return format, so we ask for that and unpack it here.
+ *
+ * The service layer (AiAssistantService) is responsible for:
+ *   - prompt-injection safety (wrapping user content in delimiters)
+ *   - budget enforcement
+ *   - audit + ai_usage writes
+ *   - cbantisamy sanitization of model output
+ *
+ * This class is ONLY the provider transport.
+ */
+class accessors="true" singleton {
+
+    property name="log" inject="logbox:logger:{this}";
+
+    variables.defaultModel       = "gpt-4o-mini";
+    variables.defaultMaxTokens   = 4000;
+    variables.defaultTemperature = 0.7;
+
+    struct function draft( required string systemPrompt, required string userIdea ) {
+        return chat(
+            systemPrompt = arguments.systemPrompt,
+            userContent  = arguments.userIdea
+        );
+    }
+
+    struct function review( required string systemPrompt, required string postBody ) {
+        var result = chat(
+            systemPrompt = arguments.systemPrompt,
+            userContent  = arguments.postBody
+        );
+        // Best-effort JSON parse — real providers often return a
+        // markdown codefence around the JSON. Try clean parse, then
+        // try extracting the first {...} blob, then fall back to
+        // a single prose suggestion.
+        var parsed = tryParseSuggestions( result.markdown );
+        return {
+            "suggestions"      : parsed,
+            "promptTokens"     : result.promptTokens,
+            "completionTokens" : result.completionTokens,
+            "totalTokens"      : result.totalTokens,
+            "costUsdMicro"     : result.costUsdMicro
+        };
+    }
+
+    // --------------------------------------------------------------------
+
+    private struct function chat( required string systemPrompt, required string userContent ) {
+        var messages = [
+            { "role" : "system", "content" : arguments.systemPrompt },
+            { "role" : "user",   "content" : arguments.userContent }
+        ];
+        var response = aiChat(
+            messages = messages,
+            params   = {
+                "model"       : variables.defaultModel,
+                "max_tokens"  : variables.defaultMaxTokens,
+                "temperature" : variables.defaultTemperature
+            },
+            options = { "returnFormat" : "raw" }
+        );
+
+        // bx-ai's raw response carries usage counts under `.usage`;
+        // different providers shape the struct slightly differently —
+        // guard every key read.
+        var markdown = extractMessage( response );
+        var usage    = response.usage ?: {};
+        var pt       = usage.prompt_tokens     ?: usage.promptTokens     ?: 0;
+        var ct       = usage.completion_tokens ?: usage.completionTokens ?: 0;
+        var total    = pt + ct;
+
+        return {
+            "markdown"         : markdown,
+            "promptTokens"     : pt,
+            "completionTokens" : ct,
+            "totalTokens"      : total,
+            // Rough cost: $0.15 per 1M input + $0.60 per 1M output for
+            // gpt-4o-mini (as of this writing). Expressed in USD-micros.
+            "costUsdMicro"     : int( ( pt * 0.15 + ct * 0.60 ) )
+        };
+    }
+
+    /**
+     * Pull the assistant message text out of a provider response.
+     * bx-ai's raw format roughly follows OpenAI's — `choices[1].message.content`.
+     */
+    private string function extractMessage( required any response ) {
+        try {
+            if ( isStruct( arguments.response ) && structKeyExists( arguments.response, "choices" ) ) {
+                var choices = arguments.response.choices;
+                if ( isArray( choices ) && choices.len() > 0 ) {
+                    var first = choices[ 1 ];
+                    return first.message.content ?: ( first.text ?: "" );
+                }
+            }
+        }
+        catch ( any e ) { /* fall through */ }
+        return "";
+    }
+
+    /**
+     * Parse a review response into an array of suggestion structs.
+     * Expected shape: JSON array of `{ id, type, locationHint, before, after, rationale }`.
+     */
+    private array function tryParseSuggestions( required string text ) {
+        var t = trim( arguments.text );
+        if ( !len( t ) ) return [];
+        // Strip a leading markdown fence if present
+        t = reReplace( t, "^```[a-z]*\s*", "", "one" );
+        t = reReplace( t, "```\s*$",        "", "one" );
+        try {
+            var parsed = deserializeJSON( t );
+            if ( isArray( parsed ) ) return parsed;
+            if ( isStruct( parsed ) && structKeyExists( parsed, "suggestions" ) ) return parsed.suggestions;
+        }
+        catch ( any e ) { /* fall through */ }
+
+        // Fallback — return a single prose suggestion so the user at
+        // least sees something rather than an empty panel.
+        return [ {
+            "id"           : "prose-1",
+            "type"         : "general",
+            "locationHint" : "overall",
+            "before"       : "",
+            "after"        : "",
+            "rationale"    : arguments.text
+        } ];
+    }
+
+}

@@ -29,6 +29,7 @@ class extends="quick.models.BaseEntity" accessors="true" {
     property name="lastLoginIp"          column="last_login_ip";
     property name="failedLoginCount"     column="failed_login_count";
     property name="lockedUntil"          column="locked_until";
+    property name="aiMonthlyTokens"      column="ai_monthly_tokens";
     property name="deletedAt"            column="deleted_at";
     property name="createdAt"            column="created_at";
     property name="updatedAt"            column="updated_at";

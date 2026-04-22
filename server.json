@@ -16,7 +16,7 @@
 		}
 	},
 	"scripts":{
-		"onServerInitialInstall":"install bx-compat-cfml,bx-esapi,bx-mysql,bx-mail,bx-markdown"
+		"onServerInitialInstall":"install bx-compat-cfml,bx-esapi,bx-mysql,bx-mail,bx-markdown,bx-ai"
 	},
 	"rc":true
 }

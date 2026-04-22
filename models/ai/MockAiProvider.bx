@@ -1,0 +1,126 @@
+/**
+ * bx-Blogger — MockAiProvider (Chunk 2.H)
+ *
+ * Deterministic, no-network AI provider used in dev (when no real
+ * API key is configured) and in every spec run. Each method returns
+ * a canned response shaped like what a real LLM would emit, plus a
+ * token-count estimate based on the input length so budget-
+ * enforcement specs can exercise both the under-budget and
+ * over-budget branches without patching the service.
+ *
+ * Provider contract:
+ *   draft( systemPrompt, userIdea )   → { markdown, promptTokens, completionTokens, totalTokens, costUsdMicro }
+ *   review( systemPrompt, postBody )  → { suggestions[], promptTokens, completionTokens, totalTokens, costUsdMicro }
+ *
+ * Any real provider (BxAiProvider wrapping aiChat()) implements the
+ * same shape — AiAssistantService is provider-agnostic.
+ *
+ * Spec-friendly knobs (set via setters on a singleton-broken test
+ * spec, or injected as a custom WireBox mapping):
+ *   simulateFailure = "" | "rate_limit" | "timeout" | "auth" | "server"
+ *   fixedTokens     = numeric (overrides the estimate)
+ */
+class accessors="true" singleton {
+
+    property name="simulateFailure" default="";
+    property name="fixedTokens";
+
+    variables.simulateFailure = "";
+
+    /**
+     * Canned draft — echoes the idea back wrapped in a realistic
+     * markdown shell. Counting tokens as ~1 per 4 input chars is a
+     * decent cross-provider rough estimate (OpenAI's own rule of
+     * thumb for English prose).
+     */
+    struct function draft( required string systemPrompt, required string userIdea ) {
+        maybeFail();
+        var tokens = estimateTokens( arguments.systemPrompt & arguments.userIdea );
+        // Note: literal '#' chars in a .bx string literal must be
+        // doubled to escape BoxLang's interpolation. "####" → "##"
+        // → literal markdown H2 prefix.
+        var body = "#### " & summarize( arguments.userIdea ) & char( 10 ) & char( 10 ) &
+            "This is a mock draft generated from your idea. A real provider would produce a full article here — the mock returns a deterministic shell so specs can assert shape without burning API budget." & char( 10 ) & char( 10 ) &
+            "###### Your idea, repeated" & char( 10 ) & char( 10 ) &
+            "> " & arguments.userIdea & char( 10 );
+
+        return {
+            "markdown"          : body,
+            "promptTokens"      : tokens,
+            "completionTokens"  : int( tokens * 2 ),      // completions typically longer than prompts
+            "totalTokens"       : int( tokens * 3 ),
+            "costUsdMicro"      : int( tokens * 3 ) * 10  // fake 10 micros/token — ≈$0.01/1k tok
+        };
+    }
+
+    /**
+     * Canned review — returns a small, deterministic array of
+     * suggestion objects. Real provider would return more diverse,
+     * content-aware suggestions.
+     */
+    struct function review( required string systemPrompt, required string postBody ) {
+        maybeFail();
+        var tokens = estimateTokens( arguments.systemPrompt & arguments.postBody );
+        var suggestions = [
+            {
+                "id"            : "mock-1",
+                "type"          : "style",
+                "locationHint"  : "opening paragraph",
+                "before"        : left( arguments.postBody, 60 ),
+                "after"         : "[mock: consider a hook that names the problem]",
+                "rationale"     : "Lead with what the reader gets."
+            },
+            {
+                "id"            : "mock-2",
+                "type"          : "clarity",
+                "locationHint"  : "middle section",
+                "before"        : "[example passive phrase]",
+                "after"         : "[example active phrase]",
+                "rationale"     : "Active voice reads faster."
+            }
+        ];
+        return {
+            "suggestions"      : suggestions,
+            "promptTokens"     : tokens,
+            "completionTokens" : 200,
+            "totalTokens"      : tokens + 200,
+            "costUsdMicro"     : ( tokens + 200 ) * 10
+        };
+    }
+
+    // --------------------------------------------------------------------
+
+    private numeric function estimateTokens( required string text ) {
+        if ( !isNull( variables.fixedTokens ) ) return variables.fixedTokens;
+        // ~1 token per 4 characters of English text is a reasonable
+        // cross-provider estimate. Enough precision for budget tests
+        // without an actual tokenizer.
+        return ceiling( len( arguments.text ) / 4 );
+    }
+
+    private string function summarize( required string text ) {
+        // `\s` covers carriage-returns / newlines / tabs without the
+        // backslash-escape headaches `"[\r\n\t]"` triggers in a
+        // BoxLang double-quoted string literal.
+        var clean = reReplace( trim( arguments.text ), "[\s]+", " ", "all" );
+        return len( clean ) > 60 ? left( clean, 60 ) & "…" : clean;
+    }
+
+    /**
+     * Throw a shaped failure if the spec primed `simulateFailure`.
+     * Mirrors the error taxonomy real providers emit so service-layer
+     * error handling is exercised without hitting a network.
+     */
+    private void function maybeFail() {
+        if ( !len( variables.simulateFailure ?: "" ) ) return;
+        var kind = variables.simulateFailure;
+        variables.simulateFailure = "";  // one-shot — don't poison the next call
+        switch ( kind ) {
+            case "rate_limit": throw( type = "bxBlogger.AiRateLimited",  message = "Mock: provider rate-limited us." );
+            case "timeout":    throw( type = "bxBlogger.AiTimeout",       message = "Mock: provider timed out." );
+            case "auth":       throw( type = "bxBlogger.AiAuth",          message = "Mock: bad API key." );
+            default:           throw( type = "bxBlogger.AiProviderError", message = "Mock: generic upstream error." );
+        }
+    }
+
+}

@@ -22,6 +22,7 @@
 
 property name="postService"         inject="PostService";
 property name="draftPreviewService"  inject="DraftPreviewService";
+property name="aiService"            inject="AiAssistantService";
 property name="cbauth"               inject="AuthenticationService@cbauth";
 
 data = {
@@ -49,7 +50,14 @@ data = {
     "lastAutosaveAt"  : "",
     // B4 media picker modal state
     "showMediaPicker" : false,
-    "pickerSearch"    : ""
+    "pickerSearch"    : "",
+    // 2.H AI authoring state
+    "showAiModal"     : false,    // Create-from-Idea
+    "aiIdea"          : "",
+    "aiBusy"          : false,
+    "aiError"         : "",
+    "showAiReview"    : false,    // Review-and-Suggest panel
+    "aiSuggestions"   : []
 };
 
 /**
@@ -301,6 +309,103 @@ function pickerUrl( required any row ) {
 }
 
 // --------------------------------------------------------------------
+// 2.H — AI authoring
+// --------------------------------------------------------------------
+
+function aiEnabled() {
+    var user = cbauth.getUser();
+    return aiService.isEnabled() && user.hasPermission( "posts.ai.assist" );
+}
+
+function openAiModal() {
+    if ( !aiEnabled() ) { data.aiError = "AI authoring is disabled on this site."; return; }
+    data.showAiModal = true;
+    data.aiIdea      = "";
+    data.aiError     = "";
+}
+function closeAiModal() { data.showAiModal = false; data.aiBusy = false; data.aiError = ""; }
+
+function aiGenerateDraft() {
+    if ( !aiEnabled() ) { data.aiError = "AI authoring is disabled on this site."; return; }
+    data.aiError = "";
+    data.aiBusy  = true;
+    try {
+        var result = aiService.draftFromIdea(
+            idea   = data.aiIdea,
+            userId = cbauth.getUser().getId()
+        );
+        // Append the generated markdown to the body buffer — if the
+        // user already typed a draft we keep it and add the AI shell
+        // below. Cursor-position insertion is a JS follow-up.
+        if ( len( trim( data.bodyMarkdown ?: "" ) ) ) {
+            data.bodyMarkdown = data.bodyMarkdown & char( 10 ) & char( 10 ) & result.markdown;
+        } else {
+            data.bodyMarkdown = result.markdown;
+        }
+        // If no title yet, crib one from the AI draft's first H1 line
+        if ( !len( trim( data.title ?: "" ) ) ) {
+            var firstHeading = reMatchNoCase( "^##\s+[^\r\n]+", result.markdown );
+            if ( firstHeading.len() ) {
+                data.title = trim( reReplace( firstHeading[ 1 ], "^##\s+", "", "one" ) );
+            }
+        }
+        data.flashOk = "AI draft dropped into the editor. Edit or discard freely.";
+        closeAiModal();
+    }
+    catch ( bxBlogger.AiBudgetExceeded e ) { data.aiError = e.message; }
+    catch ( bxBlogger.AiInvalidInput e )   { data.aiError = e.message; }
+    catch ( bxBlogger.AiProviderError e )  { data.aiError = "The AI provider failed: " & e.message; }
+    catch ( bxBlogger.AiDisabled e )       { data.aiError = e.message; }
+    catch ( any e )                         { data.aiError = "Unexpected failure: " & e.message; }
+    finally { data.aiBusy = false; }
+}
+
+function aiRequestReview() {
+    if ( !aiEnabled() ) { data.aiError = "AI authoring is disabled on this site."; return; }
+    if ( !len( trim( data.bodyMarkdown ?: "" ) ) ) {
+        data.aiError = "Write some content first — nothing to review yet.";
+        return;
+    }
+    data.aiError = "";
+    data.aiBusy  = true;
+    try {
+        var result = aiService.reviewPost(
+            postBody = data.bodyMarkdown,
+            userId   = cbauth.getUser().getId()
+        );
+        data.aiSuggestions = result.suggestions;
+        data.showAiReview  = true;
+    }
+    catch ( any e ) { data.aiError = e.message; }
+    finally { data.aiBusy = false; }
+}
+
+function closeAiReview() { data.showAiReview = false; data.aiSuggestions = []; }
+
+function acceptSuggestion( required id ) {
+    var remaining = [];
+    for ( var s in data.aiSuggestions ) {
+        if ( s.id == arguments.id ) {
+            // Apply before→after to the body buffer if `before` is present + found
+            if ( len( s.before ?: "" ) && findNoCase( s.before, data.bodyMarkdown ) ) {
+                data.bodyMarkdown = replaceNoCase( data.bodyMarkdown, s.before, s.after ?: "", "one" );
+            }
+            continue;   // drop this suggestion from the pending list
+        }
+        remaining.append( s );
+    }
+    data.aiSuggestions = remaining;
+}
+
+function dismissSuggestion( required id ) {
+    var remaining = [];
+    for ( var s in data.aiSuggestions ) {
+        if ( s.id != arguments.id ) remaining.append( s );
+    }
+    data.aiSuggestions = remaining;
+}
+
+// --------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------
 
@@ -420,6 +525,15 @@ private function clearFlashes() {
 							<span>
 								<button type="button" class="btn btn-sm btn-link p-0"
 								        wire:click="openMediaPicker">Insert media</button>
+								<bx:if aiEnabled()>
+									·
+									<button type="button" class="btn btn-sm btn-link p-0"
+									        wire:click="openAiModal">Create from idea</button>
+									·
+									<button type="button" class="btn btn-sm btn-link p-0"
+									        wire:click="aiRequestReview"
+									        wire:loading.attr="disabled">Review & suggest</button>
+								</bx:if>
 								·
 								<button type="button" class="btn btn-sm btn-link p-0"
 								        wire:click="preview">Preview</button>
@@ -564,6 +678,100 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 			</div>
 		</div>
 	</div>
+
+	<!--- 2.H — inline AI error (modal-agnostic) ---------------------- --->
+	<bx:if len( args.aiError )>
+		<div class="alert alert-warning alert-dismissible mt-3">
+			<strong>AI:</strong> #encodeForHTML( args.aiError )#
+			<button type="button" class="btn-close" wire:click="$set('aiError','')"></button>
+		</div>
+	</bx:if>
+
+	<!--- 2.H — Create-from-Idea modal ------------------------------- --->
+	<bx:if args.showAiModal>
+		<div class="modal show d-block" tabindex="-1" style="background:rgba(0,0,0,.35);">
+			<div class="modal-dialog">
+				<div class="modal-content">
+					<div class="modal-header">
+						<h5 class="modal-title">Create from idea</h5>
+						<button type="button" class="btn-close" wire:click="closeAiModal"></button>
+					</div>
+					<div class="modal-body">
+						<label class="form-label small">Your idea (up to 1000 characters)</label>
+						<textarea class="form-control" rows="5" maxlength="1000"
+						          wire:model="aiIdea"
+						          placeholder="e.g. How to adopt BoxLang incrementally in a team that already ships ColdFusion."></textarea>
+						<small class="text-muted d-block mt-2">
+							Your idea is sent to the configured AI provider. See your privacy policy for details.
+						</small>
+					</div>
+					<div class="modal-footer">
+						<button type="button" class="btn btn-outline-secondary" wire:click="closeAiModal">Cancel</button>
+						<button type="button" class="btn btn-primary"
+						        wire:click="aiGenerateDraft"
+						        wire:loading.attr="disabled"
+						        wire:loading.class="disabled">
+							<span wire:loading.remove wire:target="aiGenerateDraft">Generate draft</span>
+							<span wire:loading wire:target="aiGenerateDraft">Generating…</span>
+						</button>
+					</div>
+				</div>
+			</div>
+		</div>
+	</bx:if>
+
+	<!--- 2.H — Review & Suggest panel ------------------------------- --->
+	<bx:if args.showAiReview>
+		<div class="modal show d-block" tabindex="-1" style="background:rgba(0,0,0,.25);">
+			<div class="modal-dialog modal-lg modal-dialog-scrollable">
+				<div class="modal-content">
+					<div class="modal-header">
+						<h5 class="modal-title">Review suggestions (#args.aiSuggestions.len()#)</h5>
+						<button type="button" class="btn-close" wire:click="closeAiReview"></button>
+					</div>
+					<div class="modal-body">
+						<bx:if args.aiSuggestions.len() == 0>
+							<p class="text-muted">No suggestions — either the post looks clean, or you've handled them all.</p>
+						<bx:else>
+							<bx:loop array="#args.aiSuggestions#" item="s">
+								<div class="card mb-2">
+									<div class="card-body p-3">
+										<div class="d-flex justify-content-between align-items-start mb-2">
+											<span class="badge bg-secondary text-uppercase">#encodeForHTML( s.type ?: "general" )#</span>
+											<small class="text-muted">#encodeForHTML( s.locationHint ?: "" )#</small>
+										</div>
+										<p class="small mb-2">#encodeForHTML( s.rationale ?: "" )#</p>
+										<bx:if len( s.before ?: "" )>
+											<div class="small">
+												<div class="text-muted">Before:</div>
+												<pre class="bg-light p-2 rounded small mb-2">#encodeForHTML( s.before )#</pre>
+												<div class="text-muted">After:</div>
+												<pre class="bg-light p-2 rounded small mb-0">#encodeForHTML( s.after ?: "" )#</pre>
+											</div>
+										</bx:if>
+										<div class="d-flex gap-2 mt-2">
+											<bx:if len( s.before ?: "" )>
+												<button class="btn btn-sm btn-primary"
+												        wire:click="acceptSuggestion('#encodeForHTMLAttribute( s.id )#')">Accept</button>
+											</bx:if>
+											<button class="btn btn-sm btn-outline-secondary"
+											        wire:click="dismissSuggestion('#encodeForHTMLAttribute( s.id )#')">Dismiss</button>
+										</div>
+									</div>
+								</div>
+							</bx:loop>
+						</bx:if>
+					</div>
+					<div class="modal-footer">
+						<small class="text-muted me-auto">
+							Your content was sent to the configured AI provider.
+						</small>
+						<button type="button" class="btn btn-outline-secondary" wire:click="closeAiReview">Close</button>
+					</div>
+				</div>
+			</div>
+		</div>
+	</bx:if>
 
 	<!--- B4 — Media picker modal ---------------------------------- --->
 	<bx:if args.showMediaPicker>
