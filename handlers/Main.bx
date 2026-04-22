@@ -123,6 +123,12 @@ class extends="coldbox.system.EventHandler" {
 		// fresh `docker compose up -v`; idempotent on subsequent boots
 		// because the count() > 0 branch short-circuits.
 		seedInitialAdminIfMissing();
+
+		// Pre-Phase-6 — on a brand-new install (no posts yet), seed a
+		// sample post demonstrating the markdown pipeline. Same
+		// idempotency story as the admin seed: short-circuits when
+		// anything already lives in the posts table.
+		seedSampleBlogPostIfEmpty();
 	}
 
 	/**
@@ -163,6 +169,50 @@ class extends="coldbox.system.EventHandler" {
 			"must_change_password": 0
 		} );
 		user.roles().attach( superAdmin.getId() );
+	}
+
+	/**
+	 * On the first boot after a fresh install (empty `posts` table),
+	 * seed a single published sample post that showcases what the
+	 * markdown pipeline supports — headings, lists, blockquotes,
+	 * tables, fenced code blocks, emphasis, links, and more. The
+	 * content lives in resources/seeds/sample-post.md so it can be
+	 * edited without touching handler code. Idempotent: the
+	 * count()>0 branch returns immediately on every subsequent boot.
+	 *
+	 * Runs in onAppInit rather than as a cfmigrations migration
+	 * because the seed needs WireBox + the `markdown()` BIF +
+	 * cbantisamy, all of which land reliably only once the full
+	 * framework has booted. Same rationale as the admin seed above.
+	 */
+	private function seedSampleBlogPostIfEmpty() {
+		try {
+			var postService = getInstance( "PostService" );
+			if ( getInstance( "Post" ).count() > 0 ) return;
+
+			var User   = getInstance( "User" );
+			var author = User.first();
+			if ( isNull( author ) ) return;  // admin seed hasn't run yet — safety
+
+			var seedPath = expandPath( "resources/seeds/sample-post.md" );
+			if ( !fileExists( seedPath ) ) return;
+			var body = fileRead( seedPath, "utf-8" );
+
+			var post = postService.create( {
+				"authorId"     : author.getId(),
+				"title"        : "Welcome to bx-Blogger",
+				"slug"         : "welcome-to-bx-blogger",
+				"bodyMarkdown" : body,
+				"excerpt"      : "A short tour of the markdown features bx-Blogger renders out of the box — headings, lists, tables, fenced code blocks, blockquotes, callouts, and more."
+			} );
+			postService.publish( post );
+		} catch ( any e ) {
+			// Don't let a seed failure break boot — surface it in the
+			// app log and move on. A site with no sample post still
+			// renders fine; the editor lets the admin create their own.
+			var log = getInstance( "logbox:logger:Main" );
+			log.warn( "seedSampleBlogPostIfEmpty failed: " & e.message, e );
+		}
 	}
 
 	function onRequestStart( event, rc, prc ) {

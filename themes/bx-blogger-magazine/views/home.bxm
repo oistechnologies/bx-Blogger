@@ -28,8 +28,8 @@
                             #dateFormat( hero.getPublishedAt(), "mmm d, yyyy" )#
                         </time>
                     </bx:if>
-                    <bx:if ( hero.getReadingTime() ?: 0 ) gt 0>
-                        &middot; #hero.getReadingTime()# min read
+                    <bx:if ( hero.getReadingTimeMinutes() ?: 0 ) gt 0>
+                        &middot; #hero.getReadingTimeMinutes()# min read
                     </bx:if>
                 </p>
             </div>

@@ -16,8 +16,8 @@
                     #dateFormat( args.post.getPublishedAt(), "mmm d" )#
                 </time>
             </bx:if>
-            <bx:if ( args.post.getReadingTime() ?: 0 ) gt 0>
-                &middot; #args.post.getReadingTime()# min
+            <bx:if ( args.post.getReadingTimeMinutes() ?: 0 ) gt 0>
+                &middot; #args.post.getReadingTimeMinutes()# min
             </bx:if>
         </p>
         <h2 class="h4 mb-2 fw-semibold">
