@@ -1,0 +1,147 @@
+// _components.scss — magazine-flavored overlay on top of CDN Bootstrap.
+//
+// Everything scoped under `.site-magazine` so an admin that switches
+// back to the default theme doesn't inherit any of it.
+
+.site-magazine {
+    --bx-accent: #d97706;
+
+    font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 1.0625rem;
+    line-height: 1.7;
+
+    h1, h2, h3, h4, h5, h6,
+    .display-1, .display-2, .display-3, .display-4, .display-5, .display-6 {
+        font-family: "Fraunces", Georgia, "Times New Roman", serif;
+        font-weight: 600;
+        letter-spacing: -0.015em;
+    }
+
+    // Emphasis / accent — swap the Bootstrap "primary" feel on anything
+    // that carries the .text-accent utility, plus the underlined links
+    // inside rendered post bodies.
+    .text-accent { color: var(--bx-accent); }
+
+    .masthead .letter-spaced,
+    .letter-spaced {
+        letter-spacing: 0.12em;
+    }
+
+    .masthead .display-3 {
+        font-style: italic;
+    }
+
+    // Post cards: no card chrome, just a column with a subtle hover rule
+    .post-card {
+        position: relative;
+        padding-bottom: 0.5rem;
+
+        &::after {
+            content: "";
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            height: 2px;
+            background: var(--bs-border-color);
+            transform: scaleX(0);
+            transform-origin: left center;
+            transition: transform 180ms ease-out;
+        }
+        &:hover::after {
+            transform: scaleX(1);
+            background: var(--bx-accent);
+        }
+    }
+
+    // Hero card on the home page — tinted placeholder tile when no
+    // featured image is set.
+    .hero-placeholder {
+        aspect-ratio: 4 / 3;
+        background: linear-gradient( 135deg,
+            rgba(217, 119, 6, 0.18),
+            rgba(217, 119, 6, 0.04) );
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-decoration: none;
+    }
+    .hero-placeholder-initial {
+        font-family: "Fraunces", serif;
+        font-weight: 600;
+        font-size: 8rem;
+        color: var(--bx-accent);
+        line-height: 1;
+    }
+
+    // Post body tweaks — serif-heavy, generous paragraph spacing
+    .post-body,
+    .page-body {
+        font-size: 1.125rem;
+
+        p      { margin-bottom: 1.2rem; }
+        ul, ol { margin-bottom: 1.2rem; padding-left: 1.5rem; }
+        li + li { margin-top: 0.35rem; }
+        img    { max-width: 100%; height: auto; margin: 1rem 0; border-radius: 4px; }
+        pre    {
+            background: var(--bs-tertiary-bg);
+            padding: 1rem;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-size: 0.95em;
+        }
+        code   {
+            background: var(--bs-tertiary-bg);
+            padding: 0.1em 0.35em;
+            border-radius: 3px;
+            font-size: 0.95em;
+        }
+        pre code {
+            background: transparent;
+            padding: 0;
+            border-radius: 0;
+        }
+        blockquote {
+            border-left: 4px solid var(--bx-accent);
+            padding: 0.5rem 0 0.5rem 1.25rem;
+            margin: 1.5rem 0;
+            color: var(--bs-secondary-color);
+            font-family: "Fraunces", Georgia, serif;
+            font-style: italic;
+            font-size: 1.2em;
+            line-height: 1.5;
+        }
+        h2, h3 { margin-top: 2rem; }
+    }
+
+    // Header + footer chrome
+    .site-header .navbar-brand {
+        font-family: "Fraunces", Georgia, serif;
+        letter-spacing: -0.02em;
+        font-size: 1.5rem;
+    }
+
+    // Theme toggle (same sizing the default uses, for visual consistency)
+    .theme-toggle {
+        width: 2rem;
+        height: 2rem;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+        font-size: 1rem;
+        border-radius: 50%;
+    }
+
+    // Related-posts strip — magazine-style micro cards
+    .related-posts .related-card {
+        padding: 0.5rem 0;
+        border-top: 1px solid var(--bs-border-color-translucent);
+    }
+}
+
+// Dark-mode tweaks
+[data-bs-theme="dark"] .site-magazine {
+    --bx-accent: #fbbf24;
+}

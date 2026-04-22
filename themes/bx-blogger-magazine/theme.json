@@ -1,0 +1,37 @@
+{
+    "$schema": "/resources/schemas/theme.schema.json",
+    "name": "bx-Blogger Magazine",
+    "slug": "bx-blogger-magazine",
+    "version": "1.0.0",
+    "author": "bx-Blogger Team",
+    "description": "Second example theme. Warmer palette, serif headings, hero-card home layout — proves the theme seam. Same Bootstrap 5 CDN + additive SCSS pipeline as bx-blogger-default.",
+    "minBxblogerVersion": "0.1.0",
+    "bootstrap": "5.3",
+    "supports": [
+        "featured-image",
+        "menus",
+        "custom-colors",
+        "dark-mode",
+        "srcset",
+        "related-posts"
+    ],
+    "menus": {
+        "header": "Header Navigation",
+        "footer": "Footer Navigation"
+    },
+    "templates": {
+        "post": [ "default", "longform", "photoessay" ],
+        "page": [ "default", "wide" ]
+    },
+    "thumbnails": [
+        { "name": "thumb",  "width": 160,  "height": 160, "crop": true  },
+        { "name": "small",  "width": 520,  "crop": false },
+        { "name": "medium", "width": 1200, "crop": false },
+        { "name": "hero",   "width": 1800, "crop": false }
+    ],
+    "options": [
+        { "key": "accent_color",    "type": "color", "default": "#d97706", "label": "Accent Color (heading + link accent)" },
+        { "key": "posts_per_page",  "type": "int",   "default": 9,         "label": "Posts Per Page" },
+        { "key": "show_author_box", "type": "bool",  "default": true,      "label": "Show Author Box" }
+    ]
+}

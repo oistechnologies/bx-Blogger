@@ -1,0 +1,12 @@
+// theme.scss — Vite entry. Layers magazine custom styles on top of
+// the CDN Bootstrap the layout already loads. To recompile a full
+// Bootstrap with SCSS variable overrides, uncomment the lines in
+// `_variables.scss` and swap the `@use "components";` below for:
+//
+//   @use "variables";
+//   @use "bootstrap/scss/bootstrap";
+//
+// Then remove the CDN `<link>` from `partials/head-assets.bxm`.
+
+@use "variables";
+@use "components";

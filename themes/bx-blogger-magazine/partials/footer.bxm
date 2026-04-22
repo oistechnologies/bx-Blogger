@@ -1,0 +1,14 @@
+<bx:output>
+<footer class="border-top bg-body py-4 mt-5 site-footer">
+    <div class="container d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2">
+        <p class="text-secondary small mb-0 letter-spaced">
+            &copy; #dateFormat( now(), "yyyy" )# #encodeForHTML( getSetting( "AppName" ) )#
+        </p>
+        <p class="text-secondary small mb-0 text-uppercase letter-spaced">
+            <a href="/feed.xml" class="link-secondary">RSS</a>
+            &middot;
+            Theme: <code>#encodeForHTML( prc.theme.getSlug() )#</code> v#encodeForHTML( prc.theme.getVersion() )#
+        </p>
+    </div>
+</footer>
+</bx:output>

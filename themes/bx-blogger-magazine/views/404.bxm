@@ -1,0 +1,8 @@
+<bx:output>
+<div class="text-center py-5 mx-auto" style="max-width: 32rem;">
+    <p class="display-1 text-accent fw-light mb-2">404</p>
+    <h1 class="h3 mb-3 fw-semibold">This page isn&rsquo;t in print.</h1>
+    <p class="text-secondary">The story you&rsquo;re looking for doesn&rsquo;t exist or may have moved.</p>
+    <p class="mt-4"><a href="/" class="btn btn-primary">Back to the front page</a></p>
+</div>
+</bx:output>

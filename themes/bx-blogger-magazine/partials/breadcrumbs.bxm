@@ -1,0 +1,19 @@
+<bx:output>
+<bx:if ( prc.breadcrumbs ?: [] ).len()>
+    <nav aria-label="breadcrumb" class="mb-4">
+        <ol class="breadcrumb mb-0 small letter-spaced text-uppercase">
+            <bx:loop array="#prc.breadcrumbs#" item="crumb" index="i">
+                <bx:if i == prc.breadcrumbs.len()>
+                    <li class="breadcrumb-item active" aria-current="page">
+                        #encodeForHTML( crumb.label )#
+                    </li>
+                <bx:else>
+                    <li class="breadcrumb-item">
+                        <a href="#encodeForHTMLAttribute( crumb.url )#" class="link-secondary">#encodeForHTML( crumb.label )#</a>
+                    </li>
+                </bx:if>
+            </bx:loop>
+        </ol>
+    </nav>
+</bx:if>
+</bx:output>

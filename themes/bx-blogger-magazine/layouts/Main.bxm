@@ -1,0 +1,30 @@
+<bx:output>
+<!doctype html>
+<html lang="en" data-bs-theme="light">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>#encodeForHTML( prc.pageTitle ?: getSetting( "AppName" ) )#</title>
+    <bx:if len( prc.pageDescription ?: "" )>
+        <meta name="description" content="#encodeForHTMLAttribute( prc.pageDescription )#">
+    </bx:if>
+    #view( view = "bx-blogger-magazine/partials/head-assets" )#
+</head>
+<body class="d-flex flex-column min-vh-100 site-magazine">
+    #view( view = "bx-blogger-magazine/partials/header" )#
+
+    <main id="content" class="container py-5 flex-grow-1">
+        <bx:if structKeyExists( flash, "notice" ) && len( flash.notice )>
+            <div class="alert alert-info" role="alert">#encodeForHTML( flash.notice )#</div>
+        </bx:if>
+        <bx:if structKeyExists( flash, "error" ) && len( flash.error )>
+            <div class="alert alert-danger" role="alert">#encodeForHTML( flash.error )#</div>
+        </bx:if>
+        #view()#
+    </main>
+
+    #view( view = "bx-blogger-magazine/partials/footer" )#
+    #view( view = "bx-blogger-magazine/partials/foot-scripts" )#
+</body>
+</html>
+</bx:output>

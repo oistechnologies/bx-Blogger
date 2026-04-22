@@ -1,0 +1,156 @@
+/**
+ * bx-Blogger — ThemeSwitchingSpec (Chunk 4.B)
+ *
+ * End-to-end confidence that the two shipped themes are both fully
+ * installable + the active-theme swap is clean:
+ *
+ *   1. `bx-blogger-magazine` is seeded and discoverable alongside
+ *      `bx-blogger-default`.
+ *   2. Activating magazine flips is_active atomically (exactly one
+ *      row has is_active=1 afterwards).
+ *   3. `resolveActive()` returns the correct Theme object for each
+ *      slug, and `Theme.view()` picks up each theme's own files
+ *      when they exist.
+ *   4. The magazine theme's full file skeleton is on disk — every
+ *      layout / view / partial the resolver will ask for is
+ *      reachable.
+ *   5. When the ACTIVE theme's directory goes missing, the resolver
+ *      degrades to the fallback rather than throwing.
+ *
+ * We don't round-trip through HTTP here — that surface is covered by
+ * the public handler specs and the cbplaywright smoke Phase 9 will
+ * add. This spec stays at the service / value-object layer.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        try {
+            var qb = getInstance( "QueryBuilder@qb" );
+            // Restore the canonical post-migration state: only default active.
+            qb.newQuery().from( "themes" ).update( { "is_active" : 0 } );
+            qb.newQuery().from( "themes" )
+                .where( "slug", "bx-blogger-default" )
+                .update( { "is_active" : 1 } );
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "ThemeSwitchingSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.themeSvc = getInstance( "ThemeService" );
+    }
+
+    function run() {
+        describe( "Theme switching (4.B)", function() {
+
+            describe( "installed themes", function() {
+                it( "knows about fallback, default, and magazine out of the box", function() {
+                    var slugs = themeSvc.list().map( function( r ) { return r.slug; } );
+                    expect( slugs ).toInclude( "bx-blogger-fallback" );
+                    expect( slugs ).toInclude( "bx-blogger-default" );
+                    expect( slugs ).toInclude( "bx-blogger-magazine" );
+                } );
+
+                it( "magazine ships a parseable theme.json", function() {
+                    var path = expandPath( "/themes/bx-blogger-magazine/theme.json" );
+                    expect( fileExists( path ) ).toBeTrue();
+                    var manifest = jsonDeserialize( fileRead( path ) );
+                    expect( manifest.slug ).toBe( "bx-blogger-magazine" );
+                    expect( manifest.bootstrap ).toStartWith( "5" );
+                } );
+            } );
+
+            describe( "activation flip", function() {
+                it( "switches is_active atomically from default to magazine and back", function() {
+                    themeSvc.activate( "bx-blogger-magazine" );
+
+                    var active = getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "themes" ).where( "is_active", 1 ).get();
+                    expect( active.len() ).toBe( 1 );
+                    expect( active[ 1 ].slug ).toBe( "bx-blogger-magazine" );
+                    expect( themeSvc.resolveActive().getSlug() ).toBe( "bx-blogger-magazine" );
+
+                    themeSvc.activate( "bx-blogger-default" );
+                    expect( themeSvc.resolveActive().getSlug() ).toBe( "bx-blogger-default" );
+                } );
+            } );
+
+            describe( "Theme.view() per-theme resolution", function() {
+                it( "returns magazine-prefixed paths when magazine is active", function() {
+                    themeSvc.activate( "bx-blogger-magazine" );
+                    var theme = themeSvc.resolveActive();
+                    expect( theme.view( "home" ) ).toBe( "bx-blogger-magazine/views/home" );
+                    expect( theme.layout( "Main" ) ).toBe( "bx-blogger-magazine/layouts/Main" );
+                    expect( theme.partial( "header" ) ).toBe( "bx-blogger-magazine/partials/header" );
+                } );
+
+                it( "returns default-prefixed paths when default is active", function() {
+                    themeSvc.activate( "bx-blogger-default" );
+                    var theme = themeSvc.resolveActive();
+                    expect( theme.view( "home" ) ).toBe( "bx-blogger-default/views/home" );
+                } );
+
+                it( "falls back to the fallback theme when an active theme's directory is missing", function() {
+                    // Insert a ghost row with is_active=1 whose directory
+                    // doesn't exist on disk. Resolver should degrade to
+                    // bx-blogger-fallback rather than returning the ghost.
+                    var ghostSlug = "ghost-" & lCase( replace( createUUID(), "-", "", "all" ) );
+                    var qb = getInstance( "QueryBuilder@qb" );
+                    qb.newQuery().from( "themes" ).update( { "is_active" : 0 } );
+                    qb.newQuery().from( "themes" ).insert( {
+                        "slug"       : ghostSlug,
+                        "name"       : "Ghost",
+                        "version"    : "1.0.0",
+                        "directory"  : "themes/" & ghostSlug,
+                        "is_active"  : 1,
+                        "is_system"  : 0,
+                        "created_at" : dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" ),
+                        "updated_at" : dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" )
+                    } );
+
+                    try {
+                        expect( themeSvc.resolveActive().getSlug() ).toBe( "bx-blogger-fallback" );
+                    }
+                    finally {
+                        qb.newQuery().from( "themes" ).where( "slug", ghostSlug ).delete();
+                    }
+                } );
+            } );
+
+            describe( "magazine theme file skeleton", function() {
+                it( "ships every layout the resolver will ask for", function() {
+                    var layouts = [ "Main", "Post", "Page", "Archive", "500" ];
+                    for ( var name in layouts ) {
+                        var path = expandPath( "/themes/bx-blogger-magazine/layouts/" & name & ".bxm" );
+                        expect( fileExists( path ) ).toBeTrue( "missing magazine layout: " & name );
+                    }
+                } );
+
+                it( "ships every view name the public handlers set", function() {
+                    var views = [ "home", "post", "page", "category", "tag", "author", "archive", "search", "404", "500" ];
+                    for ( var name in views ) {
+                        var path = expandPath( "/themes/bx-blogger-magazine/views/" & name & ".bxm" );
+                        expect( fileExists( path ) ).toBeTrue( "missing magazine view: " & name );
+                    }
+                } );
+
+                it( "ships every partial the layouts + views reference", function() {
+                    var partials = [
+                        "head-assets", "foot-scripts",
+                        "header", "footer",
+                        "post-card", "pagination", "breadcrumbs", "related-posts"
+                    ];
+                    for ( var name in partials ) {
+                        var path = expandPath( "/themes/bx-blogger-magazine/partials/" & name & ".bxm" );
+                        expect( fileExists( path ) ).toBeTrue( "missing magazine partial: " & name );
+                    }
+                } );
+            } );
+
+        } );
+    }
+
+}

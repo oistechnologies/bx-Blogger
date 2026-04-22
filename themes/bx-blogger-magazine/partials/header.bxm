@@ -1,0 +1,37 @@
+<bx:output>
+<header class="border-bottom bg-body site-header">
+    <nav class="container navbar navbar-expand-md py-3" aria-label="Site header">
+        <a class="navbar-brand fw-semibold" href="/">
+            <span class="letter-spaced text-uppercase small text-muted me-2 d-none d-sm-inline">The</span>
+            #encodeForHTML( getSetting( "AppName" ) )#
+        </a>
+        <button
+            class="navbar-toggler"
+            type="button"
+            data-bs-toggle="collapse"
+            data-bs-target="##site-header-nav"
+            aria-controls="site-header-nav"
+            aria-expanded="false"
+            aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="site-header-nav">
+            <ul class="navbar-nav ms-auto align-items-md-center gap-md-3 text-uppercase small letter-spaced">
+                <li class="nav-item"><a class="nav-link" href="/">Home</a></li>
+                <li class="nav-item"><a class="nav-link" href="/blog">Stories</a></li>
+                <li class="nav-item"><a class="nav-link" href="/search">Search</a></li>
+                <li class="nav-item">
+                    <button
+                        type="button"
+                        class="btn btn-sm btn-outline-secondary theme-toggle"
+                        data-theme-toggle
+                        aria-label="Toggle color theme"
+                        title="Toggle color theme">
+                        <span aria-hidden="true" data-theme-toggle-icon>&##9728;</span>
+                    </button>
+                </li>
+            </ul>
+        </div>
+    </nav>
+</header>
+</bx:output>

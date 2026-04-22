@@ -1,0 +1,12 @@
+// _variables.scss — Bootstrap SCSS variable overrides.
+//
+// bx-blogger-magazine follows the additive pattern from the default
+// theme (Bootstrap via CDN + layered theme.css), so the overrides
+// below only take effect if a theme author swaps `theme.scss` to
+// compile a full custom Bootstrap. The accent is also exposed as a
+// CSS variable so admins can tweak it from the Phase 4.D options UI
+// without recompiling.
+//
+// $primary:            #d97706;
+// $body-font-family:   "Inter", system-ui, sans-serif;
+// $headings-font-family: "Fraunces", Georgia, serif;

@@ -1,0 +1,36 @@
+<bx:output>
+<bx:if structKeyExists( args, "post" ) && !isNull( args.post )>
+    <article class="h-100 post-card d-flex flex-column">
+        <bx:if !isNull( args.post.getFeaturedMediaId() ) && structKeyExists( args, "featuredUrl" ) && len( args.featuredUrl )>
+            <a href="/blog/#encodeForHTMLAttribute( args.post.getSlug() )#" class="d-block ratio ratio-16x9 overflow-hidden mb-3 rounded">
+                <img
+                    src="#encodeForHTMLAttribute( args.featuredUrl )#"
+                    alt="#encodeForHTMLAttribute( args.featuredAlt ?: args.post.getTitle() )#"
+                    class="object-fit-cover w-100 h-100"
+                    loading="lazy">
+            </a>
+        </bx:if>
+        <p class="text-uppercase small text-muted mb-1 letter-spaced">
+            <bx:if !isNull( args.post.getPublishedAt() )>
+                <time datetime="#dateTimeFormat( args.post.getPublishedAt(), 'yyyy-mm-dd' )#">
+                    #dateFormat( args.post.getPublishedAt(), "mmm d" )#
+                </time>
+            </bx:if>
+            <bx:if ( args.post.getReadingTime() ?: 0 ) > 0>
+                &middot; #args.post.getReadingTime()# min
+            </bx:if>
+        </p>
+        <h2 class="h4 mb-2 fw-semibold">
+            <a class="text-decoration-none link-body-emphasis stretched-link"
+               href="/blog/#encodeForHTMLAttribute( args.post.getSlug() )#">
+                #encodeForHTML( args.post.getTitle() )#
+            </a>
+        </h2>
+        <bx:if len( args.post.getExcerpt() ?: "" )>
+            <p class="text-secondary small flex-grow-1">
+                #encodeForHTML( args.post.getExcerpt() )#
+            </p>
+        </bx:if>
+    </article>
+</bx:if>
+</bx:output>
