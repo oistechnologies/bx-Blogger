@@ -4,10 +4,20 @@
 # Run with:
 #   docker compose -f docker-compose.prod.yml up -d
 #
-# Standalone prod stack — not an override. Operators clone the repo,
-# populate a prod .env from their secrets manager, and run the above command.
+# Reverse-proxy / TLS posture
+# ---------------------------
+# This stack does NOT ship an nginx service. The production target runs a
+# pre-existing Nginx Proxy Manager (NPM) instance on the host and routes
+# traffic to this app through it. The `app` service joins a shared Docker
+# network that NPM is also attached to, and NPM's dashboard points a proxy
+# host at container:port `bx-blogger-app:8080`.
 #
-# See DEV-NOTES/PLAN.md §17 for the full operator-choices matrix.
+# See DEV-NOTES/OPS-NGINX-PROXY-MANAGER.md for the step-by-step NPM setup.
+#
+# For deployments that want a self-contained nginx in the stack (e.g.,
+# bare-metal VPS with no pre-existing proxy), see the historical
+# docker-compose.prod.yml in git history at commit bd1a144 — swap
+# that in and delete the `proxy` network references below.
 # =============================================================================
 
 services:
@@ -17,12 +27,16 @@ services:
     env_file: .env
     environment:
       ENVIRONMENT: production
+    # No `ports:` block — the app is not published to the host. NPM reaches
+    # it via the shared `proxy` network below using container DNS:
+    #     scheme=http, host=bx-blogger-app, port=8080
     depends_on:
       mysql:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - bx-blogger
+      - bx-blogger     # private — app ↔ mysql
+      - proxy          # shared with NPM for inbound traffic
 
   worker:
     image: ghcr.io/mrigsby/bx-blogger:${RELEASE_TAG:-latest}
@@ -38,7 +52,7 @@ services:
         condition: service_started
     restart: unless-stopped
     networks:
-      - bx-blogger
+      - bx-blogger     # private only — worker doesn't accept HTTP
 
   mysql:
     # Containerized by default. Delete this block and set DB_HOST in prod .env
@@ -60,24 +74,7 @@ services:
       start_period: 30s
     restart: unless-stopped
     networks:
-      - bx-blogger
-
-  nginx:
-    image: nginx:1.27-alpine
-    container_name: bx-blogger-nginx
-    volumes:
-      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./docker/nginx/conf.d:/etc/nginx/conf.d:ro
-      - ./docker/nginx/tls:/etc/nginx/tls:ro
-    ports:
-      - "80:80"
-      - "443:443"
-    depends_on:
-      app:
-        condition: service_started
-    restart: unless-stopped
-    networks:
-      - bx-blogger
+      - bx-blogger     # private only — never exposed to the proxy network
 
 volumes:
   mysql-data:
@@ -88,3 +85,12 @@ volumes:
 networks:
   bx-blogger:
     driver: bridge
+
+  # Shared network with Nginx Proxy Manager. The `external: true` flag tells
+  # compose "don't create this — it already exists, just attach to it". The
+  # network name must match whatever NPM is configured to use on the host
+  # (common defaults: `npm_default`, `proxy`, `nginxproxymanager_default`).
+  # Operator sets PROXY_NETWORK in prod .env to match their NPM stack.
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK:-npm_default}
