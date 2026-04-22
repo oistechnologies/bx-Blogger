@@ -1,0 +1,110 @@
+/**
+ * bx-Blogger — PageCacheInterceptor (Chunk 5.A)
+ *
+ * Full-page HTML cache for anonymous GETs on public routes.
+ * PageCacheService owns the predicate + key computation; this
+ * interceptor just wires the cache-read on `preProcess` and the
+ * cache-store on `postRender`.
+ *
+ * Cache read (preProcess):
+ *   - Check `isCacheable()` — GET, anonymous, not an admin / auth
+ *     / account / preview event, no pending flash content.
+ *   - On hit: emit the cached body + Content-Type + status via
+ *     `event.renderData()` and `event.noExecution()`. The request
+ *     never touches the handler.
+ *   - Stamp an `X-Cache: HIT` response header so operators can see
+ *     cache behavior in browser DevTools / NGINX access logs.
+ *
+ * Cache store (postRender):
+ *   - Same cacheability check, plus a response-level guard (only
+ *     200-status, HTML / XML / plain bodies).
+ *   - Read the rendered output from `data.renderedContent` (or
+ *     fall back to `event.getRenderedContent()` / `event.getValue(
+ *     "cbox_renderedContent" )` depending on where ColdBox's
+ *     pipeline has stashed it).
+ *   - Stamp an `X-Cache: MISS` header on the outgoing response so
+ *     the same observability story works for misses.
+ *
+ * Invalidation is intentionally NOT wired through custom
+ * interception points here — PostService.publish and
+ * ThemeService.activate call PageCacheService.invalidateAll()
+ * directly. Direct service-to-service is easier to follow than
+ * magic listener names, and the failure-mode on a typo is a test
+ * assertion, not a silently-missed bust.
+ */
+class extends="coldbox.system.Interceptor" {
+
+    function configure() {}
+
+    function preProcess( event, data, buffer, rc, prc ) {
+        var svc = getInstance( "PageCacheService" );
+        if ( !svc.isCacheable( arguments.event, arguments.rc ) ) return;
+
+        var cached = svc.get( svc.keyFor( arguments.event ) );
+        if ( isNull( cached ) || !isStruct( cached ) ) return;
+
+        // NOTE: the `X-Cache: HIT` header is stamped in preRender,
+        // not here — setting it in preProcess gets clobbered when
+        // `event.renderData()` seeds its own set of headers for the
+        // outgoing response.
+
+        arguments.event.renderData(
+            type        = "plain",
+            data        = cached.body,
+            contentType = cached.contentType,
+            statusCode  = cached.statusCode
+        );
+        arguments.event.noExecution();
+
+        // Flag so `preRender` knows the response was served from
+        // cache and skips the "write MISS + store" path. The X-Cache
+        // header also lands there (both HIT + MISS) because preRender
+        // runs *after* preProcess in the pipeline, which gives it the
+        // last word on outgoing headers.
+        arguments.prc.pageCacheHit = true;
+    }
+
+    /**
+     * Fires just before the rendered content is written to the wire.
+     * ColdBox hands the final body over as `data.renderedContent`;
+     * this is the *only* render-phase hook that carries it
+     * (`postRender` announces with no payload).
+     *
+     * preRender runs even after `preProcess` has served a cached
+     * response via noExecution — so we branch:
+     *   - `prc.pageCacheHit` set: stamp `X-Cache: HIT` and exit.
+     *   - otherwise: cache the rendered body and stamp
+     *     `X-Cache: MISS` so the next hit will find it.
+     */
+    function preRender( event, data, buffer, rc, prc ) {
+        if ( structKeyExists( arguments.prc, "pageCacheHit" ) && arguments.prc.pageCacheHit ) {
+            arguments.event.setHTTPHeader( name = "X-Cache", value = "HIT" );
+            return;
+        }
+
+        var svc = getInstance( "PageCacheService" );
+        if ( !svc.isCacheable( arguments.event, arguments.rc ) ) return;
+
+        var body = arguments.data.renderedContent ?: "";
+        if ( !len( body ) ) return;
+
+        // Only cache 200 responses — 3xx redirects, 404 / 500 pages
+        // shouldn't be served stale.
+        var status = arguments.event.getHTTPHeader( header = "Status", defaultValue = 0 );
+        if ( val( status ) != 0 && val( status ) != 200 ) return;
+
+        var ct = arguments.event.getHTTPHeader( header = "Content-Type", defaultValue = "text/html; charset=utf-8" );
+
+        arguments.event.setHTTPHeader( name = "X-Cache", value = "MISS" );
+
+        svc.set(
+            key   = svc.keyFor( arguments.event ),
+            value = {
+                "body"        : body,
+                "contentType" : ct,
+                "statusCode"  : 200
+            }
+        );
+    }
+
+}

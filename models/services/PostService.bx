@@ -36,6 +36,7 @@ class accessors="true" singleton {
     property name="wirebox"            inject="wirebox";
     property name="antisamy"           inject="AntiSamy@cbantisamy";
     property name="interceptorService" inject="coldbox:InterceptorService";
+    property name="pageCacheService"   inject="PageCacheService";
     property name="log"                inject="logbox:logger:{this}";
 
     variables.autosaveKeep = 20;   // B5: prune autosave revisions beyond this per post
@@ -126,6 +127,14 @@ class accessors="true" singleton {
                 editorId      = arguments.editorId,
                 changeSummary = len( arguments.changeSummary ) ? arguments.changeSummary : "manual"
             );
+            // 5.A — edits to a published post could change the rendered
+            // output (body, title, excerpt, featured image, etc.);
+            // flush so the next GET rebuilds. Non-content edits (SEO
+            // fields, template override) still qualify since they
+            // affect <head> tags.
+            if ( arguments.post.getStatus() == "published" ) {
+                variables.pageCacheService.invalidateAll();
+            }
         }
 
         log.info( "PostService: updated post=" & arguments.post.getId() & " version=" & arguments.post.getContentVersion() );
@@ -148,6 +157,9 @@ class accessors="true" singleton {
             arguments.post.setPublishedAt( now() );
         }
         arguments.post.save();
+        // 5.A — freshly-published posts should appear on the public
+        // site immediately; flush the rendered-HTML cache.
+        variables.pageCacheService.invalidateAll();
         return arguments.post;
     }
 
@@ -174,12 +186,14 @@ class accessors="true" singleton {
         arguments.post.setStatus( "draft" );
         arguments.post.setContentVersion( ( arguments.post.getContentVersion() ?: 1 ) + 1 );
         arguments.post.save();
+        variables.pageCacheService.invalidateAll();
         return arguments.post;
     }
 
     function trash( required any post ) {
         arguments.post.setStatus( "trashed" );
         arguments.post.save();
+        variables.pageCacheService.invalidateAll();
         return arguments.post;
     }
 
@@ -266,6 +280,7 @@ class accessors="true" singleton {
     function restore( required any post ) {
         arguments.post.setStatus( "draft" );
         arguments.post.save();
+        variables.pageCacheService.invalidateAll();
         return arguments.post;
     }
 
@@ -276,6 +291,7 @@ class accessors="true" singleton {
     function softDelete( required any post ) {
         arguments.post.setDeletedAt( now() );
         arguments.post.save();
+        variables.pageCacheService.invalidateAll();
         return arguments.post;
     }
 

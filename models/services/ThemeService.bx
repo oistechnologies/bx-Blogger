@@ -32,9 +32,10 @@
  */
 class accessors="true" singleton {
 
-    property name="wirebox"    inject="wirebox";
-    property name="controller" inject="coldbox";
-    property name="log"        inject="logbox:logger:{this}";
+    property name="wirebox"          inject="wirebox";
+    property name="controller"       inject="coldbox";
+    property name="pageCacheService" inject="PageCacheService";
+    property name="log"              inject="logbox:logger:{this}";
 
     variables.FALLBACK_SLUG = "bx-blogger-fallback";
     variables.THEMES_ROOT   = "themes";
@@ -304,6 +305,11 @@ class accessors="true" singleton {
 
         configureRendererPaths();
         variables.log.info( "ThemeService: activated theme [" & arguments.slug & "] (was [" & prevSlug & "])" );
+
+        // 5.A — a theme switch changes the rendered HTML for every
+        // public URL; blow the rendered-page cache so anonymous
+        // visitors see the new shell on their next request.
+        variables.pageCacheService.invalidateAll();
 
         variables.controller.getInterceptorService().announce(
             state = "bxBlogger.postThemeSwitch",

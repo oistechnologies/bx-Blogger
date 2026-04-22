@@ -218,6 +218,12 @@ class {
 		 * it up in Phase 7) and returns HTTP 429 to the caller.
 		 */
 		variables.interceptors = [
+			// 5.A — full-page HTML cache for anonymous GETs on public
+			// routes. Registered FIRST so a cache hit short-circuits
+			// the request before RateLimit / ThemeResolution run —
+			// no point doing rate-limit math on a served-from-cache
+			// response.
+			{ class : "interceptors.PageCacheInterceptor" },
 			{
 				class      : "interceptors.RateLimitInterceptor",
 				properties : {

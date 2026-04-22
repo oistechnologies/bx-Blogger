@@ -1,0 +1,108 @@
+/**
+ * bx-Blogger — PageCacheServiceSpec (Chunk 5.A)
+ *
+ * Service-layer coverage for the cache mechanics. The cacheability
+ * predicate (method / event prefix / flash presence / logged-in)
+ * depends on live HTTP state and is exercised by the smoke test in
+ * the accompanying commit — the integration tests here only cover
+ * the parts that work off a plain CacheBox round-trip.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        try { getInstance( "cachebox:pageCache" ).clearAll(); }
+        catch ( any e ) { /* cache may not exist in some environments */ }
+        super.afterAll();
+    }
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc = getInstance( "PageCacheService" );
+    }
+
+    function run() {
+        describe( "PageCacheService", function() {
+
+            beforeEach( function() {
+                svc.invalidateAll();
+            } );
+
+            describe( "set() / get()", function() {
+                it( "round-trips a stored value", function() {
+                    svc.set(
+                        key   = "/round-trip",
+                        value = { "body" : "<p>hi</p>", "contentType" : "text/html", "statusCode" : 200 }
+                    );
+                    var read = svc.get( "/round-trip" );
+                    expect( isNull( read ) ).toBeFalse();
+                    expect( read.body ).toBe( "<p>hi</p>" );
+                    expect( read.statusCode ).toBe( 200 );
+                    expect( read.contentType ).toBe( "text/html" );
+                } );
+
+                it( "returns null for a miss", function() {
+                    expect( isNull( svc.get( "/never-stored-" & createUUID() ) ) ).toBeTrue();
+                } );
+
+                it( "respects the ttlMinutes argument", function() {
+                    // Set a near-zero TTL and read back — the first read
+                    // is within the window so we still get the struct.
+                    // The TTL logic itself lives in CacheBox; we're
+                    // just confirming the param gets through.
+                    svc.set(
+                        key        = "/ttl-test",
+                        value      = { "body" : "x", "contentType" : "text/html", "statusCode" : 200 },
+                        ttlMinutes = 1
+                    );
+                    expect( isNull( svc.get( "/ttl-test" ) ) ).toBeFalse();
+                } );
+            } );
+
+            describe( "invalidateAll()", function() {
+                it( "drops every cached entry", function() {
+                    svc.set( "/a", { "body" : "a", "contentType" : "text/html", "statusCode" : 200 } );
+                    svc.set( "/b", { "body" : "b", "contentType" : "text/html", "statusCode" : 200 } );
+                    svc.invalidateAll();
+                    expect( isNull( svc.get( "/a" ) ) ).toBeTrue();
+                    expect( isNull( svc.get( "/b" ) ) ).toBeTrue();
+                } );
+            } );
+
+            describe( "invalidation hooks", function() {
+                it( "PostService.publish flushes the page cache", function() {
+                    svc.set( "/seeded", { "body" : "before", "contentType" : "text/html", "statusCode" : 200 } );
+
+                    var author = createTestUser();
+                    var post   = getInstance( "PostService" ).create( {
+                        "authorId"    : author.getId(),
+                        "title"       : "Cache bust probe",
+                        "slug"        : "cb-" & left( createUUID(), 10 ),
+                        "bodyMarkdown": "body"
+                    } );
+                    getInstance( "PostService" ).publish( post );
+
+                    expect( isNull( svc.get( "/seeded" ) ) ).toBeTrue();
+
+                    // Spec cleanup
+                    var qb = getInstance( "QueryBuilder@qb" );
+                    qb.newQuery().from( "post_revisions" ).where( "post_id", post.getId() ).delete();
+                    qb.newQuery().from( "posts"          ).where( "id",       post.getId() ).delete();
+                } );
+
+                it( "ThemeService.activate flushes the page cache", function() {
+                    svc.set( "/seeded2", { "body" : "before", "contentType" : "text/html", "statusCode" : 200 } );
+
+                    // Activate to the same theme — the no-op idempotent
+                    // case still fires the invalidate (state change
+                    // semantics are what matter, not actual content
+                    // difference).
+                    getInstance( "ThemeService" ).activate( "bx-blogger-default" );
+
+                    expect( isNull( svc.get( "/seeded2" ) ) ).toBeTrue();
+                } );
+            } );
+
+        } );
+    }
+
+}

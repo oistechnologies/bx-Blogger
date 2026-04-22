@@ -1,0 +1,156 @@
+/**
+ * bx-Blogger — PageCacheService (Chunk 5.A)
+ *
+ * Thin facade around the `pageCache` named CacheBox cache. Owns
+ * key computation + the shouldCache predicate so both the
+ * interceptor (store-side) and any future admin "clear cache"
+ * affordance share one rule set.
+ *
+ * Cache shape:
+ *   { body, contentType, statusCode }
+ *
+ * Cache keys are the full routed URL plus a sorted query string.
+ * Sorting keeps `/blog?page=2&tag=x` and `/blog?tag=x&page=2` in
+ * the same bucket — same rendered output.
+ *
+ * Invalidation: `invalidateAll()` drops every cached page.
+ * PostService.publish / ThemeService.activate call it after the
+ * state change completes; the next request rebuilds on miss.
+ * A Phase 5.B follow-up can refine to per-URL invalidation keyed
+ * by post slug / theme scope once the cost starts showing up in
+ * telemetry.
+ */
+class accessors="true" singleton {
+
+    property name="cache" inject="cachebox:pageCache";
+    property name="log"   inject="logbox:logger:{this}";
+
+    /**
+     * Build the URL key for a request. The key format is the
+     * routed URL (leading slash normalized) + `?` + query-string
+     * pairs sorted alphabetically by name.
+     */
+    string function keyFor( required any event ) {
+        var path = arguments.event.getCurrentRoutedURL();
+        if ( !len( path ) ) path = "/";
+        if ( left( path, 1 ) != "/" ) path = "/" & path;
+        // Normalize trailing slash — `/blog` and `/blog/` should hit
+        // the same cache entry.
+        if ( len( path ) > 1 && right( path, 1 ) == "/" ) {
+            path = left( path, len( path ) - 1 );
+        }
+
+        var qs = normalizedQueryString();
+        return len( qs ) ? ( path & "?" & qs ) : path;
+    }
+
+    any function get( required string key ) {
+        return variables.cache.get( arguments.key );
+    }
+
+    function set( required string key, required struct value, numeric ttlMinutes = 30 ) {
+        variables.cache.set( arguments.key, arguments.value, arguments.ttlMinutes, 0 );
+    }
+
+    /**
+     * Clear every cached page. Called by PostService.publish +
+     * ThemeService.activate (and any other state transition that
+     * could change the rendered output for anonymous visitors).
+     */
+    function invalidateAll() {
+        variables.cache.clearAll();
+        variables.log.info( "PageCacheService: cleared entire page cache" );
+    }
+
+    /**
+     * True if the incoming request is eligible to be served
+     * from / stored to the page cache. Shared by read-side
+     * (preProcess) and store-side (postRender) so both decide on
+     * the same predicate.
+     */
+    boolean function isCacheable( required any event, required struct rc ) {
+        // Only GET
+        var method = arguments.event.getHTTPMethod();
+        if ( uCase( method ) != "GET" ) return false;
+
+        // Handler opt-out: `rc.cacheable = false`
+        if ( structKeyExists( arguments.rc, "cacheable" ) && !arguments.rc.cacheable ) return false;
+
+        // Authenticated users — never serve them cached output; their
+        // session state (flash, nav-highlight for active user, etc.)
+        // wouldn't match what the rendered HTML was baked with.
+        try {
+            var cbauth = variables.cache.getInstance ?: "";  // placeholder
+        }
+        catch ( any e ) { /* ignore */ }
+        if ( isLoggedIn() ) return false;
+
+        // Event-prefix denylist — anything admin-module, auth-form,
+        // account, or preview is per-session.
+        var ev = arguments.event.getCurrentEvent();
+        for ( var prefix in variables.skipEventPrefixes ) {
+            if ( left( ev, len( prefix ) ) == prefix ) return false;
+        }
+
+        // Flash content waiting to render — caching would eat it on
+        // the first hit and leak it on subsequent ones.
+        if ( structKeyExists( request, "context" ) ) {
+            try {
+                var f = arguments.event.getController().getRequestService().getFlashScope();
+                if ( isObject( f ) && f.exists( "notice" ) )       return false;
+                if ( isObject( f ) && f.exists( "error" ) )        return false;
+                if ( isObject( f ) && f.exists( "adminMessage" ) ) return false;
+            }
+            catch ( any e ) { /* flash might not be available pre-dispatch; fine */ }
+        }
+
+        return true;
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    variables.skipEventPrefixes = [
+        "admin:",
+        "security.",
+        "passwordReset.",
+        "emailVerification.",
+        "account.",
+        "preview.",
+        "Main.health",
+        "Main.robots"
+    ];
+
+    /**
+     * Return the query string with params sorted alphabetically by
+     * name so equivalent URLs produce the same cache key regardless
+     * of browser-varied param order. Drops empty-value params.
+     */
+    private string function normalizedQueryString() {
+        if ( !structKeyExists( cgi, "query_string" ) || !len( cgi.query_string ) ) return "";
+
+        var parts = listToArray( cgi.query_string, "&" );
+        var cleaned = [];
+        for ( var p in parts ) {
+            if ( !len( p ) ) continue;
+            var nm  = listFirst( p, "=" );
+            var val = ( p contains "=" ) ? listRest( p, "=" ) : "";
+            if ( !len( nm ) ) continue;
+            cleaned.append( lCase( nm ) & "=" & val );
+        }
+        cleaned.sort( "text" );
+        return cleaned.toList( "&" );
+    }
+
+    private boolean function isLoggedIn() {
+        try {
+            var auth = application.wireBox.getInstance( "AuthenticationService@cbauth" );
+            return auth.isLoggedIn();
+        }
+        catch ( any e ) {
+            return false;
+        }
+    }
+
+}
