@@ -102,6 +102,49 @@ class extends="tests.support.BaseIntegrationSpec" {
                 } );
             } );
 
+            // ----------------------------------------------------------
+            // 5.B — HTTP cache validators
+            // ----------------------------------------------------------
+            describe( "etagFor()", function() {
+                it( "produces a double-quoted lowercase hex string", function() {
+                    var t = svc.etagFor( "<p>hi</p>" );
+                    expect( t ).toMatch( '^"[a-f0-9]+"$' );
+                } );
+
+                it( "is stable for identical input", function() {
+                    expect( svc.etagFor( "same body" ) ).toBe( svc.etagFor( "same body" ) );
+                } );
+
+                it( "changes when the body changes even by a single byte", function() {
+                    expect( svc.etagFor( "a" ) ).notToBe( svc.etagFor( "b" ) );
+                } );
+            } );
+
+            describe( "httpDate()", function() {
+                it( "formats in RFC 7231 Last-Modified shape", function() {
+                    var sample = createDateTime( 2026, 4, 22, 18, 30, 15 );
+                    var txt    = svc.httpDate( sample );
+                    // e.g. "Wed, 22 Apr 2026 18:30:15 GMT"
+                    expect( txt ).toMatch( '^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$' );
+                    expect( txt ).toEndWith( " GMT" );
+                } );
+            } );
+
+            describe( "parseHttpDateSafe()", function() {
+                it( "returns an ISO-ish string when the input parses", function() {
+                    var out = svc.parseHttpDateSafe( "Wed, 22 Apr 2026 18:30:15 GMT" );
+                    expect( len( out ) ).toBeGT( 0 );
+                } );
+
+                it( "returns an empty string for junk input", function() {
+                    expect( svc.parseHttpDateSafe( "not a date" ) ).toBe( "" );
+                } );
+
+                it( "returns an empty string for an empty header", function() {
+                    expect( svc.parseHttpDateSafe( "" ) ).toBe( "" );
+                } );
+            } );
+
         } );
     }
 

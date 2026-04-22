@@ -1,36 +1,37 @@
 /**
- * bx-Blogger — PageCacheInterceptor (Chunk 5.A)
+ * bx-Blogger — PageCacheInterceptor (Chunks 5.A + 5.B)
  *
- * Full-page HTML cache for anonymous GETs on public routes.
+ * Full-page HTML cache for anonymous GETs on public routes, plus
+ * HTTP-level `ETag` / `Last-Modified` / conditional-GET support.
  * PageCacheService owns the predicate + key computation; this
- * interceptor just wires the cache-read on `preProcess` and the
- * cache-store on `postRender`.
+ * interceptor just wires:
  *
- * Cache read (preProcess):
- *   - Check `isCacheable()` — GET, anonymous, not an admin / auth
- *     / account / preview event, no pending flash content.
- *   - On hit: emit the cached body + Content-Type + status via
- *     `event.renderData()` and `event.noExecution()`. The request
- *     never touches the handler.
- *   - Stamp an `X-Cache: HIT` response header so operators can see
- *     cache behavior in browser DevTools / NGINX access logs.
+ *   preProcess  — cache read. Looks the URL up; on hit either
+ *                 returns the body (200) OR a bare 304 if the
+ *                 request's `If-None-Match` / `If-Modified-Since`
+ *                 says the client already has the current copy.
+ *                 Sets `prc.pageCacheHit = true` + stashes the
+ *                 cached meta on `prc` so preRender can stamp the
+ *                 outgoing headers (setHTTPHeader before
+ *                 `event.renderData` gets clobbered).
+ *   preRender   — cache store on miss, header stamp on hit. This
+ *                 is the only render-phase hook that carries
+ *                 `data.renderedContent` (postRender announces
+ *                 with no payload).
  *
- * Cache store (postRender):
- *   - Same cacheability check, plus a response-level guard (only
- *     200-status, HTML / XML / plain bodies).
- *   - Read the rendered output from `data.renderedContent` (or
- *     fall back to `event.getRenderedContent()` / `event.getValue(
- *     "cbox_renderedContent" )` depending on where ColdBox's
- *     pipeline has stashed it).
- *   - Stamp an `X-Cache: MISS` header on the outgoing response so
- *     the same observability story works for misses.
+ * Conditional-GET rules (RFC 7232):
+ *   - `If-None-Match` with a matching ETag wins first — strong
+ *     validator.
+ *   - Else `If-Modified-Since` >= stored `lastModified` triggers
+ *     304 too, as long as the date parses.
+ *   - Otherwise: serve the full cached body.
  *
  * Invalidation is intentionally NOT wired through custom
- * interception points here — PostService.publish and
- * ThemeService.activate call PageCacheService.invalidateAll()
- * directly. Direct service-to-service is easier to follow than
- * magic listener names, and the failure-mode on a typo is a test
- * assertion, not a silently-missed bust.
+ * interception points here — PostService / ThemeService call
+ * `PageCacheService.invalidateAll()` directly. Direct service-to-
+ * service is easier to follow than magic listener names, and the
+ * failure-mode on a typo is a test assertion, not a silently-
+ * missed bust.
  */
 class extends="coldbox.system.Interceptor" {
 
@@ -43,46 +44,79 @@ class extends="coldbox.system.Interceptor" {
         var cached = svc.get( svc.keyFor( arguments.event ) );
         if ( isNull( cached ) || !isStruct( cached ) ) return;
 
-        // NOTE: the `X-Cache: HIT` header is stamped in preRender,
-        // not here — setting it in preProcess gets clobbered when
-        // `event.renderData()` seeds its own set of headers for the
-        // outgoing response.
+        // Branch: conditional GET?
+        var wasNotModified = false;
+        var inm            = arguments.event.getHTTPHeader( "If-None-Match",     "" );
+        if ( len( inm ) && structKeyExists( cached, "etag" ) && inm == cached.etag ) {
+            wasNotModified = true;
+        }
+        else {
+            var ims = arguments.event.getHTTPHeader( "If-Modified-Since", "" );
+            var parsed = len( ims ) ? svc.parseHttpDateSafe( ims ) : "";
+            if (
+                len( parsed )
+                && structKeyExists( cached, "lastModified" )
+                && isDate( cached.lastModified )
+                && dateCompare( parsed, cached.lastModified, "s" ) != -1  // client >= server
+            ) {
+                wasNotModified = true;
+            }
+        }
 
-        arguments.event.renderData(
-            type        = "plain",
-            data        = cached.body,
-            contentType = cached.contentType,
-            statusCode  = cached.statusCode
-        );
+        arguments.prc.pageCacheHit        = true;
+        arguments.prc.pageCacheMeta       = cached;
+        arguments.prc.pageCacheNotModified = wasNotModified;
+
+        if ( wasNotModified ) {
+            // 304: no body, just the validators. ColdBox requires us
+            // to still call renderData so the dispatch pipeline knows
+            // to stop; `data = ""` keeps the wire payload empty.
+            arguments.event.renderData(
+                type        = "plain",
+                data        = "",
+                contentType = cached.contentType,
+                statusCode  = 304
+            );
+        }
+        else {
+            arguments.event.renderData(
+                type        = "plain",
+                data        = cached.body,
+                contentType = cached.contentType,
+                statusCode  = cached.statusCode
+            );
+        }
         arguments.event.noExecution();
-
-        // Flag so `preRender` knows the response was served from
-        // cache and skips the "write MISS + store" path. The X-Cache
-        // header also lands there (both HIT + MISS) because preRender
-        // runs *after* preProcess in the pipeline, which gives it the
-        // last word on outgoing headers.
-        arguments.prc.pageCacheHit = true;
     }
 
     /**
      * Fires just before the rendered content is written to the wire.
-     * ColdBox hands the final body over as `data.renderedContent`;
-     * this is the *only* render-phase hook that carries it
-     * (`postRender` announces with no payload).
-     *
-     * preRender runs even after `preProcess` has served a cached
-     * response via noExecution — so we branch:
-     *   - `prc.pageCacheHit` set: stamp `X-Cache: HIT` and exit.
-     *   - otherwise: cache the rendered body and stamp
-     *     `X-Cache: MISS` so the next hit will find it.
+     * Branches on `prc.pageCacheHit`:
+     *   - set  → stamp X-Cache (HIT or HIT-304) + validators;
+     *   - unset → cache the newly-rendered body + stamp MISS +
+     *             first-time validators.
      */
     function preRender( event, data, buffer, rc, prc ) {
+        var svc = getInstance( "PageCacheService" );
+
         if ( structKeyExists( arguments.prc, "pageCacheHit" ) && arguments.prc.pageCacheHit ) {
-            arguments.event.setHTTPHeader( name = "X-Cache", value = "HIT" );
+            var meta = arguments.prc.pageCacheMeta;
+            arguments.event.setHTTPHeader(
+                name  = "X-Cache",
+                value = arguments.prc.pageCacheNotModified ? "HIT-304" : "HIT"
+            );
+            if ( structKeyExists( meta, "etag" ) ) {
+                arguments.event.setHTTPHeader( name = "ETag", value = meta.etag );
+            }
+            if ( structKeyExists( meta, "lastModified" ) && isDate( meta.lastModified ) ) {
+                arguments.event.setHTTPHeader(
+                    name  = "Last-Modified",
+                    value = svc.httpDate( meta.lastModified )
+                );
+            }
             return;
         }
 
-        var svc = getInstance( "PageCacheService" );
         if ( !svc.isCacheable( arguments.event, arguments.rc ) ) return;
 
         var body = arguments.data.renderedContent ?: "";
@@ -93,16 +127,22 @@ class extends="coldbox.system.Interceptor" {
         var status = arguments.event.getHTTPHeader( header = "Status", defaultValue = 0 );
         if ( val( status ) != 0 && val( status ) != 200 ) return;
 
-        var ct = arguments.event.getHTTPHeader( header = "Content-Type", defaultValue = "text/html; charset=utf-8" );
+        var ct      = arguments.event.getHTTPHeader( header = "Content-Type", defaultValue = "text/html; charset=utf-8" );
+        var etag    = svc.etagFor( body );
+        var modAt   = now();
 
-        arguments.event.setHTTPHeader( name = "X-Cache", value = "MISS" );
+        arguments.event.setHTTPHeader( name = "X-Cache",       value = "MISS" );
+        arguments.event.setHTTPHeader( name = "ETag",          value = etag );
+        arguments.event.setHTTPHeader( name = "Last-Modified", value = svc.httpDate( modAt ) );
 
         svc.set(
             key   = svc.keyFor( arguments.event ),
             value = {
-                "body"        : body,
-                "contentType" : ct,
-                "statusCode"  : 200
+                "body"         : body,
+                "contentType"  : ct,
+                "statusCode"   : 200,
+                "etag"         : etag,
+                "lastModified" : modAt
             }
         );
     }

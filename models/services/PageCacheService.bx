@@ -53,6 +53,45 @@ class accessors="true" singleton {
     }
 
     /**
+     * Compute a strong ETag for a rendered body. Strong validators
+     * (no `W/` prefix) are correct — the body we hash is the exact
+     * bytes that will ship to the client. Wrapped in double quotes
+     * per RFC 7232 ยง2.3.
+     */
+    string function etagFor( required string body ) {
+        return '"' & lCase( hash( arguments.body, "MD5" ) ) & '"';
+    }
+
+    /**
+     * RFC 7231 HTTP-date for the Last-Modified header:
+     *   Wed, 22 Apr 2026 18:30:15 GMT
+     * Always emitted in GMT regardless of server timezone; our
+     * Application.bx pins `this.timezone = "UTC"`, so `now()`
+     * already comes in in UTC.
+     */
+    string function httpDate( required any dt ) {
+        return dateTimeFormat( arguments.dt, "ddd, dd mmm yyyy HH:nn:ss" ) & " GMT";
+    }
+
+    /**
+     * Parse an HTTP-date string from a conditional-GET header.
+     * Returns an empty string on anything unparseable so callers
+     * can skip the check cleanly without wrestling a null local
+     * (BoxLang's null-local gotcha, per CLAUDE.md).
+     */
+    string function parseHttpDateSafe( required string header ) {
+        var trimmed = trim( arguments.header );
+        if ( !len( trimmed ) ) return "";
+        try {
+            var parsed = parseDateTime( trimmed );
+            return dateTimeFormat( parsed, "yyyy-mm-dd HH:nn:ss" );
+        }
+        catch ( any e ) {
+            return "";
+        }
+    }
+
+    /**
      * Clear every cached page. Called by PostService.publish +
      * ThemeService.activate (and any other state transition that
      * could change the rendered output for anonymous visitors).
