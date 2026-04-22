@@ -1,0 +1,85 @@
+/**
+ * bx-Blogger — RateLimitSpec (Chunk 1.I)
+ *
+ * Unit-level coverage for the CacheBox-backed counter service. The
+ * interceptor that wraps it (RateLimitInterceptor) is integration-tested
+ * implicitly by SecuritySpec/PasswordResetSpec — those specs hit the
+ * service directly rather than going through an HTTP request, so they
+ * don't exhaust the budget. A separate interceptor spec that drives
+ * runEvent() to exercise the 429 path is a good Phase 11 add-on when
+ * the admin suite also wants to cover request-level middleware; for now,
+ * end-to-end 429 behavior was hand-verified in Chunk 1.H.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function run() {
+        describe( "RateLimitService", function() {
+
+            beforeEach( function() {
+                variables.svc    = getInstance( "RateLimitService" );
+                variables.bucket = "spec:" & createUUID();
+            } );
+
+            it( "starts a fresh bucket at count=1 on the first hit", function() {
+                var r = variables.svc.hit( bucket = variables.bucket, windowSeconds = 60 );
+                expect( r.count ).toBe( 1 );
+                expect( r.window_seconds ).toBe( 60 );
+            } );
+
+            it( "increments across successive hits in the same window", function() {
+                variables.svc.hit( variables.bucket, 60 );
+                variables.svc.hit( variables.bucket, 60 );
+                var third = variables.svc.hit( variables.bucket, 60 );
+                expect( third.count ).toBe( 3 );
+            } );
+
+            it( "getCount() observes without incrementing", function() {
+                variables.svc.hit( variables.bucket, 60 );
+                variables.svc.hit( variables.bucket, 60 );
+
+                expect( variables.svc.getCount( variables.bucket ) ).toBe( 2 );
+                expect( variables.svc.getCount( variables.bucket ) ).toBe( 2 );
+            } );
+
+            it( "getCount() returns 0 for an unknown bucket", function() {
+                expect( variables.svc.getCount( "never:touched-#createUUID()#" ) ).toBe( 0 );
+            } );
+
+            it( "clear() resets the bucket", function() {
+                variables.svc.hit( variables.bucket, 60 );
+                variables.svc.hit( variables.bucket, 60 );
+                variables.svc.clear( variables.bucket );
+                expect( variables.svc.getCount( variables.bucket ) ).toBe( 0 );
+
+                // A post-clear hit starts fresh at 1
+                var r = variables.svc.hit( variables.bucket, 60 );
+                expect( r.count ).toBe( 1 );
+            } );
+
+            it( "wouldExceed() returns true only after the limit is reached", function() {
+                expect( variables.svc.wouldExceed( variables.bucket, 3 ) ).toBeFalse();
+
+                variables.svc.hit( variables.bucket, 60 );
+                variables.svc.hit( variables.bucket, 60 );
+                expect( variables.svc.wouldExceed( variables.bucket, 3 ) ).toBeFalse();
+
+                variables.svc.hit( variables.bucket, 60 );
+                expect( variables.svc.wouldExceed( variables.bucket, 3 ) ).toBeTrue();
+            } );
+
+            it( "two buckets stay independent", function() {
+                var otherBucket = "spec:" & createUUID();
+
+                variables.svc.hit( variables.bucket, 60 );
+                variables.svc.hit( variables.bucket, 60 );
+
+                variables.svc.hit( otherBucket, 60 );
+
+                expect( variables.svc.getCount( variables.bucket ) ).toBe( 2 );
+                expect( variables.svc.getCount( otherBucket ) ).toBe( 1 );
+            } );
+
+        } );
+    }
+
+}

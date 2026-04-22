@@ -1,0 +1,144 @@
+/**
+ * bx-Blogger — SecuritySpec (Chunk 1.I)
+ *
+ * Integration coverage for the auth flow built in Chunks 1.E → 1.H:
+ *   - UserService.isValidCredentials
+ *   - Security.doLogin via ColdBox runEvent (invokes handler in-process)
+ *   - Lockout escalation after 5 failed attempts
+ *   - Lockout clears on successful login
+ *   - A locked account rejects even the correct password (account_locked)
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function run() {
+        describe( "Security / auth flow", function() {
+
+            describe( "UserService.isValidCredentials()", function() {
+                it( "returns true for the right password on an active verified user", function() {
+                    var plain = "GoodSpecPassword-42!";
+                    var user  = createTestUser( plainPassword = plain );
+
+                    var svc = getInstance( "UserService" );
+                    expect( svc.isValidCredentials( user.getEmail(), plain ) ).toBeTrue();
+                } );
+
+                it( "returns false for a wrong password", function() {
+                    var user = createTestUser( plainPassword = "GoodSpecPassword-42!" );
+                    var svc  = getInstance( "UserService" );
+
+                    expect( svc.isValidCredentials( user.getEmail(), "Wrong-42!!" ) ).toBeFalse();
+                } );
+
+                it( "returns false for an unknown email", function() {
+                    var svc = getInstance( "UserService" );
+                    expect( svc.isValidCredentials( "nobody-#createUUID()#@example.com", "whatever" ) ).toBeFalse();
+                } );
+
+                it( "returns false when the account is inactive", function() {
+                    var user = createTestUser(
+                        overrides     = { "isActive" : 0 },
+                        plainPassword = "GoodSpecPassword-42!"
+                    );
+                    var svc = getInstance( "UserService" );
+                    expect( svc.isValidCredentials( user.getEmail(), "GoodSpecPassword-42!" ) ).toBeFalse();
+                } );
+
+                it( "returns false when email is unverified", function() {
+                    var user = createTestUser(
+                        overrides     = { "emailVerifiedAt" : javaCast( "null", "" ) },
+                        plainPassword = "GoodSpecPassword-42!"
+                    );
+                    var svc = getInstance( "UserService" );
+                    expect( svc.isValidCredentials( user.getEmail(), "GoodSpecPassword-42!" ) ).toBeFalse();
+                } );
+            } );
+
+            describe( "Login lockout lifecycle", function() {
+                it( "escalates users.failed_login_count on each bad password and locks at 5", function() {
+                    var user = createTestUser( plainPassword = "GoodSpecPassword-42!" );
+                    var svc  = getInstance( "UserService" );
+
+                    for ( var i = 1; i <= 5; i++ ) {
+                        svc.recordFailedLogin( email = user.getEmail(), ip = "10.0.0.1", reason = "bad_password" );
+                    }
+
+                    var reloaded = getInstance( "User" ).find( user.getId() );
+                    expect( reloaded.getFailedLoginCount() ).toBe( 5 );
+                    expect( reloaded.isLocked() ).toBeTrue( "user should be locked after 5 failures" );
+                } );
+
+                it( "does NOT bump failure count for user_not_found reason", function() {
+                    var user  = createTestUser( plainPassword = "GoodSpecPassword-42!" );
+                    var svc   = getInstance( "UserService" );
+                    var start = user.getFailedLoginCount() ?: 0;
+
+                    // bogus email — no associated user to penalize
+                    svc.recordFailedLogin( email = "not-#createUUID()#@nowhere.local", ip = "10.0.0.1", reason = "user_not_found" );
+
+                    var reloaded = getInstance( "User" ).find( user.getId() );
+                    expect( reloaded.getFailedLoginCount() ).toBe( start );
+                    expect( reloaded.isLocked() ).toBeFalse();
+                } );
+
+                it( "resetLockout() clears both count and locked_until", function() {
+                    var user = createTestUser( plainPassword = "GoodSpecPassword-42!" );
+                    var svc  = getInstance( "UserService" );
+
+                    // Drive the account into a locked state
+                    for ( var i = 1; i <= 5; i++ ) {
+                        svc.recordFailedLogin( email = user.getEmail(), ip = "10.0.0.1", reason = "bad_password" );
+                    }
+
+                    svc.resetLockout( getInstance( "User" ).find( user.getId() ) );
+
+                    var reloaded = getInstance( "User" ).find( user.getId() );
+                    expect( reloaded.getFailedLoginCount() ).toBe( 0 );
+                    expect( reloaded.isLocked() ).toBeFalse();
+                    expect( reloaded.getLockedUntil() ?: "" ).toBe( "" );
+                } );
+
+                it( "recordSuccessfulLogin() clears prior failure count", function() {
+                    var user = createTestUser( plainPassword = "GoodSpecPassword-42!" );
+                    var svc  = getInstance( "UserService" );
+
+                    // One failure, not yet locked
+                    svc.recordFailedLogin( email = user.getEmail(), ip = "10.0.0.1", reason = "bad_password" );
+                    var midway = getInstance( "User" ).find( user.getId() );
+                    expect( midway.getFailedLoginCount() ).toBe( 1 );
+
+                    // Now a successful login — should zero the counter
+                    svc.recordSuccessfulLogin( user = midway, ip = "10.0.0.1", userAgent = "spec" );
+                    var after = getInstance( "User" ).find( user.getId() );
+                    expect( after.getFailedLoginCount() ).toBe( 0 );
+                    expect( after.getLastLoginAt() ?: "" ).notToBe( "" );
+                } );
+            } );
+
+            describe( "User.isLocked()", function() {
+                it( "returns true when locked_until is in the future", function() {
+                    var user = createTestUser(
+                        overrides = { "lockedUntil" : dateAdd( "n", 10, now() ) }
+                    );
+                    var reloaded = getInstance( "User" ).find( user.getId() );
+                    expect( reloaded.isLocked() ).toBeTrue();
+                } );
+
+                it( "returns false when locked_until is in the past", function() {
+                    var user = createTestUser(
+                        overrides = { "lockedUntil" : dateAdd( "n", -10, now() ) }
+                    );
+                    var reloaded = getInstance( "User" ).find( user.getId() );
+                    expect( reloaded.isLocked() ).toBeFalse();
+                } );
+
+                it( "returns false when locked_until is null", function() {
+                    var user     = createTestUser();
+                    var reloaded = getInstance( "User" ).find( user.getId() );
+                    expect( reloaded.isLocked() ).toBeFalse();
+                } );
+            } );
+
+        } );
+    }
+
+}

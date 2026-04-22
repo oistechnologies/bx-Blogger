@@ -1,0 +1,154 @@
+/**
+ * bx-Blogger — EmailVerificationSpec (Chunk 1.I)
+ *
+ * Covers:
+ *   - request() issues a row bound to (user_id, email)
+ *   - consume() on a valid token sets users.email_verified_at
+ *   - pending_email atomic swap: when the token's email matches
+ *     users.pending_email, consume() promotes it to users.email and
+ *     clears pending_email in the same step
+ *   - consume() of an expired / unknown / already-consumed token returns
+ *     { ok:false, errors:[...] }
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function run() {
+        describe( "EmailVerificationService", function() {
+
+            describe( "request()", function() {
+                it( "creates an email_verifications row bound to the user + email", function() {
+                    var user = createTestUser();
+                    var svc  = getInstance( "EmailVerificationService" );
+
+                    svc.request( user = user, email = user.getEmail(), ip = "10.0.0.5" );
+
+                    var rows = getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "email_verifications" )
+                        .where( "user_id", user.getId() )
+                        .whereNull( "consumed_at" )
+                        .get();
+                    expect( rows.len() ).toBe( 1 );
+                    expect( rows[ 1 ].email ).toBe( user.getEmail() );
+                    expect( len( rows[ 1 ].token_hash ) ).toBe( 64 );
+                } );
+
+                it( "defaults the bound email to user.getEmail() when email arg is empty", function() {
+                    var user = createTestUser();
+                    getInstance( "EmailVerificationService" ).request( user = user, ip = "10.0.0.5" );
+
+                    var row = getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "email_verifications" )
+                        .where( "user_id", user.getId() )
+                        .orderBy( "id", "desc" )
+                        .first();
+                    expect( row.email ).toBe( user.getEmail() );
+                } );
+
+                it( "invalidates prior unconsumed token for the same user+email", function() {
+                    var user = createTestUser();
+                    var svc  = getInstance( "EmailVerificationService" );
+                    svc.request( user = user, email = user.getEmail(), ip = "10.0.0.5" );
+                    svc.request( user = user, email = user.getEmail(), ip = "10.0.0.5" );
+
+                    var open = getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "email_verifications" )
+                        .where( "user_id", user.getId() )
+                        .whereNull( "consumed_at" )
+                        .get();
+                    expect( open.len() ).toBe( 1 );
+                } );
+            } );
+
+            describe( "consume()", function() {
+                it( "sets users.email_verified_at on a valid token", function() {
+                    var user = createTestUser( overrides = { "emailVerifiedAt" : javaCast( "null", "" ) } );
+                    var plainToken = issueVerifyToken( user, user.getEmail() );
+
+                    var result = getInstance( "EmailVerificationService" ).consume( plainToken );
+                    expect( result.ok ).toBeTrue();
+
+                    var reloaded = getInstance( "User" ).find( user.getId() );
+                    expect( reloaded.getEmailVerifiedAt() ?: "" ).notToBe( "" );
+                } );
+
+                it( "promotes pending_email → email and clears pending_email", function() {
+                    var originalEmail = "orig-#createUUID()#@bx-blogger.local";
+                    var targetEmail   = "target-#createUUID()#@bx-blogger.local";
+                    var user = createTestUser( overrides = {
+                        "email"         : originalEmail,
+                        "pendingEmail"  : targetEmail
+                    } );
+                    var plainToken = issueVerifyToken( user, targetEmail );
+
+                    var result = getInstance( "EmailVerificationService" ).consume( plainToken );
+                    expect( result.ok ).toBeTrue();
+
+                    var reloaded = getInstance( "User" ).find( user.getId() );
+                    expect( reloaded.getEmail() ).toBe( targetEmail, "email should be promoted" );
+                    expect( reloaded.getPendingEmail() ?: "" ).toBe( "", "pending_email should be cleared" );
+                } );
+
+                it( "leaves pending_email untouched if the token.email doesn't match pending_email", function() {
+                    var pendingEmail = "pending-#createUUID()#@bx-blogger.local";
+                    var user = createTestUser( overrides = { "pendingEmail" : pendingEmail } );
+
+                    // Token points at the CURRENT email (plain verification, not a change)
+                    var plainToken = issueVerifyToken( user, user.getEmail() );
+                    getInstance( "EmailVerificationService" ).consume( plainToken );
+
+                    var reloaded = getInstance( "User" ).find( user.getId() );
+                    expect( reloaded.getPendingEmail() ?: "" ).toBe( pendingEmail, "pending_email should remain" );
+                } );
+
+                it( "returns ok=false on an unknown token", function() {
+                    var result = getInstance( "EmailVerificationService" ).consume(
+                        "0000000000000000000000000000000000000000000000000000000000000000"
+                    );
+                    expect( result.ok ).toBeFalse();
+                    expect( result.errors ).notToBeEmpty();
+                } );
+
+                it( "returns ok=false on an expired token", function() {
+                    var user = createTestUser();
+                    var plainToken = issueVerifyToken( user, user.getEmail() );
+
+                    getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "email_verifications" )
+                        .where( "user_id", user.getId() )
+                        .whereNull( "consumed_at" )
+                        .update( { "expires_at" : dateAdd( "n", -5, now() ) } );
+
+                    var result = getInstance( "EmailVerificationService" ).consume( plainToken );
+                    expect( result.ok ).toBeFalse();
+                } );
+
+                it( "rejects a token that was already consumed", function() {
+                    var user = createTestUser();
+                    var plainToken = issueVerifyToken( user, user.getEmail() );
+
+                    var svc = getInstance( "EmailVerificationService" );
+                    var first = svc.consume( plainToken );
+                    expect( first.ok ).toBeTrue();
+
+                    var second = svc.consume( plainToken );
+                    expect( second.ok ).toBeFalse();
+                } );
+            } );
+
+        } );
+    }
+
+    /** Insert an email_verifications row with a known plaintext token. */
+    private string function issueVerifyToken( required any user, required string email ) {
+        var plainToken = lCase( binaryEncode( binaryDecode( generateSecretKey( "AES", 256 ), "base64" ), "hex" ) );
+        getInstance( "QueryBuilder@qb" ).newQuery().from( "email_verifications" ).insert( {
+            "user_id"    : arguments.user.getId(),
+            "token_hash" : hash( plainToken, "SHA-256" ),
+            "email"      : arguments.email,
+            "expires_at" : dateAdd( "d", 7, now() ),
+            "request_ip" : "127.0.0.1"
+        } );
+        return plainToken;
+    }
+
+}

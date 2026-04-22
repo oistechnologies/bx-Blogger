@@ -76,7 +76,7 @@ Runtime container: **`ortussolutions/commandbox`** (the base CommandBox image).
 - Docker Hub: <https://hub.docker.com/r/ortussolutions/commandbox/>
 - GitHub (Dockerfile sources): <https://github.com/Ortus-Solutions/docker-commandbox>
 
-The `cfengine: "boxlang@1"` entry in `server.json` tells CommandBox to install BoxLang on first server start — we do not need the `:boxlang`-tagged image variant. `server.json`'s `onServerInitialInstall` then installs `bx-compat-cfml` and `bx-esapi` into the server home on first boot.
+The `cfengine: "boxlang@1"` entry in `server.json` tells CommandBox to install BoxLang on first server start — we do not need the `:boxlang`-tagged image variant. `server.json`'s `onServerInitialInstall` installs runtime-level BoxLang modules into the server home on first boot (`bx-compat-cfml`, `bx-esapi`, `bx-mysql`, `bx-mail`). Adding a new BoxLang runtime module there means **rebuilding the image** (`docker compose build app`) — `onServerInitialInstall` only fires once per fresh server home.
 
 ## Compose services
 
@@ -117,3 +117,50 @@ This prevents the "install 27 modules up front, spend hours debugging which one 
 - **Private:** `DEV-NOTES/PLAN.md` — full architecture, phase breakdown, interception points, risk register, verification log. `DEV-NOTES/` is gitignored by design; it never ships with the repo.
 
 If you're working on a feature and need design context, read `DEV-NOTES/PLAN.md`.
+
+## BoxLang / ColdBox / qb / Quick gotchas (Phase 1 field notes)
+
+Hard-won lessons from Chunks 1.E → 1.I. Read these before adding new handlers, services, or entities — they will save hours.
+
+### BoxLang syntax
+
+- **Classes use `class`, not `component`.** `class extends="coldbox.system.Interceptor" {}` compiles; `component extends=...` throws `'component' was unexpected` at parse time. Same for handlers, services, interceptors, entities.
+- **Script-mode tags need the `bx:` prefix.** `<bx:savecontent>`, `<bx:include>`, `<bx:if>`, `<bx:output>`, etc. Plain `savecontent {}` inside a `<bx:script>` block is a parse error.
+- **No mixed positional + named arguments in one call.** `foo( arg1, name = "x" )` → `cannot mix named and positional arguments`. All-positional or all-named.
+- **`generateSecretKey("AES", 256)` returns base64, not hex.** For a 64-char hex token: `lCase( binaryEncode( binaryDecode( generateSecretKey("AES", 256), "base64" ), "hex" ) )`. Stripping non-hex chars off the raw base64 string discards most of the entropy (yielding a ~18-char token).
+
+### Null handling
+
+- **`javaCast("null", "")` assigned to a local, then referenced, throws `"key X not located"` in BoxLang.** Safer pattern: build a struct without the key, then conditionally add it:
+
+  ```cfml
+  var row = { a: 1, b: 2 };
+  if ( !isNull( user ) ) row.user_id = user.getId();
+  ```
+
+- **Quick's `entity.setXxx( javaCast("null","") )` silently drops that column from the generated UPDATE.** Use qb for any column that must actually be cleared to NULL.
+- **qb's `.update( struct )` rejects mixed bound + raw values.** `update({ a: 1, b: qb.raw("NULL"), c: 2 })` produces `Too many positional parameters [N] provided for query having only [M] '?' chars`. Split into separate updates, or use `queryExecute("UPDATE ... SET col = NULL WHERE ...", { ... })`.
+- **Reusing the same qb instance across two updates accumulates bindings.** Call `wirebox.getInstance("QueryBuilder@qb").newQuery()` (or a `freshQb()` helper) for each statement. This bites when a service needs to run two separate UPDATEs in sequence.
+
+### Quick ORM
+
+- **`entity.save()` persists *every* field currently in memory.** If service code runs a qb update and then calls `entity.save()`, the save overwrites the qb-updated values with whatever the entity holds. Order operations so qb-only updates happen *after* any entity.save() calls, or reload the entity in between.
+- **Don't call `.where( closure ).first()` on a Quick entity** with an unscoped inner where/orWhere chain — Quick tries to resolve it via its relation builder and can trigger an unrelated INSERT. Drop to qb for grouped where clauses: `qb.from("users").where( function( q ) { q.where(...).orWhere(...); } ).get()`.
+- **`isNull( quickEntity )` is reliable; `quickEntity ?: "default"` can mis-behave** depending on loader state. When checking whether a `.first()` found a row, use `isNull( row )`.
+
+### ColdBox
+
+- **Interceptor injection fails at boot.** Interceptors are instantiated before the full model scan completes; `property name="fooService" inject="FooService"` on an interceptor throws `Instance not found` during application startup. Use lazy `getInstance("FooService")` inside `preProcess`/`postProcess` methods instead.
+- **Route ordering matters — specific before generic.** `route("/account/password")` must be declared before `route("/account")`, otherwise the parent swallows the more specific path.
+- **`index.bxm` is a placeholder — never call `processColdBoxRequest()`** in it. `Application.bx`'s lifecycle hooks own the request; duplicating in `index.bxm` renders the page twice.
+- **Flash scope in this app auto-purges after one render** (per `variables.flash.autoPurge = true` in `config/Coldbox.bx`). Curl-based test sequences must GET the page once to consume the flash before asserting the next flash is fresh.
+
+### BoxLang + MySQL
+
+- **`users.password_hash` is exactly `VARCHAR(60)` for bcrypt.** Test-fixture placeholder hashes must be exactly 60 chars or MySQL throws "Data too long for column".
+- **`queryExecute` is available in any scope** and bypasses qb's binding logic entirely. Useful fallback for edge cases that trip up qb (mixed raw/bound updates, NULL assignment in a struct).
+
+### Testing
+
+- `tests/support/` is outside the runner's spec-glob — put `BaseIntegrationSpec` and other non-runnable base classes there, not under `tests/specs/`.
+- Integration specs hit the real MySQL container. Always create throwaway users (UUID in the email) and clean them up in `afterAll()`; never mutate the dev admin seed (`id=1`).

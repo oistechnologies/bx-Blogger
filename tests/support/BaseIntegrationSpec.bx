@@ -1,0 +1,101 @@
+/**
+ * bx-Blogger — BaseIntegrationSpec
+ *
+ * Shared scaffolding for Phase 1 integration specs. Every concrete spec
+ * extends this and inherits:
+ *   - `setup()` hook that boots the ColdBox test virtual app
+ *   - `createTestUser( overrides )` — inserts a fully verified user (with
+ *     optional role attachment) and tracks the id for teardown
+ *   - `afterAll()` hook that deletes every test user created in this spec
+ *
+ * Why a base class rather than a shared fixture loaded per-test: Quick's
+ * relation mutations (roles().attach / detach) need an initialized WireBox
+ * context, which only exists after setup() has run. The base hides that
+ * detail and lets concrete specs stay focused on behavior.
+ *
+ * Teardown strategy: we track only ids we *created* in this spec run,
+ * and DELETE them in afterAll(). This avoids stomping on the dev admin
+ * seed (id=1) and keeps parallel spec runs non-interacting. Inserted rows
+ * in satellite tables (password_resets, email_verifications, login_audit)
+ * cascade via FK or are harmless stragglers; the main spec cleanup only
+ * needs the user row for test isolation.
+ */
+class extends="coldbox.system.testing.BaseTestCase" {
+
+    this.appMapping = "/root";
+
+    function beforeAll() {
+        super.beforeAll();
+        setup();
+        variables.createdUserIds = [];
+    }
+
+    function afterAll() {
+        // Delete test users (and cascade their role pivots + satellite rows
+        // via ON DELETE CASCADE / individual cleanup). We wrap in try so a
+        // failed spec's dangling references don't mask the real failure.
+        try {
+            if ( arrayLen( variables.createdUserIds ?: [] ) ) {
+                var qb = getInstance( "QueryBuilder@qb" );
+                // Wipe satellite rows first to avoid FK issues in case a
+                // table isn't declared with ON DELETE CASCADE.
+                qb.newQuery().from( "login_audit"        ).whereIn( "user_id", variables.createdUserIds ).delete();
+                qb.newQuery().from( "password_resets"    ).whereIn( "user_id", variables.createdUserIds ).delete();
+                qb.newQuery().from( "email_verifications" ).whereIn( "user_id", variables.createdUserIds ).delete();
+                qb.newQuery().from( "user_roles"         ).whereIn( "user_id", variables.createdUserIds ).delete();
+                qb.newQuery().from( "users"              ).whereIn( "id", variables.createdUserIds ).delete();
+            }
+        } catch ( any e ) {
+            // Log but don't fail the suite — cleanup is best-effort.
+            writeLog( file = "testbox", text = "BaseIntegrationSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    /**
+     * Create a Quick User row backed by a real bcrypt hash. Returns the
+     * saved entity. Defaults give a verified, active, super_admin-free
+     * account; pass overrides for anything you care about.
+     *
+     * @overrides   Struct of Quick setter-compatible fields (email,
+     *              displayName, passwordHash, emailVerifiedAt, isActive,
+     *              failedLoginCount, lockedUntil, pendingEmail, etc.)
+     * @plainPassword  If set, bcrypts this and wins over overrides.passwordHash.
+     * @roleSlug    Optional role to attach (slug string, e.g. "author").
+     */
+    function createTestUser( struct overrides = {}, string plainPassword = "", string roleSlug = "" ) {
+        var User            = getInstance( "User" );
+        var passwordService = getInstance( "PasswordService" );
+
+        var defaults = {
+            "email"             : "spec-#createUUID()#@bx-blogger.local",
+            "displayName"       : "Spec User",
+            // 60-char bcrypt-shaped placeholder that satisfies the
+            // VARCHAR(60) column. Pass `plainPassword` to override with
+            // a real bcrypt hash when the spec needs verify() to succeed.
+            "passwordHash"      : "$2a$12$R9h/cIPz0gi.URNNX3kh2OPST9.PgBkqquzi.Ss7KIUgO2t0jWMUW",
+            "isActive"          : 1,
+            "twoFactorEnabled"  : 0,
+            "emailVerifiedAt"   : now(),
+            "mustChangePassword": 0
+        };
+        structAppend( defaults, arguments.overrides, true );
+
+        if ( len( arguments.plainPassword ) ) {
+            defaults.passwordHash = passwordService.hash( arguments.plainPassword );
+        }
+
+        var user = User.create( defaults );
+        variables.createdUserIds.append( user.getId() );
+
+        if ( len( arguments.roleSlug ) ) {
+            var role = getInstance( "Role" ).where( "slug", arguments.roleSlug ).first();
+            if ( !isNull( role ) ) {
+                user.roles().attach( role.getId() );
+            }
+        }
+
+        return user;
+    }
+
+}

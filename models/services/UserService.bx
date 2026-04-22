@@ -72,15 +72,18 @@ class accessors="true" singleton {
                  string userAgent = ""
     ) {
         writeAudit( {
-            email:         arguments.user.getEmail(),
-            user_id:       arguments.user.getId(),
-            ip:            arguments.ip,
-            user_agent:    left( arguments.userAgent, 512 ),
-            success:       1,
-            failure_reason: javaCast( "null", "" )
+            email:      arguments.user.getEmail(),
+            user_id:    arguments.user.getId(),
+            ip:         arguments.ip,
+            user_agent: left( arguments.userAgent, 512 ),
+            success:    1
         } );
-        resetLockout( arguments.user );
+        // Order matters: touchLastLogin calls entity.save(), which
+        // persists every current field on the Quick entity — including
+        // a stale failed_login_count. Doing the qb-based resetLockout
+        // AFTER the save ensures the zeroed columns are not overwritten.
         touchLastLogin( arguments.user, arguments.ip );
+        resetLockout( arguments.user );
     }
 
     /**
@@ -99,18 +102,23 @@ class accessors="true" singleton {
                  string userAgent = "",
                  string reason    = "bad_password"
     ) {
-        // Resolve user_id if we can (for stats; null if email unknown)
-        var user   = retrieveUserByUsername( arguments.email );
-        var userId = isNull( user ) ? javaCast( "null", "" ) : user.getId();
-
-        writeAudit( {
+        // Resolve user_id if we can (for stats; unset if email unknown).
+        // We build the audit row conditionally — on BoxLang, assigning
+        // a `javaCast("null","")` to a local variable and then putting
+        // it in a struct throws "key not located". Omitting the key
+        // when there's no user leaves user_id as SQL NULL.
+        var user = retrieveUserByUsername( arguments.email );
+        var row  = {
             email:          arguments.email,
-            user_id:        userId,
             ip:             arguments.ip,
             user_agent:     left( arguments.userAgent, 512 ),
             success:        0,
             failure_reason: arguments.reason
-        } );
+        };
+        if ( !isNull( user ) ) {
+            row.user_id = user.getId();
+        }
+        writeAudit( row );
 
         // Only escalate the per-user lockout counter for true credential
         // failures against a known account. Don't bump on "account_locked"
