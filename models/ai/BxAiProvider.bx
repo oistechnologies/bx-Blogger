@@ -1,28 +1,36 @@
 /**
- * bx-Blogger — BxAiProvider (Chunk 2.H)
+ * bx-Blogger — BxAiProvider (Chunk 2.H + OpenRouter follow-up)
  *
- * Thin adapter around the `aiChat()` BIF that bx-ai exposes. Keeps
- * AiAssistantService provider-agnostic: swap this for a different
- * backend (a local model, a custom broker, etc.) by binding the
- * `AiProvider` alias to a different class in WireBox.
+ * Thin adapter around bx-ai's `aiChat()` BIF. Bound to the `AiProvider`
+ * WireBox alias whenever AI_PROVIDER is anything other than "mock".
+ * Keeps AiAssistantService provider-agnostic — swap this class out if
+ * you ever want to bypass bx-ai entirely.
  *
- * Real providers split request shaping from token counting —
- * bx-ai's aiChat() returns its own token accounting in the `raw`
- * return format, so we ask for that and unpack it here.
+ * Config, all via env (see .env.example for full commentary):
+ *   AI_PROVIDER  — "openrouter" | "openai" | "anthropic" | "google"
+ *                  Forwarded to bx-ai's options.provider; bx-ai picks
+ *                  the matching service class.
+ *   AI_API_KEY   — upstream API key. OpenRouter keys start "sk-or-v1-".
+ *   AI_MODEL     — model slug. OpenRouter uses vendor/model
+ *                  ("anthropic/claude-3.5-sonnet", "openrouter/auto");
+ *                  other providers use their own naming. Blank = provider default.
+ *   AI_SITE_URL  — optional HTTP-Referer (OpenRouter leaderboards).
+ *   AI_APP_NAME  — optional X-Title (OpenRouter leaderboards).
  *
- * The service layer (AiAssistantService) is responsible for:
- *   - prompt-injection safety (wrapping user content in delimiters)
- *   - budget enforcement
- *   - audit + ai_usage writes
- *   - cbantisamy sanitization of model output
+ * bx-ai's aiChat signature is (messages, params, options, headers):
+ *   messages → array of { role, content }
+ *   params   → model + temperature + max_tokens (provider-level knobs)
+ *   options  → provider + apiKey + returnFormat (aiChat-level knobs)
+ *   headers  → raw HTTP headers forwarded by BaseService.sendChat
  *
- * This class is ONLY the provider transport.
+ * Token/cost accounting is best-effort — OpenAI-shaped providers
+ * return usage under .usage.{prompt,completion}_tokens; we guard
+ * every read and fall back to zero.
  */
 class accessors="true" singleton {
 
     property name="log" inject="logbox:logger:{this}";
 
-    variables.defaultModel       = "gpt-4o-mini";
     variables.defaultMaxTokens   = 4000;
     variables.defaultTemperature = 0.7;
 
@@ -38,13 +46,8 @@ class accessors="true" singleton {
             systemPrompt = arguments.systemPrompt,
             userContent  = arguments.postBody
         );
-        // Best-effort JSON parse — real providers often return a
-        // markdown codefence around the JSON. Try clean parse, then
-        // try extracting the first {...} blob, then fall back to
-        // a single prose suggestion.
-        var parsed = tryParseSuggestions( result.markdown );
         return {
-            "suggestions"      : parsed,
+            "suggestions"      : tryParseSuggestions( result.markdown ),
             "promptTokens"     : result.promptTokens,
             "completionTokens" : result.completionTokens,
             "totalTokens"      : result.totalTokens,
@@ -59,34 +62,63 @@ class accessors="true" singleton {
             { "role" : "system", "content" : arguments.systemPrompt },
             { "role" : "user",   "content" : arguments.userContent }
         ];
+
+        var params  = buildParams();
+        var options = buildOptions();
+        var headers = buildHeaders();
+
         var response = aiChat(
             messages = messages,
-            params   = {
-                "model"       : variables.defaultModel,
-                "max_tokens"  : variables.defaultMaxTokens,
-                "temperature" : variables.defaultTemperature
-            },
-            options = { "returnFormat" : "raw" }
+            params   = params,
+            options  = options,
+            headers  = headers
         );
 
-        // bx-ai's raw response carries usage counts under `.usage`;
-        // different providers shape the struct slightly differently —
-        // guard every key read.
         var markdown = extractMessage( response );
-        var usage    = response.usage ?: {};
-        var pt       = usage.prompt_tokens     ?: usage.promptTokens     ?: 0;
-        var ct       = usage.completion_tokens ?: usage.completionTokens ?: 0;
-        var total    = pt + ct;
+        var usage    = isStruct( response ) && structKeyExists( response, "usage" ) ? response.usage : {};
+        var pt = val( usage.prompt_tokens     ?: usage.promptTokens     ?: 0 );
+        var ct = val( usage.completion_tokens ?: usage.completionTokens ?: 0 );
 
         return {
             "markdown"         : markdown,
             "promptTokens"     : pt,
             "completionTokens" : ct,
-            "totalTokens"      : total,
-            // Rough cost: $0.15 per 1M input + $0.60 per 1M output for
-            // gpt-4o-mini (as of this writing). Expressed in USD-micros.
-            "costUsdMicro"     : int( ( pt * 0.15 + ct * 0.60 ) )
+            "totalTokens"      : pt + ct,
+            // Rough per-million-token cost estimate using OpenAI
+            // gpt-4o-mini-class pricing ($0.15 in / $0.60 out). A
+            // future BillingService can swap this for a real lookup
+            // against OpenRouter's /api/v1/models endpoint.
+            "costUsdMicro"     : int( pt * 0.15 + ct * 0.60 )
         };
+    }
+
+    private struct function buildParams() {
+        var p = {
+            "max_tokens"  : variables.defaultMaxTokens,
+            "temperature" : variables.defaultTemperature
+        };
+        var model = getSystemSetting( "AI_MODEL", "" );
+        if ( len( model ) ) p.model = model;
+        return p;
+    }
+
+    private struct function buildOptions() {
+        var o = {
+            "provider"     : getSystemSetting( "AI_PROVIDER", "openrouter" ),
+            "returnFormat" : "raw"
+        };
+        var apiKey = getSystemSetting( "AI_API_KEY", "" );
+        if ( len( apiKey ) ) o.apiKey = apiKey;
+        return o;
+    }
+
+    private struct function buildHeaders() {
+        var h = {};
+        var referer = getSystemSetting( "AI_SITE_URL", "" );
+        var title   = getSystemSetting( "AI_APP_NAME", "" );
+        if ( len( referer ) ) h[ "HTTP-Referer" ] = referer;
+        if ( len( title ) )   h[ "X-Title" ]      = title;
+        return h;
     }
 
     /**
@@ -110,11 +142,13 @@ class accessors="true" singleton {
     /**
      * Parse a review response into an array of suggestion structs.
      * Expected shape: JSON array of `{ id, type, locationHint, before, after, rationale }`.
+     * If the model returns prose instead of JSON we synthesize a
+     * single suggestion so the panel isn't empty.
      */
     private array function tryParseSuggestions( required string text ) {
         var t = trim( arguments.text );
         if ( !len( t ) ) return [];
-        // Strip a leading markdown fence if present
+        // Strip a leading/trailing markdown fence if present
         t = reReplace( t, "^```[a-z]*\s*", "", "one" );
         t = reReplace( t, "```\s*$",        "", "one" );
         try {
@@ -124,8 +158,6 @@ class accessors="true" singleton {
         }
         catch ( any e ) { /* fall through */ }
 
-        // Fallback — return a single prose suggestion so the user at
-        // least sees something rather than an empty panel.
         return [ {
             "id"           : "prose-1",
             "type"         : "general",
