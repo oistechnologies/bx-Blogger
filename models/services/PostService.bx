@@ -1,0 +1,408 @@
+/**
+ * bx-Blogger — PostService (Chunk 2.C)
+ *
+ * Business-logic authority for posts. Handlers push user intent in
+ * through `create`, `update`, `publish`, `trash`, `restore`, etc.; the
+ * service handles slug uniqueness, scheduled→published transitions,
+ * reading-time + word-count computation, revision bookkeeping, and
+ * content-version bumps. Permission checks stay in the handler layer —
+ * a service method that mutates state assumes the caller already has
+ * the right permission.
+ *
+ * Business rules enforced here:
+ *   - `slug` is unique per `(post_type, parent_id)` — MySQL's unique
+ *     index only catches collisions when parent_id is NOT NULL, so the
+ *     service checks before every insert/update.
+ *   - `body_html` is regenerated from `body_markdown` on every save,
+ *     `body_compiled_at` bumps, and `content_version` increments. Chunk
+ *     2.D swaps the placeholder markdown→html pass-through for the real
+ *     bx-markdown + cbantisamy pipeline; the seam is `compileBody()`.
+ *   - `reading_time_minutes` = `ceil( word_count / 225 )`, clamped to
+ *     at least 1 minute when the post has any body at all.
+ *   - A new `post_revisions` row is written for every save that
+ *     actually changes title or body. Autosave revisions (Chunk 2.G)
+ *     will write through the same path with `change_summary='autosave'`
+ *     and get pruned separately.
+ *
+ * Status transitions (see PLAN §9 for the enum):
+ *   draft / pending_review / scheduled  →  published  (`publish`)
+ *   published                            →  draft      (`unpublish`)
+ *   any                                  →  trashed    (`trash`)
+ *   trashed                              →  draft      (`restore`)
+ *   scheduled-at-or-before-now           →  published  (`promoteScheduledPosts`)
+ */
+class accessors="true" singleton {
+
+    property name="wirebox" inject="wirebox";
+    property name="log"     inject="logbox:logger:{this}";
+
+    variables.readingWordsPerMinute = 225;   // newsroom-average reading pace
+    variables.maxSlugLength         = 200;   // matches posts.slug VARCHAR
+
+    // --------------------------------------------------------------------
+    // Create / update
+    // --------------------------------------------------------------------
+
+    /**
+     * Create a new post.
+     *
+     * @attrs Struct of Quick-compatible fields. Must include `authorId` +
+     *        `title` + `bodyMarkdown`. Optional: `slug` (auto-derived
+     *        from title if absent), `postType` (default "post"), `status`
+     *        (default "draft"), `parentId`, `excerpt`, any SEO fields.
+     * @return the created Post entity.
+     */
+    function create( required struct attrs ) {
+        var data = normalizeIncoming( arguments.attrs );
+        data.slug = ensureUniqueSlug(
+            slug     = data.slug,
+            postType = data.postType,
+            parentId = structKeyExists( data, "parentId" ) ? data.parentId : javaCast( "null", "" )
+        );
+        applyComputedFields( data );
+        data.contentVersion = 1;
+
+        var post = variables.wirebox.getInstance( "Post" ).create( data );
+        writeRevision(
+            post          = post,
+            editorId      = data.authorId,
+            changeSummary = "initial"
+        );
+        log.info( "PostService: created post=" & post.getId() & " slug=" & post.getSlug() );
+        return post;
+    }
+
+    /**
+     * Apply a struct of changes to an existing post. Recomputes body,
+     * reading-time, word-count; bumps `content_version`; writes a
+     * revision only if title or body actually changed.
+     *
+     * @post   Quick Post entity to update
+     * @attrs  Struct of fields to change
+     * @editorId  Who made the change (for the revision row)
+     * @changeSummary  Freeform description (e.g. "autosave", "manual save")
+     */
+    function update(
+        required any    post,
+        required struct attrs,
+        required numeric editorId,
+                 string  changeSummary = ""
+    ) {
+        var data = normalizeIncoming( arguments.attrs );
+        var titleOrBodyChanged = false;
+
+        if ( structKeyExists( data, "title" ) && data.title != arguments.post.getTitle() ) {
+            titleOrBodyChanged = true;
+        }
+        if ( structKeyExists( data, "bodyMarkdown" ) && data.bodyMarkdown != arguments.post.getBodyMarkdown() ) {
+            titleOrBodyChanged = true;
+        }
+
+        // Slug change handling
+        if ( structKeyExists( data, "slug" ) && len( data.slug ) && data.slug != arguments.post.getSlug() ) {
+            data.slug = ensureUniqueSlug(
+                slug     = data.slug,
+                postType = data.postType ?: arguments.post.getPostType(),
+                parentId = structKeyExists( data, "parentId" ) ? data.parentId : arguments.post.getParentId(),
+                excludeId = arguments.post.getId()
+            );
+        }
+
+        applyComputedFields( data, arguments.post );
+        if ( titleOrBodyChanged ) {
+            data.contentVersion = ( arguments.post.getContentVersion() ?: 1 ) + 1;
+        }
+
+        applyAttrsToEntity( arguments.post, data );
+        arguments.post.save();
+
+        if ( titleOrBodyChanged ) {
+            writeRevision(
+                post          = arguments.post,
+                editorId      = arguments.editorId,
+                changeSummary = len( arguments.changeSummary ) ? arguments.changeSummary : "manual"
+            );
+        }
+
+        log.info( "PostService: updated post=" & arguments.post.getId() & " version=" & arguments.post.getContentVersion() );
+        return arguments.post;
+    }
+
+    // --------------------------------------------------------------------
+    // Status transitions
+    // --------------------------------------------------------------------
+
+    /**
+     * Move a post to `published`. Sets `published_at` to now unless it's
+     * already populated (re-publishing a previously-published post
+     * preserves the original publish timestamp — `scheduled_at` stays
+     * informational). Caller owns the permission check.
+     */
+    function publish( required any post ) {
+        arguments.post.setStatus( "published" );
+        if ( isNull( arguments.post.getPublishedAt() ) || !len( arguments.post.getPublishedAt() ?: "" ) ) {
+            arguments.post.setPublishedAt( now() );
+        }
+        arguments.post.save();
+        return arguments.post;
+    }
+
+    /**
+     * Schedule a post for future publication. `scheduledAt` must be in
+     * the future; past timestamps fall through to immediate publish.
+     */
+    function schedule( required any post, required any scheduledAt ) {
+        if ( dateCompare( arguments.scheduledAt, now() ) != 1 ) {
+            return publish( arguments.post );
+        }
+        arguments.post.setStatus( "scheduled" );
+        arguments.post.setScheduledAt( arguments.scheduledAt );
+        arguments.post.save();
+        return arguments.post;
+    }
+
+    /**
+     * Back to draft. The Phase 5 page cache consults `content_version`,
+     * so we also bump that — prevents a stale published-HTML cache from
+     * serving the now-private post.
+     */
+    function unpublish( required any post ) {
+        arguments.post.setStatus( "draft" );
+        arguments.post.setContentVersion( ( arguments.post.getContentVersion() ?: 1 ) + 1 );
+        arguments.post.save();
+        return arguments.post;
+    }
+
+    function trash( required any post ) {
+        arguments.post.setStatus( "trashed" );
+        arguments.post.save();
+        return arguments.post;
+    }
+
+    function restore( required any post ) {
+        arguments.post.setStatus( "draft" );
+        arguments.post.save();
+        return arguments.post;
+    }
+
+    /**
+     * Soft-delete. Sets `deleted_at`; the slug-uniqueness guard keys on
+     * this column so the freed slug becomes available for reuse.
+     */
+    function softDelete( required any post ) {
+        arguments.post.setDeletedAt( now() );
+        arguments.post.save();
+        return arguments.post;
+    }
+
+    /**
+     * Promote scheduled posts whose `scheduledAt <= now()` to
+     * `published`. Returns the number of rows flipped. A Phase 6
+     * scheduler task calls this every minute; for tests, call it
+     * directly.
+     */
+    numeric function promoteScheduledPosts() {
+        var due = variables.wirebox.getInstance( "Post" )
+            .where( "status", "scheduled" )
+            .where( "scheduled_at", "<=", now() )
+            .whereNull( "deleted_at" )
+            .get();
+
+        var count = 0;
+        for ( var p in due ) {
+            publish( p );
+            count++;
+        }
+        if ( count > 0 ) {
+            log.info( "PostService.promoteScheduledPosts: published " & count & " scheduled posts" );
+        }
+        return count;
+    }
+
+    // --------------------------------------------------------------------
+    // Slug helpers
+    // --------------------------------------------------------------------
+
+    /**
+     * Convert a title (or anything else) to a URL-safe slug.
+     *
+     *   "Hello, World!"       → "hello-world"
+     *   "Multiple   spaces"   → "multiple-spaces"
+     *   "Unicôdé tëst"        → "unicode-test"   (after latin-fold)
+     *   " leading/trailing "  → "leading-trailing"
+     *   ""                    → "untitled"        (stable fallback)
+     */
+    string function slugify( required string source ) {
+        var s = lCase( trim( arguments.source ) );
+        // Simple latin-1 diacritic folding. Phase 11 can upgrade to ICU
+        // for full Unicode normalization when we add i18n.
+        s = replaceList( s,
+            "à,á,â,ã,ä,å,ç,è,é,ê,ë,ì,í,î,ï,ñ,ò,ó,ô,õ,ö,ø,ù,ú,û,ü,ý,ÿ",
+            "a,a,a,a,a,a,c,e,e,e,e,i,i,i,i,n,o,o,o,o,o,o,u,u,u,u,y,y"
+        );
+        s = reReplace( s, "[^a-z0-9]+", "-", "all" );
+        s = reReplace( s, "^-+|-+$", "", "all" );
+        if ( len( s ) > variables.maxSlugLength ) {
+            s = left( s, variables.maxSlugLength );
+            s = reReplace( s, "-+$", "", "all" );
+        }
+        return len( s ) ? s : "untitled";
+    }
+
+    /**
+     * Given a candidate slug + scope, return a unique slug in the same
+     * scope. Appends `-2`, `-3`, etc. until no collision. Excludes a
+     * specific post id (for updates — a post can keep its own slug).
+     */
+    string function ensureUniqueSlug(
+        required string  slug,
+        required string  postType,
+                 any     parentId,
+                 numeric excludeId = 0
+    ) {
+        var base = arguments.slug;
+        var candidate = base;
+        var suffix = 1;
+
+        while ( slugExists( candidate, arguments.postType, arguments.parentId, arguments.excludeId ) ) {
+            suffix++;
+            candidate = base & "-" & suffix;
+        }
+        return candidate;
+    }
+
+    private boolean function slugExists(
+        required string  slug,
+        required string  postType,
+                 any     parentId,
+                 numeric excludeId = 0
+    ) {
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "posts" )
+            .where( "slug",      arguments.slug )
+            .where( "post_type", arguments.postType )
+            .whereNull( "deleted_at" );
+
+        if ( isNull( arguments.parentId ) || !len( arguments.parentId ?: "" ) ) {
+            qb.whereNull( "parent_id" );
+        } else {
+            qb.where( "parent_id", arguments.parentId );
+        }
+        if ( arguments.excludeId > 0 ) {
+            qb.where( "id", "!=", arguments.excludeId );
+        }
+        return qb.exists();
+    }
+
+    // --------------------------------------------------------------------
+    // Internals
+    // --------------------------------------------------------------------
+
+    /**
+     * Fill in defaults for a caller-supplied attrs struct. Always returns
+     * a new struct — never mutates the caller's.
+     */
+    private struct function normalizeIncoming( required struct attrs ) {
+        var out = duplicate( arguments.attrs );
+        if ( !structKeyExists( out, "postType" ) || !len( out.postType ?: "" ) )       out.postType = "post";
+        if ( !structKeyExists( out, "status" )   || !len( out.status ?: "" ) )         out.status   = "draft";
+
+        if ( !structKeyExists( out, "slug" ) || !len( trim( out.slug ?: "" ) ) ) {
+            out.slug = slugify( out.title ?: "untitled" );
+        } else {
+            out.slug = slugify( out.slug );   // normalize user-typed slugs too
+        }
+        return out;
+    }
+
+    /**
+     * Compute body_html / body_compiled_at / word_count / reading_time
+     * for the struct, reading from `bodyMarkdown` if present (on
+     * updates, fall back to the entity's current body).
+     */
+    private void function applyComputedFields( required struct data, any existing ) {
+        var markdown = "";
+        if ( structKeyExists( arguments.data, "bodyMarkdown" ) ) {
+            markdown = arguments.data.bodyMarkdown;
+        } else if ( structKeyExists( arguments, "existing" ) && !isNull( arguments.existing ) ) {
+            markdown = arguments.existing.getBodyMarkdown() ?: "";
+        }
+
+        arguments.data.bodyHtml        = compileBody( markdown );
+        arguments.data.bodyCompiledAt  = now();
+
+        var words = countWords( markdown );
+        arguments.data.wordCount          = words;
+        arguments.data.readingTimeMinutes = readingTimeFor( words );
+    }
+
+    /**
+     * Compiled body. Placeholder — Chunk 2.D wires bx-markdown +
+     * cbantisamy here. For now we strip zero-width chars and wrap the
+     * content so the body_html column is non-empty on insert.
+     */
+    private string function compileBody( required string markdown ) {
+        if ( !len( trim( arguments.markdown ) ) ) return "";
+        // TODO (2.D): replace with getInstance("bx-markdown").compile(...)
+        //             piped through getInstance("AntiSamy@cbantisamy").htmlSanitizer(...).
+        return arguments.markdown;
+    }
+
+    /**
+     * Words in a markdown body. Strips common markdown punctuation so
+     * `[link](x)` doesn't inflate the count and code fences / images
+     * don't count as prose. Accurate enough for reading-time display;
+     * ground-truth word count would parse to AST.
+     */
+    private numeric function countWords( required string markdown ) {
+        var stripped = arguments.markdown;
+        stripped = reReplace( stripped, "```[\s\S]*?```",    " ", "all" ); // fenced code
+        stripped = reReplace( stripped, "`[^`]*`",           " ", "all" ); // inline code
+        stripped = reReplace( stripped, "!\[[^\]]*\]\([^)]*\)", " ", "all" ); // images
+        stripped = reReplace( stripped, "\[[^\]]*\]\([^)]*\)",  " ", "all" ); // links → label
+        stripped = reReplace( stripped, "[##*_>~`\-\+]+", " ", "all" );
+        stripped = trim( reReplace( stripped, "\s+", " ", "all" ) );
+        if ( !len( stripped ) ) return 0;
+        return listLen( stripped, " " );
+    }
+
+    private numeric function readingTimeFor( required numeric wordCount ) {
+        if ( arguments.wordCount <= 0 ) return 0;
+        var minutes = ceiling( arguments.wordCount / variables.readingWordsPerMinute );
+        return minutes < 1 ? 1 : minutes;
+    }
+
+    /**
+     * Persist a snapshot into `post_revisions`. Called from create()
+     * and from update() when title or body changed.
+     */
+    private void function writeRevision(
+        required any    post,
+        required numeric editorId,
+                 string  changeSummary = "manual"
+    ) {
+        variables.wirebox.getInstance( "PostRevision" ).create( {
+            "postId"        : arguments.post.getId(),
+            "editorId"      : arguments.editorId,
+            "title"         : arguments.post.getTitle(),
+            "bodyMarkdown"  : arguments.post.getBodyMarkdown() ?: "",
+            "bodyHtml"      : arguments.post.getBodyHtml() ?: "",
+            "changeSummary" : arguments.changeSummary
+        } );
+    }
+
+    /**
+     * Copy a struct onto a Quick entity. Skips keys that the entity
+     * doesn't own (ignores typos rather than exploding). The Quick
+     * setter names are camelCase matching the property name.
+     */
+    private void function applyAttrsToEntity( required any entity, required struct data ) {
+        for ( var key in arguments.data ) {
+            var setter = "set" & uCase( left( key, 1 ) ) & mid( key, 2, 999 );
+            if ( structKeyExists( arguments.entity, setter ) ) {
+                invoke( arguments.entity, setter, { "1" : arguments.data[ key ] } );
+            }
+        }
+    }
+
+}

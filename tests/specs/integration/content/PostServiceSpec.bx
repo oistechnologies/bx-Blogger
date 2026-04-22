@@ -1,0 +1,361 @@
+/**
+ * bx-Blogger — PostServiceSpec (Chunk 2.C)
+ *
+ * Covers PostService business rules:
+ *   - slugify() handles edge cases (unicode, empty, extreme lengths)
+ *   - ensureUniqueSlug() appends -2/-3 on collision, scoped by
+ *     (post_type, parent_id)
+ *   - create() auto-slugs from title, writes an initial revision,
+ *     populates bodyHtml/wordCount/readingTimeMinutes on insert
+ *   - update() bumps content_version + writes a revision only when
+ *     title or body actually changed
+ *   - publish/unpublish/schedule/trash/restore/softDelete transitions
+ *     all land the expected status + side effects
+ *   - promoteScheduledPosts() flips due-date scheduled posts to
+ *     published, leaves future ones alone
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        try {
+            var qb = getInstance( "QueryBuilder@qb" );
+            if ( arrayLen( variables.createdIds.revisions ?: [] ) ) qb.newQuery().from( "post_revisions" ).whereIn( "id", variables.createdIds.revisions ).delete();
+            if ( arrayLen( variables.createdIds.posts     ?: [] ) ) qb.newQuery().from( "post_revisions" ).whereIn( "post_id", variables.createdIds.posts ).delete();
+            if ( arrayLen( variables.createdIds.posts     ?: [] ) ) qb.newQuery().from( "posts"          ).whereIn( "id", variables.createdIds.posts ).delete();
+        } catch ( any e ) {
+            writeLog( file = "testbox", text = "PostServiceSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.createdIds = { "posts" : [], "revisions" : [] };
+        variables.postService = getInstance( "PostService" );
+    }
+
+    function run() {
+        describe( "PostService", function() {
+
+            // ----------------------------------------------------------
+            // Slug generation
+            // ----------------------------------------------------------
+            describe( "slugify()", function() {
+                it( "lowercases and dash-joins words", function() {
+                    expect( postService.slugify( "Hello, World!" ) ).toBe( "hello-world" );
+                } );
+
+                it( "collapses repeated spaces + punctuation", function() {
+                    expect( postService.slugify( "Multiple   spaces & dashes!!!" ) ).toBe( "multiple-spaces-dashes" );
+                } );
+
+                it( "folds common latin diacritics", function() {
+                    expect( postService.slugify( "Unicôdé tëst" ) ).toBe( "unicode-test" );
+                } );
+
+                it( "trims leading/trailing separators", function() {
+                    expect( postService.slugify( "  leading/trailing  " ) ).toBe( "leading-trailing" );
+                } );
+
+                it( "falls back to 'untitled' for empty / punctuation-only input", function() {
+                    expect( postService.slugify( "" ) ).toBe( "untitled" );
+                    expect( postService.slugify( "!!!" ) ).toBe( "untitled" );
+                } );
+            } );
+
+            describe( "ensureUniqueSlug()", function() {
+                it( "returns the input unchanged when nothing collides", function() {
+                    var s = postService.ensureUniqueSlug(
+                        slug     = "spec-slug-" & left( createUUID(), 8 ),
+                        postType = "post"
+                    );
+                    expect( s ).toStartWith( "spec-slug-" );
+                } );
+
+                it( "appends -2 on a same-scope collision and -3 on further", function() {
+                    var author = createTestUser();
+                    var base   = "collide-" & left( createUUID(), 8 );
+
+                    trackPost( postService.create( {
+                        authorId: author.getId(), title: "A", slug: base, bodyMarkdown: "body"
+                    } ) );
+
+                    var second = postService.ensureUniqueSlug( slug = base, postType = "post" );
+                    expect( second ).toBe( base & "-2" );
+
+                    // Store the -2 and try again — should get -3
+                    trackPost( postService.create( {
+                        authorId: author.getId(), title: "B", slug: second, bodyMarkdown: "body"
+                    } ) );
+                    var third = postService.ensureUniqueSlug( slug = base, postType = "post" );
+                    expect( third ).toBe( base & "-3" );
+                } );
+
+                it( "scopes collisions per (post_type, parent_id) — same slug on different post_type is allowed", function() {
+                    var author = createTestUser();
+                    var s      = "scoped-" & left( createUUID(), 8 );
+
+                    trackPost( postService.create( {
+                        authorId: author.getId(), title: "P", slug: s, postType: "post", bodyMarkdown: "x"
+                    } ) );
+                    // same slug but post_type=page — should still be unique
+                    var check = postService.ensureUniqueSlug( slug = s, postType = "page" );
+                    expect( check ).toBe( s );
+                } );
+
+                it( "permits a post to keep its own slug during update (excludeId)", function() {
+                    var author = createTestUser();
+                    var s      = "exclude-" & left( createUUID(), 8 );
+
+                    var post = trackPost( postService.create( {
+                        authorId: author.getId(), title: "Whatever", slug: s, bodyMarkdown: "body"
+                    } ) );
+
+                    var check = postService.ensureUniqueSlug(
+                        slug      = s,
+                        postType  = "post",
+                        excludeId = post.getId()
+                    );
+                    expect( check ).toBe( s );
+                } );
+            } );
+
+            // ----------------------------------------------------------
+            // Create
+            // ----------------------------------------------------------
+            describe( "create()", function() {
+                it( "auto-slugs from title when slug is blank", function() {
+                    var author = createTestUser();
+                    var post = trackPost( postService.create( {
+                        authorId:     author.getId(),
+                        title:        "My first post",
+                        bodyMarkdown: "Hello world this is my post"
+                    } ) );
+                    expect( post.getSlug() ).toBe( "my-first-post" );
+                } );
+
+                it( "populates body/word count/reading time on insert", function() {
+                    var author = createTestUser();
+                    var body   = repeatString( "word ", 450 );
+                    var post = trackPost( postService.create( {
+                        authorId:     author.getId(),
+                        title:        "Word count check",
+                        bodyMarkdown: body
+                    } ) );
+                    expect( post.getWordCount() ).toBe( 450 );
+                    expect( post.getReadingTimeMinutes() ).toBe( 2 ); // ceil(450/225)
+                    expect( len( post.getBodyHtml() ) ).toBeGT( 0 );
+                    expect( isNull( post.getBodyCompiledAt() ) ).toBeFalse();
+                    expect( post.getContentVersion() ).toBe( 1 );
+                } );
+
+                it( "writes an initial revision row", function() {
+                    var author = createTestUser();
+                    var post = trackPost( postService.create( {
+                        authorId: author.getId(), title: "Rev check", bodyMarkdown: "body"
+                    } ) );
+
+                    var revs = getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "post_revisions" )
+                        .where( "post_id", post.getId() )
+                        .get();
+                    expect( revs.len() ).toBe( 1 );
+                    expect( revs[ 1 ].change_summary ).toBe( "initial" );
+                } );
+
+                it( "defaults status to draft when not supplied", function() {
+                    var author = createTestUser();
+                    var post = trackPost( postService.create( {
+                        authorId: author.getId(), title: "Defaults", bodyMarkdown: "x"
+                    } ) );
+                    expect( post.getStatus() ).toBe( "draft" );
+                    expect( post.getPostType() ).toBe( "post" );
+                } );
+            } );
+
+            // ----------------------------------------------------------
+            // Update
+            // ----------------------------------------------------------
+            describe( "update()", function() {
+                it( "bumps content_version and writes a revision when body changes", function() {
+                    var author = createTestUser();
+                    var post = trackPost( postService.create( {
+                        authorId: author.getId(), title: "V1", bodyMarkdown: "original"
+                    } ) );
+
+                    postService.update(
+                        post     = post,
+                        attrs    = { "bodyMarkdown" : "revised body" },
+                        editorId = author.getId()
+                    );
+
+                    var reloaded = getInstance( "Post" ).find( post.getId() );
+                    expect( reloaded.getContentVersion() ).toBe( 2 );
+
+                    var revs = getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "post_revisions" )
+                        .where( "post_id", post.getId() )
+                        .get();
+                    expect( revs.len() ).toBe( 2 );
+                } );
+
+                it( "does NOT bump version / write revision when only metadata changes", function() {
+                    var author = createTestUser();
+                    var post = trackPost( postService.create( {
+                        authorId: author.getId(), title: "Meta", bodyMarkdown: "b"
+                    } ) );
+
+                    postService.update(
+                        post     = post,
+                        attrs    = { "seoTitle" : "SEO override" },
+                        editorId = author.getId()
+                    );
+
+                    var reloaded = getInstance( "Post" ).find( post.getId() );
+                    expect( reloaded.getContentVersion() ).toBe( 1, "version should stay at 1" );
+
+                    var revCount = getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "post_revisions" )
+                        .where( "post_id", post.getId() )
+                        .count();
+                    expect( revCount ).toBe( 1, "only the initial revision should exist" );
+                } );
+            } );
+
+            // ----------------------------------------------------------
+            // Status transitions
+            // ----------------------------------------------------------
+            describe( "status transitions", function() {
+                it( "publish() flips status + sets published_at once", function() {
+                    var author = createTestUser();
+                    var post = trackPost( postService.create( {
+                        authorId: author.getId(), title: "P", bodyMarkdown: "b"
+                    } ) );
+
+                    postService.publish( post );
+                    var first = getInstance( "Post" ).find( post.getId() );
+                    expect( first.getStatus() ).toBe( "published" );
+                    var firstPublishedAt = first.getPublishedAt();
+                    expect( isNull( firstPublishedAt ) ).toBeFalse();
+
+                    // Re-publish — published_at should NOT change
+                    postService.publish( first );
+                    var second = getInstance( "Post" ).find( post.getId() );
+                    expect( second.getPublishedAt() ).toBe( firstPublishedAt );
+                } );
+
+                it( "schedule() flips status to scheduled when time is in the future", function() {
+                    var author = createTestUser();
+                    var post = trackPost( postService.create( {
+                        authorId: author.getId(), title: "S", bodyMarkdown: "b"
+                    } ) );
+
+                    var when = dateAdd( "h", 1, now() );
+                    postService.schedule( post, when );
+                    var reloaded = getInstance( "Post" ).find( post.getId() );
+                    expect( reloaded.getStatus() ).toBe( "scheduled" );
+                    expect( isNull( reloaded.getScheduledAt() ) ).toBeFalse();
+                } );
+
+                it( "schedule() falls through to publish() when given a past time", function() {
+                    var author = createTestUser();
+                    var post = trackPost( postService.create( {
+                        authorId: author.getId(), title: "S2", bodyMarkdown: "b"
+                    } ) );
+
+                    postService.schedule( post, dateAdd( "h", -1, now() ) );
+                    var reloaded = getInstance( "Post" ).find( post.getId() );
+                    expect( reloaded.getStatus() ).toBe( "published" );
+                } );
+
+                it( "unpublish() returns to draft and bumps content_version", function() {
+                    var author = createTestUser();
+                    var post = trackPost( postService.create( {
+                        authorId: author.getId(), title: "U", bodyMarkdown: "b"
+                    } ) );
+                    postService.publish( post );
+
+                    var before = getInstance( "Post" ).find( post.getId() );
+                    var beforeVersion = before.getContentVersion();
+
+                    postService.unpublish( before );
+                    var after = getInstance( "Post" ).find( post.getId() );
+                    expect( after.getStatus() ).toBe( "draft" );
+                    expect( after.getContentVersion() ).toBe( beforeVersion + 1 );
+                } );
+
+                it( "trash()/restore() cycles status", function() {
+                    var author = createTestUser();
+                    var post = trackPost( postService.create( {
+                        authorId: author.getId(), title: "T", bodyMarkdown: "b"
+                    } ) );
+                    postService.trash( post );
+                    expect( getInstance( "Post" ).find( post.getId() ).getStatus() ).toBe( "trashed" );
+                    postService.restore( post );
+                    expect( getInstance( "Post" ).find( post.getId() ).getStatus() ).toBe( "draft" );
+                } );
+
+                it( "softDelete() sets deleted_at and frees the slug for reuse", function() {
+                    var author = createTestUser();
+                    var slug   = "soft-delete-" & left( createUUID(), 8 );
+                    var post = trackPost( postService.create( {
+                        authorId: author.getId(), title: "SD", slug: slug, bodyMarkdown: "b"
+                    } ) );
+
+                    postService.softDelete( post );
+                    expect( isNull( getInstance( "Post" ).find( post.getId() ).getDeletedAt() ) ).toBeFalse();
+
+                    // The freed slug should now be reusable
+                    var reused = trackPost( postService.create( {
+                        authorId: author.getId(), title: "reused", slug: slug, bodyMarkdown: "b"
+                    } ) );
+                    expect( reused.getSlug() ).toBe( slug );
+                } );
+            } );
+
+            // ----------------------------------------------------------
+            // Scheduled promotion
+            // ----------------------------------------------------------
+            describe( "promoteScheduledPosts()", function() {
+                it( "promotes posts whose scheduled_at is due and leaves future ones alone", function() {
+                    var author = createTestUser();
+                    var due  = trackPost( postService.create( {
+                        authorId: author.getId(), title: "Due", bodyMarkdown: "b"
+                    } ) );
+                    var later = trackPost( postService.create( {
+                        authorId: author.getId(), title: "Later", bodyMarkdown: "b"
+                    } ) );
+
+                    // Drive one into a 'due' scheduled state via raw qb so
+                    // we don't bounce through schedule()'s "past→publish" guard.
+                    getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "posts" )
+                        .where( "id", due.getId() )
+                        .update( {
+                            "status"       : "scheduled",
+                            "scheduled_at" : dateAdd( "n", -5, now() )
+                        } );
+
+                    postService.schedule( later, dateAdd( "h", 2, now() ) );
+
+                    var promoted = postService.promoteScheduledPosts();
+                    expect( promoted ).toBeGTE( 1 );
+
+                    expect( getInstance( "Post" ).find( due.getId() ).getStatus() ).toBe( "published" );
+                    expect( getInstance( "Post" ).find( later.getId() ).getStatus() ).toBe( "scheduled" );
+                } );
+            } );
+
+        } );
+    }
+
+    // --------------------------------------------------------------------
+    // Helpers
+    // --------------------------------------------------------------------
+
+    private any function trackPost( required any post ) {
+        variables.createdIds.posts.append( arguments.post.getId() );
+        return arguments.post;
+    }
+
+}
