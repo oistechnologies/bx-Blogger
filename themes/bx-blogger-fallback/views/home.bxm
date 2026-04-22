@@ -1,0 +1,28 @@
+<bx:output>
+<section class="mb-4">
+    <h1 class="display-5 mb-0">#encodeForHTML( prc.siteName ?: getSetting( "AppName" ) )#</h1>
+    <bx:if len( prc.siteTagline ?: "" )>
+        <p class="text-muted lead">#encodeForHTML( prc.siteTagline )#</p>
+    </bx:if>
+</section>
+
+<bx:if ( prc.posts ?: [] ).len()>
+    <div class="row g-4">
+        <bx:loop array="#prc.posts#" item="post">
+            <div class="col-md-6 col-lg-4">
+                #view( view = "bx-blogger-fallback/partials/post-card", args = { "post" : post } )#
+            </div>
+        </bx:loop>
+    </div>
+    <bx:if structKeyExists( prc, "pagination" )>
+        <div class="mt-4">
+            #view( view = "bx-blogger-fallback/partials/pagination" )#
+        </div>
+    </bx:if>
+<bx:else>
+    <div class="alert alert-light border" role="status">
+        <p class="mb-1 fw-semibold">No posts published yet.</p>
+        <p class="mb-0 text-muted small">Sign in to the admin and create your first post &mdash; it&rsquo;ll show up here.</p>
+    </div>
+</bx:if>
+</bx:output>

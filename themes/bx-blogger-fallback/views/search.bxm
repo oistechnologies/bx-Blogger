@@ -1,0 +1,47 @@
+<bx:output>
+<header class="mb-4">
+    <p class="text-muted mb-1 text-uppercase small">Search</p>
+    <bx:if len( prc.searchQuery ?: "" )>
+        <h1 class="h3 mb-1">Results for &ldquo;#encodeForHTML( prc.searchQuery )#&rdquo;</h1>
+        <p class="text-muted small mb-0">
+            <bx:if ( prc.posts ?: [] ).len()>
+                #( prc.totalResults ?: prc.posts.len() )# match<bx:if ( prc.totalResults ?: prc.posts.len() ) != 1>es</bx:if>
+            <bx:else>
+                No matches
+            </bx:if>
+        </p>
+    <bx:else>
+        <h1 class="h3 mb-0">Search</h1>
+    </bx:if>
+</header>
+
+<form class="mb-4" method="get" action="/search" role="search">
+    <div class="input-group">
+        <input
+            type="search"
+            name="q"
+            class="form-control"
+            placeholder="Search posts&hellip;"
+            value="#encodeForHTMLAttribute( prc.searchQuery ?: "" )#"
+            required>
+        <button class="btn btn-primary" type="submit">Search</button>
+    </div>
+</form>
+
+<bx:if ( prc.posts ?: [] ).len()>
+    <div class="row g-4">
+        <bx:loop array="#prc.posts#" item="post">
+            <div class="col-md-6 col-lg-4">
+                #view( view = "bx-blogger-fallback/partials/post-card", args = { "post" : post } )#
+            </div>
+        </bx:loop>
+    </div>
+    <bx:if structKeyExists( prc, "pagination" )>
+        <div class="mt-4">
+            #view( view = "bx-blogger-fallback/partials/pagination" )#
+        </div>
+    </bx:if>
+<bx:elseif len( prc.searchQuery ?: "" )>
+    <p class="text-muted">Try a different set of keywords.</p>
+</bx:if>
+</bx:output>

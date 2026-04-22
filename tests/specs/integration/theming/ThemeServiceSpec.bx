@@ -1,0 +1,227 @@
+/**
+ * bx-Blogger — ThemeServiceSpec (Chunk 3.A)
+ *
+ * Covers the theme-resolution contract:
+ *   - `bx-blogger-fallback` is always resolvable out of the box (the
+ *     migration seeds it and its directory ships in the repo).
+ *   - `resolveActive()` returns the row flagged `is_active = 1`.
+ *   - When the active row's directory is missing, resolution degrades
+ *     to the fallback rather than throwing.
+ *   - When a non-fallback theme has a directory but no theme.json (or
+ *     an unparseable one), resolution also degrades to the fallback.
+ *   - `get(slug)` throws `bxBlogger.ThemeNotFound` for unknown slugs.
+ *   - `activate(slug)` flips the `is_active` bit + fires the switch
+ *     lifecycle interception points.
+ *   - Theme.view/layout/partial each return paths relative to the
+ *     `themes/` external-location root, falling back to the fallback
+ *     theme when the file is missing on disk.
+ *   - `configureRendererPaths()` points ColdBox's external lookup at
+ *     the shared `themes/` root.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        try {
+            var qb = getInstance( "QueryBuilder@qb" );
+            if ( arrayLen( variables.createdThemeSlugs ?: [] ) ) {
+                qb.newQuery().from( "themes" ).whereIn( "slug", variables.createdThemeSlugs ).delete();
+            }
+            // Leave `bx-blogger-fallback` as the single active theme so
+            // subsequent specs and dev-seed runs find the app in a clean state.
+            qb.newQuery().from( "themes" ).update( { "is_active" : 0 } );
+            qb.newQuery().from( "themes" ).where( "slug", "bx-blogger-fallback" ).update( { "is_active" : 1 } );
+
+            // Clean up any synthetic test-theme directories we created
+            // under /tmp.
+            for ( var dir in variables.createdDirs ?: [] ) {
+                if ( directoryExists( dir ) ) directoryDelete( dir, true );
+            }
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "ThemeServiceSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.createdThemeSlugs = [];
+        variables.createdDirs       = [];
+        variables.themeSvc          = getInstance( "ThemeService" );
+    }
+
+    function run() {
+        describe( "ThemeService", function() {
+
+            beforeEach( function() {
+                // Start every spec with only the fallback theme active.
+                var qb = getInstance( "QueryBuilder@qb" );
+                qb.newQuery().from( "themes" ).update( { "is_active" : 0 } );
+                qb.newQuery().from( "themes" ).where( "slug", "bx-blogger-fallback" ).update( { "is_active" : 1 } );
+            } );
+
+            describe( "resolveActive()", function() {
+                it( "returns the bx-blogger-fallback theme on a clean install", function() {
+                    var theme = themeSvc.resolveActive();
+                    expect( theme.getSlug() ).toBe( "bx-blogger-fallback" );
+                    expect( theme.getDirectory() ).toBe( "themes/bx-blogger-fallback" );
+                    expect( theme.getName() ).toBe( "bx-Blogger Fallback" );
+                } );
+
+                it( "degrades to fallback when the active theme's directory is missing", function() {
+                    var slug = seedGhostTheme( createDir = false );
+
+                    var theme = themeSvc.resolveActive();
+                    expect( theme.getSlug() ).toBe( "bx-blogger-fallback" );
+                } );
+
+                it( "degrades to fallback when a non-fallback theme has no theme.json", function() {
+                    var slug = seedGhostTheme( createDir = true, writeManifest = false );
+
+                    var theme = themeSvc.resolveActive();
+                    expect( theme.getSlug() ).toBe( "bx-blogger-fallback" );
+                } );
+
+                it( "degrades to fallback when theme.json is unparseable", function() {
+                    var slug = seedGhostTheme( createDir = true, writeManifest = true, manifestBody = "{ this is not json" );
+
+                    var theme = themeSvc.resolveActive();
+                    expect( theme.getSlug() ).toBe( "bx-blogger-fallback" );
+                } );
+            } );
+
+            describe( "get()", function() {
+                it( "returns the fallback Theme by slug", function() {
+                    var theme = themeSvc.get( "bx-blogger-fallback" );
+                    expect( theme.getSlug() ).toBe( "bx-blogger-fallback" );
+                } );
+
+                it( "throws bxBlogger.ThemeNotFound for an unknown slug", function() {
+                    var threw = false;
+                    try { themeSvc.get( "no-such-theme" ); }
+                    catch ( bxBlogger.ThemeNotFound e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+            } );
+
+            describe( "list()", function() {
+                it( "includes bx-blogger-fallback", function() {
+                    var rows = themeSvc.list();
+                    var slugs = rows.map( function( r ) { return r.slug; } );
+                    expect( slugs ).toInclude( "bx-blogger-fallback" );
+                } );
+            } );
+
+            describe( "activate()", function() {
+                it( "is idempotent when the theme is already active", function() {
+                    themeSvc.activate( "bx-blogger-fallback" );
+                    var active = getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "themes" ).where( "is_active", 1 ).get();
+                    expect( active.len() ).toBe( 1 );
+                    expect( active[ 1 ].slug ).toBe( "bx-blogger-fallback" );
+                } );
+
+                it( "throws bxBlogger.ThemeNotFound for an unknown slug", function() {
+                    var threw = false;
+                    try { themeSvc.activate( "no-such-theme" ); }
+                    catch ( bxBlogger.ThemeNotFound e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+                it( "flips is_active when switching between two themes", function() {
+                    var slug = seedGhostTheme( createDir = true, writeManifest = true );
+                    themeSvc.activate( slug );
+
+                    var rows = getInstance( "QueryBuilder@qb" ).newQuery().from( "themes" ).where( "is_active", 1 ).get();
+                    expect( rows.len() ).toBe( 1 );
+                    expect( rows[ 1 ].slug ).toBe( slug );
+                } );
+            } );
+
+            describe( "Theme.view/layout/partial helpers", function() {
+                it( "return fallback-relative paths for files that exist on disk", function() {
+                    var theme = themeSvc.resolveActive();
+                    expect( theme.view( "home" ) ).toBe( "bx-blogger-fallback/views/home" );
+                    expect( theme.layout( "Main" ) ).toBe( "bx-blogger-fallback/layouts/Main" );
+                    expect( theme.partial( "header" ) ).toBe( "bx-blogger-fallback/partials/header" );
+                } );
+
+                it( "still return a fallback path when the file doesn't exist (surface clean render error)", function() {
+                    var theme = themeSvc.resolveActive();
+                    expect( theme.view( "totally-made-up" ) ).toBe( "bx-blogger-fallback/views/totally-made-up" );
+                } );
+
+                it( "asset() returns a versioned URL under /themes/{slug}/assets/", function() {
+                    var theme = themeSvc.resolveActive();
+                    expect( theme.asset( "css/theme.css" ) ).toBe( "/themes/bx-blogger-fallback/assets/css/theme.css?v=1.0.0" );
+                } );
+            } );
+
+            describe( "configureRendererPaths()", function() {
+                it( "points viewsExternalLocation + layoutsExternalLocation at 'themes'", function() {
+                    themeSvc.configureRendererPaths();
+                    var controller = getController();
+                    expect( controller.getSetting( "viewsExternalLocation" ) ).toBe( "themes" );
+                    expect( controller.getSetting( "layoutsExternalLocation" ) ).toBe( "themes" );
+                } );
+            } );
+
+        } );
+    }
+
+    // --------------------------------------------------------------------
+
+    /**
+     * Insert a synthetic theme row + optionally scaffold its directory
+     * under `themes/` (so the test paths line up with the `themes/`
+     * external-location root ThemeService registers). Flips `is_active`
+     * so the resolver picks this row up on its next read.
+     *
+     * @createDir      Create a real directory under themes/ (default true).
+     * @writeManifest  Drop a theme.json inside that directory (default true).
+     * @manifestBody   Override the theme.json body (defaults to a minimal valid manifest).
+     * @return         The slug of the newly-created theme row.
+     */
+    private string function seedGhostTheme(
+        boolean createDir     = true,
+        boolean writeManifest = true,
+        string  manifestBody  = ""
+    ) {
+        var slug         = "ghost-" & lCase( replace( createUUID(), "-", "", "all" ) );
+        var directoryRel = "themes/" & slug;
+        var absDir       = expandPath( "/" & directoryRel );
+        variables.createdThemeSlugs.append( slug );
+
+        if ( arguments.createDir ) {
+            if ( !directoryExists( absDir ) ) directoryCreate( absDir, true );
+            variables.createdDirs.append( absDir );
+            if ( arguments.writeManifest ) {
+                // Literal JSON string; serializeJSON() inside a TestBox
+                // spec's inner closure is dispatched as a method on
+                // BaseSpec and errors with "method does not exist".
+                var body = len( arguments.manifestBody )
+                    ? arguments.manifestBody
+                    : '{"name":"' & slug & '","slug":"' & slug & '","version":"1.0.0","bootstrap":"5.3"}';
+                fileWrite( absDir & "/theme.json", body );
+            }
+        }
+
+        var now = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+        var qb  = getInstance( "QueryBuilder@qb" );
+        qb.newQuery().from( "themes" ).update( { "is_active" : 0 } );
+        qb.newQuery().from( "themes" ).insert( {
+            "slug"       : slug,
+            "name"       : "Ghost " & slug,
+            "version"    : "1.0.0",
+            "author"     : "test",
+            "is_active"  : 1,
+            "is_system"  : 0,
+            "directory"  : directoryRel,
+            "created_at" : now,
+            "updated_at" : now
+        } );
+
+        return slug;
+    }
+
+}

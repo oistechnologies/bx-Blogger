@@ -1,0 +1,24 @@
+{
+    "$schema": "/schemas/theme.schema.json",
+    "name": "bx-Blogger Fallback",
+    "slug": "bx-blogger-fallback",
+    "version": "1.0.0",
+    "author": "bx-Blogger Team",
+    "description": "Vanilla Bootstrap 5 fallback theme. Always installed; cannot be uninstalled. Activated automatically when the configured active theme can't be resolved. Uses Bootstrap 5 from CDN — no build step, no asset folder.",
+    "minBxblogerVersion": "0.1.0",
+    "bootstrap": "5.3",
+    "supports": [ "dark-mode" ],
+    "menus": {
+        "header": "Header Navigation",
+        "footer": "Footer Navigation"
+    },
+    "templates": {
+        "post": [ "default" ],
+        "page": [ "default" ]
+    },
+    "thumbnails": [
+        { "name": "thumb",  "width": 150,  "height": 150, "crop": true  },
+        { "name": "medium", "width": 1024, "crop": false }
+    ],
+    "options": []
+}

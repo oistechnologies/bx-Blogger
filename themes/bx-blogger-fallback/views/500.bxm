@@ -1,0 +1,12 @@
+<bx:output>
+<p class="display-4 text-muted mb-2">500</p>
+<h1 class="h3 mb-3">Something went wrong</h1>
+<p class="text-muted">
+    We&rsquo;ve logged the error and will take a look. If the problem keeps
+    happening, please contact the site administrator.
+</p>
+<bx:if len( prc.errorReference ?: "" )>
+    <p class="text-muted small">Reference: <code>#encodeForHTML( prc.errorReference )#</code></p>
+</bx:if>
+<p><a href="/" class="btn btn-outline-primary mt-2">Back to home</a></p>
+</bx:output>

@@ -1,0 +1,221 @@
+/**
+ * bx-Blogger — ThemeService (Chunk 3.A)
+ *
+ * Owns theme metadata storage, active-theme resolution, and the
+ * `viewsExternalLocation` / `layoutsExternalLocation` wiring that
+ * lets handlers render theme-scoped views with plain
+ * `event.setView("home")`-style calls.
+ *
+ * Resolution contract (§12 in PLAN):
+ *
+ *   1. Read `themes WHERE is_active = 1`.
+ *   2. If that row's directory exists and (for non-fallback themes)
+ *      its theme.json parses, return it.
+ *   3. Otherwise log a single warning and return the fallback theme.
+ *
+ * The fallback theme (`bx-blogger-fallback`) is seeded by the
+ * 2026_04_22_030001_CreateThemesTable migration and marked
+ * `is_system = 1` so admin UIs can refuse to delete it.
+ *
+ * Path wiring: `configureRendererPaths()` points
+ * `viewsExternalLocation` / `layoutsExternalLocation` at the top-level
+ * `themes/` folder. Combined with the Theme value object's
+ * `view("home")` / `layout("Main")` helpers — which return paths like
+ * `bx-blogger-fallback/views/home` — the ColdBox renderer ends up
+ * loading `themes/bx-blogger-fallback/views/home.bxm` from disk. One
+ * external location, N themes.
+ *
+ * `activate(slug)` fires `bxBlogger.preThemeSwitch` +
+ * `bxBlogger.postThemeSwitch` around the flip. Nothing downstream
+ * currently hooks those; Phase 5's page cache will use them to bust
+ * rendered-page caches on theme switch.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox"    inject="wirebox";
+    property name="controller" inject="coldbox";
+    property name="log"        inject="logbox:logger:{this}";
+
+    variables.FALLBACK_SLUG = "bx-blogger-fallback";
+    variables.THEMES_ROOT   = "themes";
+
+    // --------------------------------------------------------------------
+    // Renderer wiring
+    // --------------------------------------------------------------------
+
+    /**
+     * Register the `themes/` folder as the external lookup location for
+     * both views and layouts. Idempotent — safe to call every request
+     * (the interceptor does this on `afterAspectsLoad` during app boot
+     * and on `bxBlogger.postThemeSwitch` after an activate).
+     */
+    void function configureRendererPaths() {
+        variables.controller.setSetting( name = "viewsExternalLocation",   value = variables.THEMES_ROOT );
+        variables.controller.setSetting( name = "layoutsExternalLocation", value = variables.THEMES_ROOT );
+    }
+
+    // --------------------------------------------------------------------
+    // Lookup
+    // --------------------------------------------------------------------
+
+    /**
+     * Returns the active Theme value object. Never throws — degrades to
+     * the fallback theme if the DB row is missing, the directory is
+     * absent, or the manifest is malformed.
+     */
+    any function resolveActive() {
+        var row = freshQb().from( "themes" ).where( "is_active", 1 ).first();
+
+        if ( hasRow( row ) && isThemeRowUsable( row ) ) {
+            return buildTheme( row );
+        }
+
+        if ( !hasRow( row ) ) {
+            variables.log.warn( "ThemeService: no active theme row; falling back to " & variables.FALLBACK_SLUG );
+        }
+        else {
+            variables.log.warn(
+                "ThemeService: active theme [" & row.slug
+                & "] could not be resolved on disk; falling back to " & variables.FALLBACK_SLUG
+            );
+        }
+
+        var fb = freshQb().from( "themes" ).where( "slug", variables.FALLBACK_SLUG ).first();
+        if ( hasRow( fb ) ) return buildTheme( fb );
+
+        // Migrations haven't run — synthesize a minimal Theme object so
+        // the request can still render an error page without throwing.
+        return variables.wirebox.getInstance( "Theme" )
+            .setSlug( variables.FALLBACK_SLUG )
+            .setName( "bx-Blogger Fallback" )
+            .setVersion( "1.0.0" )
+            .setAuthor( "bx-Blogger Team" )
+            .setDirectory( variables.THEMES_ROOT & "/" & variables.FALLBACK_SLUG )
+            .setManifest( {} );
+    }
+
+    array function list() {
+        return freshQb().from( "themes" )
+            .orderBy( "is_active", "desc" )
+            .orderBy( "slug" )
+            .get();
+    }
+
+    /**
+     * Look up a single theme by slug. Returns a Theme value object.
+     */
+    any function get( required string slug ) {
+        var row = freshQb().from( "themes" ).where( "slug", arguments.slug ).first();
+        if ( !hasRow( row ) ) {
+            throw( type = "bxBlogger.ThemeNotFound", message = "Theme not found: " & arguments.slug );
+        }
+        return buildTheme( row );
+    }
+
+    // --------------------------------------------------------------------
+    // Mutations
+    // --------------------------------------------------------------------
+
+    /**
+     * Flip the `is_active` bit to the target theme. Throws if the theme
+     * doesn't exist. Fires `bxBlogger.preThemeSwitch` + `postThemeSwitch`
+     * so caches, sitemap, etc. can invalidate.
+     */
+    void function activate( required string slug ) {
+        var target = freshQb().from( "themes" ).where( "slug", arguments.slug ).first();
+        if ( !hasRow( target ) ) {
+            throw( type = "bxBlogger.ThemeNotFound", message = "Theme not found: " & arguments.slug );
+        }
+
+        var previous = freshQb().from( "themes" ).where( "is_active", 1 ).first();
+        var prevSlug = hasRow( previous ) ? previous.slug : "";
+
+        variables.controller.getInterceptorService().announce(
+            state = "bxBlogger.preThemeSwitch",
+            data  = { "from" : prevSlug, "to" : arguments.slug }
+        );
+
+        freshQb().from( "themes" ).update( { "is_active" : 0 } );
+        freshQb().from( "themes" )
+            .where( "slug", arguments.slug )
+            .update( {
+                "is_active"  : 1,
+                "updated_at" : dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" )
+            } );
+
+        configureRendererPaths();
+        variables.log.info( "ThemeService: activated theme [" & arguments.slug & "] (was [" & prevSlug & "])" );
+
+        variables.controller.getInterceptorService().announce(
+            state = "bxBlogger.postThemeSwitch",
+            data  = { "from" : prevSlug, "to" : arguments.slug }
+        );
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    private any function freshQb() {
+        // qb instances accumulate bindings across operations; always pull
+        // a fresh builder for every statement.
+        return variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery();
+    }
+
+    /**
+     * qb's `.first()` sometimes returns `null` and sometimes an empty
+     * struct when no row matches — BoxLang's qb build leans toward the
+     * latter. Treat either as "no row found".
+     */
+    private boolean function hasRow( required any row ) {
+        if ( isNull( arguments.row ) ) return false;
+        if ( isStruct( arguments.row ) && structIsEmpty( arguments.row ) ) return false;
+        return true;
+    }
+
+    /**
+     * The row is usable if its directory exists on disk and, for
+     * anything other than the fallback theme, a theme.json is readable.
+     */
+    private boolean function isThemeRowUsable( required any row ) {
+        var dir = expandPath( "/" & arguments.row.directory );
+        if ( !directoryExists( dir ) ) return false;
+        if ( arguments.row.slug == variables.FALLBACK_SLUG ) return true;
+
+        var manifestPath = dir & "/theme.json";
+        if ( !fileExists( manifestPath ) ) return false;
+        try {
+            deserializeJSON( fileRead( manifestPath ) );
+            return true;
+        }
+        catch ( any e ) {
+            variables.log.warn( "ThemeService: theme.json for [" & arguments.row.slug & "] failed to parse: " & e.message );
+            return false;
+        }
+    }
+
+    private any function buildTheme( required any row ) {
+        var manifest = {};
+        if ( len( arguments.row.manifest_json ?: "" ) ) {
+            try { manifest = deserializeJSON( arguments.row.manifest_json ); }
+            catch ( any e ) { manifest = {}; }
+        }
+        else if ( arguments.row.slug != variables.FALLBACK_SLUG ) {
+            // manifest_json wasn't cached at install time — read it off disk on the fly
+            var manifestPath = expandPath( "/" & arguments.row.directory & "/theme.json" );
+            if ( fileExists( manifestPath ) ) {
+                try { manifest = deserializeJSON( fileRead( manifestPath ) ); }
+                catch ( any e ) { manifest = {}; }
+            }
+        }
+
+        return variables.wirebox.getInstance( "Theme" )
+            .setSlug( arguments.row.slug )
+            .setName( arguments.row.name )
+            .setVersion( arguments.row.version )
+            .setAuthor( arguments.row.author ?: "" )
+            .setDirectory( arguments.row.directory )
+            .setManifest( manifest );
+    }
+
+}

@@ -1,0 +1,92 @@
+/**
+ * bx-Blogger — Theme value object (Chunk 3.A)
+ *
+ * Returned by ThemeService.resolveActive(). Holds everything a handler
+ * or layout needs to render against the active theme:
+ *
+ *   - slug / name / version / author / directory
+ *   - parsed manifest struct (theme.json contents; empty {} for the fallback)
+ *   - view(name), layout(name), partial(name) helpers — resolve to the
+ *     path string passed into `event.setView()` / `event.setLayout()` /
+ *     `view()`. Each helper falls back to the fallback theme's copy when
+ *     the active theme doesn't ship that specific file, so any theme
+ *     author can implement only the pieces they care about.
+ *   - asset(path) helper — produces a versioned public URL for
+ *     CSS/JS/images the theme ships under `assets/`. Used by built
+ *     themes that compile through Vite (Phase 3.C+); the fallback
+ *     theme uses Bootstrap via CDN and doesn't need it.
+ *
+ * Resolver mechanics: the path this object returns is always relative
+ * to the `themes/` folder (which `ThemeResolutionInterceptor` registers
+ * as `viewsExternalLocation` + `layoutsExternalLocation`). So
+ * `view("home")` returns e.g. "bx-blogger-fallback/views/home", which
+ * the ColdBox renderer locates at `themes/bx-blogger-fallback/views/home.bxm`.
+ */
+class accessors="true" {
+
+    property name="slug";
+    property name="name";
+    property name="version";
+    property name="author";
+    property name="directory";     // e.g. "themes/bx-blogger-fallback"
+    property name="manifest";      // struct parsed from theme.json
+    property name="fallbackSlug";  // slug used when a lookup misses
+    property name="fallbackDir";   // directory of the fallback theme
+
+    function init() {
+        variables.slug         = "";
+        variables.name         = "";
+        variables.version      = "1.0.0";
+        variables.author       = "";
+        variables.directory    = "";
+        variables.manifest     = {};
+        variables.fallbackSlug = "bx-blogger-fallback";
+        variables.fallbackDir  = "themes/bx-blogger-fallback";
+        return this;
+    }
+
+    /**
+     * Return a path suitable for event.setView() — falls back to the
+     * fallback theme's copy when the active theme is missing the view.
+     */
+    string function view( required string name ) {
+        return resolve( "views", arguments.name );
+    }
+
+    string function layout( required string name ) {
+        return resolve( "layouts", arguments.name );
+    }
+
+    string function partial( required string name ) {
+        return resolve( "partials", arguments.name );
+    }
+
+    /**
+     * Versioned public URL for a theme-owned asset.
+     * Example: asset("css/theme.css") → "/themes/bx-blogger-default/assets/css/theme.css?v=1.0.0"
+     */
+    string function asset( required string path ) {
+        return "/" & variables.directory & "/assets/" & arguments.path & "?v=" & variables.version;
+    }
+
+    // --------------------------------------------------------------------
+
+    /**
+     * Resolve a kind/name pair (e.g. "views","home") to a path relative
+     * to the `themes/` external-location root. The active theme wins if
+     * the file exists on disk; otherwise we fall through to the fallback
+     * theme's copy. If neither has the file, returns the fallback path
+     * so ColdBox surfaces a clean "view not found" error at render time
+     * (easier to spot than a silent blank page).
+     */
+    private string function resolve( required string kind, required string name ) {
+        var activePath   = variables.directory    & "/" & arguments.kind & "/" & arguments.name & ".bxm";
+        var fallbackPath = variables.fallbackDir  & "/" & arguments.kind & "/" & arguments.name & ".bxm";
+
+        if ( variables.slug != variables.fallbackSlug && fileExists( expandPath( "/" & activePath ) ) ) {
+            return variables.slug & "/" & arguments.kind & "/" & arguments.name;
+        }
+        return variables.fallbackSlug & "/" & arguments.kind & "/" & arguments.name;
+    }
+
+}

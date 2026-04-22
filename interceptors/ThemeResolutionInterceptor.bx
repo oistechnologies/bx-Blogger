@@ -1,0 +1,76 @@
+/**
+ * bx-Blogger — ThemeResolutionInterceptor (Chunk 3.A)
+ *
+ * Two jobs:
+ *
+ *   1. On app boot (`afterAspectsLoad`) register the top-level
+ *      `themes/` folder as both the `viewsExternalLocation` and
+ *      `layoutsExternalLocation`. Combined with Theme.view()/.layout()
+ *      returning slug-prefixed paths like `bx-blogger-fallback/views/home`,
+ *      the ColdBox renderer ends up resolving
+ *      `themes/bx-blogger-fallback/views/home.bxm` from disk.
+ *
+ *   2. On every request (`preProcess`) populate `prc.theme` with the
+ *      current active Theme object so handlers and layouts can call
+ *      `prc.theme.view("home")` / `prc.theme.layout("Post")` /
+ *      `prc.theme.partial("header")` / `prc.theme.asset("css/theme.css")`
+ *      without having to look the service up themselves.
+ *
+ * ThemeService.activate() re-registers the paths itself after flipping
+ * `is_active`, so no separate `bxBlogger.postThemeSwitch` listener is
+ * needed here. (The external location is always `themes/`; only the
+ * slug-prefix on the helper's return value changes per-theme.)
+ *
+ * Dependency-injection note: per the RateLimitInterceptor gotcha in
+ * CLAUDE.md, interceptors are built before the model scan finishes,
+ * so `property inject=` fails with "Instance not found". ThemeService
+ * is looked up lazily via `getInstance()` in each hook instead.
+ *
+ * Failure mode: every hook is wrapped in try/catch. If ThemeService
+ * blows up (e.g., themes table missing because migrations haven't run
+ * yet against a brand-new container) we log and keep going rather
+ * than tanking the whole request — the renderer falls back to the
+ * stock ColdBox resolution path, which is enough to render `/__health`
+ * and `/migrations` admin UIs.
+ */
+class extends="coldbox.system.Interceptor" {
+
+    function configure() {}
+
+    /**
+     * Fires after ColdBox has loaded every interceptor + aspect — the
+     * model scan is complete, so ThemeService can be resolved safely.
+     * Points the renderer at the `themes/` folder once per app boot.
+     */
+    function afterAspectsLoad( event, data, buffer ) {
+        try {
+            getInstance( "ThemeService" ).configureRendererPaths();
+        }
+        catch ( any e ) {
+            writeLog(
+                file = "coldbox",
+                type = "warning",
+                text = "ThemeResolutionInterceptor afterAspectsLoad failed: " & e.message
+            );
+        }
+    }
+
+    /**
+     * Resolve the active theme for this request and expose it on prc.
+     * ThemeService.resolveActive() never throws — it degrades to the
+     * fallback theme when the configured active theme can't be loaded.
+     */
+    function preProcess( event, data, buffer, rc, prc ) {
+        try {
+            prc.theme = getInstance( "ThemeService" ).resolveActive();
+        }
+        catch ( any e ) {
+            writeLog(
+                file = "coldbox",
+                type = "warning",
+                text = "ThemeResolutionInterceptor preProcess failed: " & e.message
+            );
+        }
+    }
+
+}

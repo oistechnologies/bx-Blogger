@@ -211,7 +211,11 @@ class {
 						"passwordReset.doForgot"  : { limit : 5, windowSeconds : 3600, keyBy : "ip" }   // 5 / hour
 					}
 				}
-			}
+			},
+			// Chunk 3.A — wires `themes/` as the views+layouts external
+			// location at app boot and populates `prc.theme` on every
+			// request so handlers/layouts can resolve theme-scoped files.
+			{ class : "interceptors.ThemeResolutionInterceptor" }
 		];
 
 		/**
