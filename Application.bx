@@ -35,8 +35,23 @@ class {
 	COLDBOX_FAIL_FAST     = true;
 
 	/**
-	 * Default datasource (configured in runtime/boxlang.json datasources.coldbox)
+	 * Datasource definitions + default selection. Env-driven credentials
+	 * so the same Application.bx works in dev and prod (values differ
+	 * via .env). Connection string is compose-internal (`mysql:3306`);
+	 * operators using external MySQL override `DB_HOST` — the connection
+	 * string is rebuilt accordingly in prod-compose.
 	 */
+	this.datasources = {
+		"coldbox": {
+			"dbdriver" : "MySQL",
+			"database" : getSystemSetting( "DB_DATABASE", "bx_blogger" ),
+			"host"     : getSystemSetting( "DB_HOST", "mysql" ),
+			"port"     : getSystemSetting( "DB_PORT", "3306" ),
+			"username" : getSystemSetting( "DB_USERNAME", "bx_blogger" ),
+			"password" : getSystemSetting( "DB_PASSWORD", "bxblog-dev-pass" ),
+			"custom"   : "useUnicode=true&characterEncoding=UTF-8&serverTimezone=UTC&allowPublicKeyRetrieval=true&useSSL=false&useLegacyDatetimeCode=true"
+		}
+	};
 	this.datasource = "coldbox";
 
 	/**

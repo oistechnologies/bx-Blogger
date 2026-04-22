@@ -1,0 +1,35 @@
+/**
+ * bx-Blogger — Permission entity (Quick)
+ *
+ * Maps to the `permissions` table. Permission slugs follow
+ * `entity.action[.scope]` per PLAN §10 (posts.edit.own,
+ * users.purge, system.admin, etc.).
+ */
+class extends="quick.models.BaseEntity" accessors="true" {
+
+    property name="id"           column="id"          insert=false update=false;
+    property name="slug"         column="slug";
+    property name="name"         column="name";
+    property name="description"  column="description";
+    property name="isSystem"     column="is_system";
+    property name="createdAt"    column="created_at";
+    property name="updatedAt"    column="updated_at";
+
+    /**
+     * Roles that grant this permission.
+     */
+    function roles() {
+        return belongsToMany(
+            relationName    = "Role",
+            table           = "role_permissions",
+            foreignPivotKey = "permission_id",
+            relatedPivotKey = "role_id"
+        );
+    }
+
+    this.memento = {
+        defaultIncludes: [ "id", "slug", "name", "description", "isSystem" ],
+        defaultExcludes: [ "createdAt", "updatedAt" ]
+    };
+
+}

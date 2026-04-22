@@ -1,0 +1,97 @@
+/**
+ * Phase 1 Chunk 1.C — User/Role/Permission entity smoke tests.
+ *
+ * Verifies:
+ *   - Quick entity classes resolve via WireBox auto-mapping
+ *   - Seeded roles (super_admin…subscriber) round-trip from DB
+ *   - Role→Permission belongsToMany loads (super_admin should have 11 perms)
+ *   - Creating a User + attaching a role works
+ *   - hasRole() / hasPermission() convenience methods return correct values
+ *   - Mementifier profiles produce expected shapes
+ *
+ * This is a short integration spec (hits the real MySQL container). Full
+ * Phase 1 test coverage lands in Chunk 1.I.
+ */
+class extends="coldbox.system.testing.BaseTestCase" {
+
+    this.appMapping = "/root";
+
+    function beforeAll() {
+        super.beforeAll();
+        setup();
+    }
+
+    function run() {
+        describe( "User/Role/Permission entities", function() {
+
+            it( "resolves Role entity via WireBox and loads seeded super_admin", function() {
+                var Role = getInstance( "Role" );
+                var superAdmin = Role.where( "slug", "super_admin" ).first();
+
+                expect( isNull( superAdmin ) ).toBeFalse( "super_admin role should exist" );
+                expect( superAdmin.getName() ).toBe( "Super Admin" );
+                expect( superAdmin.getIsSystem() ).toBeTrue();
+            } );
+
+            it( "loads the 11 permissions attached to super_admin", function() {
+                var Role = getInstance( "Role" );
+                var superAdmin = Role.where( "slug", "super_admin" ).first();
+                var perms = superAdmin.getPermissions();
+
+                expect( perms.len() ).toBe( 11, "super_admin should have 11 permissions per PLAN §10" );
+            } );
+
+            it( "hasPermission() returns true for granted slug and false for unknown", function() {
+                var Role = getInstance( "Role" );
+                var superAdmin = Role.where( "slug", "super_admin" ).first();
+
+                expect( superAdmin.hasPermission( "system.admin" ) ).toBeTrue();
+                expect( superAdmin.hasPermission( "system.fictional" ) ).toBeFalse();
+            } );
+
+            it( "creates a User, attaches a role, and hasRole() works", function() {
+                var User = getInstance( "User" );
+                var Role = getInstance( "Role" );
+
+                var author = Role.where( "slug", "author" ).first();
+
+                var user = User.create( {
+                    email:        "smoke-test-#createUUID()#@bx-blogger.local",
+                    passwordHash: "$2a$12$fakeHashForSmokeTest",
+                    displayName:  "Smoke Test User",
+                    isActive:     1
+                } );
+
+                // attach role via the join
+                user.roles().attach( author.getId() );
+
+                var reloaded = User.find( user.getId() );
+                expect( reloaded.hasRole( "author" ) ).toBeTrue();
+                expect( reloaded.hasRole( "super_admin" ) ).toBeFalse();
+
+                // cleanup
+                reloaded.roles().detach( author.getId() );
+                reloaded.delete();
+            } );
+
+            it( "memento strips passwordHash from default profile", function() {
+                var User = getInstance( "User" );
+                var user = User.create( {
+                    email:        "memento-test-#createUUID()#@bx-blogger.local",
+                    passwordHash: "$2a$12$shouldNotLeak",
+                    displayName:  "Memento Test",
+                    isActive:     1
+                } );
+
+                var memento = user.getMemento();
+                expect( memento ).notToHaveKey( "passwordHash" );
+                expect( memento ).notToHaveKey( "pendingEmail" );
+                expect( memento ).toHaveKey( "email" );
+                expect( memento ).toHaveKey( "displayName" );
+
+                user.delete();
+            } );
+        } );
+    }
+
+}

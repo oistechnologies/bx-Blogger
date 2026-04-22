@@ -1,0 +1,56 @@
+/**
+ * bx-Blogger — Role entity (Quick)
+ *
+ * Maps to the `roles` table. Six system-seeded roles
+ * (super_admin, admin, editor, author, contributor, subscriber) carry
+ * is_system=1; admin-created custom roles do not.
+ */
+class extends="quick.models.BaseEntity" accessors="true" {
+
+    property name="id"           column="id"          insert=false update=false;
+    property name="slug"         column="slug";
+    property name="name"         column="name";
+    property name="description"  column="description";
+    property name="isSystem"     column="is_system";
+    property name="createdAt"    column="created_at";
+    property name="updatedAt"    column="updated_at";
+
+    /**
+     * Users assigned this role.
+     */
+    function users() {
+        return belongsToMany(
+            relationName    = "User",
+            table           = "user_roles",
+            foreignPivotKey = "role_id",
+            relatedPivotKey = "user_id"
+        );
+    }
+
+    /**
+     * Permissions granted to this role.
+     */
+    function permissions() {
+        return belongsToMany(
+            relationName    = "Permission",
+            table           = "role_permissions",
+            foreignPivotKey = "role_id",
+            relatedPivotKey = "permission_id"
+        );
+    }
+
+    /**
+     * Does this role grant the given permission slug?
+     */
+    function hasPermission( required string permissionSlug ) {
+        return getPermissions().some( function( perm ) {
+            return arguments.perm.getSlug() == permissionSlug;
+        } );
+    }
+
+    this.memento = {
+        defaultIncludes: [ "id", "slug", "name", "description", "isSystem" ],
+        defaultExcludes: [ "createdAt", "updatedAt" ]
+    };
+
+}

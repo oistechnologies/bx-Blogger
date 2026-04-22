@@ -13,9 +13,27 @@ class {
 	this.sessionTimeout     = createTimespan( 0, 0, 15, 0 );
 	this.applicationTimeout = createTimespan( 0, 0, 15, 0 );
 
-	// Tests-tree mapping
+	// Datasource — mirrors /Application.bx so tests hit the same MySQL instance
+	this.datasources = {
+		"coldbox": {
+			"dbdriver" : "MySQL",
+			"database" : getSystemSetting( "DB_DATABASE", "bx_blogger" ),
+			"host"     : getSystemSetting( "DB_HOST", "mysql" ),
+			"port"     : getSystemSetting( "DB_PORT", "3306" ),
+			"username" : getSystemSetting( "DB_USERNAME", "bx_blogger" ),
+			"password" : getSystemSetting( "DB_PASSWORD", "bxblog-dev-pass" ),
+			"custom"   : "useUnicode=true&characterEncoding=UTF-8&serverTimezone=UTC&allowPublicKeyRetrieval=true&useSSL=false&useLegacyDatetimeCode=true"
+		}
+	};
+	this.datasource = "coldbox";
+
+	// Tests-tree mapping + /root mapping pointing at the project root.
+	// The flat layout puts config/Coldbox.bx at the project root, one level
+	// up from /tests. ColdBox's VirtualApp uses appMapping="/root" to find it.
 	_testsRoot = getDirectoryFromPath( getCurrentTemplatePath() );
+	_appRoot   = reReplaceNoCase( _testsRoot, "tests(\\|/)$", "" );
 	this.mappings[ "/tests" ] = _testsRoot;
+	this.mappings[ "/root" ]  = _appRoot;
 
 	/**
 	 * Fires on every test request. Builds a ColdBox Virtual Application.

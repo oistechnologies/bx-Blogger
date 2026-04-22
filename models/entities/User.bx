@@ -1,0 +1,121 @@
+/**
+ * bx-Blogger — User entity (Quick)
+ *
+ * Maps to the `users` table. Phase 1 scope: identity + credentials + role
+ * assignments. Mementifier profiles expose safe JSON shapes for admin
+ * APIs, handlers, and (in Phase 2) user-facing public profiles.
+ *
+ * Password hashing happens in UserService (Chunk 1.D), not in the entity —
+ * entities stay persistence-focused, services handle domain logic.
+ */
+class extends="quick.models.BaseEntity" accessors="true" {
+
+    // Persistence mapping
+    property name="id"                   column="id"                  insert=false update=false;
+    property name="email"                column="email";
+    property name="passwordHash"         column="password_hash";
+    property name="displayName"          column="display_name";
+    property name="username"             column="username";
+    // Booleans have MySQL-level defaults set in the migration; keeping
+    // entity-level defaults off avoids "false"-string-to-tinyint mismatch
+    // on INSERT (Quick passes string literal; MySQL expects 0/1).
+    property name="isActive"             column="is_active";
+    property name="twoFactorEnabled"     column="two_factor_enabled";
+    property name="emailVerifiedAt"      column="email_verified_at";
+    property name="pendingEmail"         column="pending_email";
+    property name="passwordChangedAt"    column="password_changed_at";
+    property name="mustChangePassword"   column="must_change_password";
+    property name="lastLoginAt"          column="last_login_at";
+    property name="lastLoginIp"          column="last_login_ip";
+    property name="deletedAt"            column="deleted_at";
+    property name="createdAt"            column="created_at";
+    property name="updatedAt"            column="updated_at";
+
+    /**
+     * Roles attached via the user_roles join table. Enables
+     *   user.getRoles() — returns array of Role entities
+     *   user.rolesArray() — collection fluent interface
+     *   user.attach( "Role", roleId ) / user.detach( "Role", roleId )
+     */
+    function roles() {
+        return belongsToMany(
+            relationName     = "Role",
+            table            = "user_roles",
+            foreignPivotKey  = "user_id",
+            relatedPivotKey  = "role_id"
+        );
+    }
+
+    /**
+     * Convenience: does this user have the given role slug?
+     * Used by cbsecurity/cbauth integrations in Chunk 1.D+.
+     */
+    function hasRole( required string roleSlug ) {
+        return getRoles().some( function( role ) {
+            return arguments.role.getSlug() == roleSlug;
+        } );
+    }
+
+    /**
+     * Convenience: does this user hold the given permission slug?
+     * Walks role→permission via the two join tables.
+     */
+    function hasPermission( required string permissionSlug ) {
+        for ( var role in getRoles() ) {
+            if ( role.hasPermission( permissionSlug ) ) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Is the account verified + active + not soft-deleted?
+     * Gates login attempts in Phase 1 Chunk 1.E.
+     */
+    function canLogin() {
+        return getIsActive()
+            && !isNull( getEmailVerifiedAt() )
+            && isNull( getDeletedAt() );
+    }
+
+    /**
+     * Mementifier configuration.
+     * - `default` memento is the shape admin APIs return
+     * - `public` memento strips sensitive fields (no passwordHash, no IP, no pendingEmail)
+     */
+    this.memento = {
+        defaultIncludes: [
+            "id",
+            "email",
+            "displayName",
+            "username",
+            "isActive",
+            "twoFactorEnabled",
+            "emailVerifiedAt",
+            "lastLoginAt",
+            "createdAt",
+            "updatedAt"
+        ],
+        defaultExcludes: [
+            "passwordHash",
+            "pendingEmail",
+            "lastLoginIp",
+            "deletedAt",
+            "passwordChangedAt",
+            "mustChangePassword"
+        ],
+        // Additional named profiles for specific response shapes
+        profiles: {
+            "public": {
+                defaultIncludes: [ "id", "displayName", "username" ]
+            },
+            "admin": {
+                defaultIncludes: [
+                    "id", "email", "displayName", "username", "isActive",
+                    "twoFactorEnabled", "emailVerifiedAt", "lastLoginAt",
+                    "lastLoginIp", "createdAt", "updatedAt"
+                ]
+            }
+        }
+    };
+
+}
