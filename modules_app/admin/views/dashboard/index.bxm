@@ -1,63 +1,199 @@
 <bx:output>
+<bx:script>
+    // Shortcuts for the template — keep the markup below readable.
+    counts = prc.statusCounts;
+    postIdx = ( s ) => structKeyExists( counts, s ) ? counts[ s ] : 0;
+    fmtBytes = ( n ) => {
+        if ( n < 1024 )              return n & " B";
+        if ( n < 1024 * 1024 )       return numberFormat( n / 1024, "0.0" ) & " KB";
+        if ( n < 1024 * 1024 * 1024 ) return numberFormat( n / 1024 / 1024, "0.0" ) & " MB";
+        return numberFormat( n / 1024 / 1024 / 1024, "0.0" ) & " GB";
+    };
+    statusColor = ( s ) => {
+        switch ( s ) {
+            case "published":      return "success";
+            case "scheduled":      return "info";
+            case "pending_review": return "warning";
+            case "archived":       return "secondary";
+            default:               return "secondary";  // draft + anything else
+        }
+    };
+</bx:script>
+
 <div class="d-flex justify-content-between align-items-center mb-4">
-	<h1 class="h3 mb-0">Welcome back, #encodeForHTML( prc.user.getDisplayName() )#</h1>
-	<span class="badge bg-secondary">Phase 2 · Chunk 2.B</span>
+    <h1 class="h3 mb-0">Welcome back, #encodeForHTML( prc.user.getDisplayName() )#</h1>
 </div>
 
 <div class="row g-3 mb-4">
-	<div class="col-md-6 col-lg-4">
-		<div class="card h-100">
-			<div class="card-body">
-				<h2 class="h6 text-muted">Account</h2>
-				<dl class="small mb-0">
-					<dt>Signed in as</dt>
-					<dd>#encodeForHTML( prc.user.getEmail() )#</dd>
-					<dt>Last login</dt>
-					<dd>
-						<bx:if !isNull( prc.user.getLastLoginAt() )>
-							#dateTimeFormat( prc.user.getLastLoginAt(), "yyyy-mm-dd HH:nn:ss" )# UTC
-						<bx:else>
-							this is your first session
-						</bx:if>
-					</dd>
-					<dt>Roles</dt>
-					<dd>
-						<bx:loop array="#prc.user.getRoles()#" item="role">
-							<span class="badge bg-secondary me-1">#encodeForHTML( role.getName() )#</span>
-						</bx:loop>
-					</dd>
-				</dl>
-			</div>
-		</div>
-	</div>
 
-	<div class="col-md-6 col-lg-4">
-		<div class="card h-100">
-			<div class="card-body">
-				<h2 class="h6 text-muted">CBWIRE smoke test</h2>
-				<p class="small text-muted mb-2">
-					Proves the reactive pipeline end-to-end before the real
-					editor wires land in 2.D.
-				</p>
-				#wire( "hello" )#
-			</div>
-		</div>
-	</div>
+    <!--- Account ----------------------------------------------------- --->
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100 stat-card stat-card-primary">
+            <div class="card-header card-header-soft card-header-soft-primary">
+                <span class="h6 mb-0">Account</span>
+            </div>
+            <div class="card-body">
+                <dl class="dash-dl small mb-0">
+                    <dt>Signed in as</dt>
+                    <dd>#encodeForHTML( prc.user.getEmail() )#</dd>
+                    <dt>Last login</dt>
+                    <dd>
+                        <bx:if !isNull( prc.user.getLastLoginAt() )>
+                            #dateTimeFormat( prc.user.getLastLoginAt(), "yyyy-mm-dd HH:nn:ss" )# UTC
+                        <bx:else>
+                            this is your first session
+                        </bx:if>
+                    </dd>
+                    <dt>Roles</dt>
+                    <dd>
+                        <bx:loop array="#prc.user.getRoles()#" item="role">
+                            <span class="badge bg-secondary me-1">#encodeForHTML( role.getName() )#</span>
+                        </bx:loop>
+                    </dd>
+                </dl>
+            </div>
+        </div>
+    </div>
 
-	<div class="col-md-6 col-lg-4">
-		<div class="card h-100">
-			<div class="card-body">
-				<h2 class="h6 text-muted">Shipping next</h2>
-				<ul class="small mb-0">
-					<li>2.C — PostService CRUD + slug/scheduling/reading-time rules</li>
-					<li>2.D — <code>posts.list</code> + <code>posts.editor</code> wires</li>
-					<li>2.E — Categories + tags managers</li>
-					<li>2.F — Media library + uploads</li>
-					<li>2.G — Editorial workflow (review queue, preview links, autosave)</li>
-					<li>2.H/2.I — AI authoring + image generation</li>
-				</ul>
-			</div>
-		</div>
-	</div>
+    <!--- Content at a glance ----------------------------------------- --->
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100 stat-card stat-card-info">
+            <div class="card-header card-header-soft card-header-soft-info d-flex justify-content-between align-items-baseline">
+                <span class="h6 mb-0">Content at a glance</span>
+                <a href="#event.buildLink( 'admin:Posts.index' )#" class="small">All posts &rarr;</a>
+            </div>
+            <div class="card-body">
+                <dl class="dash-dl dash-dl-rows small mb-0">
+                    <dt>Published</dt>
+                    <dd><span class="badge bg-success">#postIdx( "published" )#</span></dd>
+                    <dt>Draft</dt>
+                    <dd><span class="badge bg-secondary">#postIdx( "draft" )#</span></dd>
+                    <dt>Pending review</dt>
+                    <dd><span class="badge bg-warning text-dark">#postIdx( "pending_review" )#</span></dd>
+                    <dt>Scheduled</dt>
+                    <dd><span class="badge bg-info text-dark">#postIdx( "scheduled" )#</span></dd>
+                    <dt>Archived</dt>
+                    <dd><span class="badge bg-secondary">#postIdx( "archived" )#</span></dd>
+                </dl>
+            </div>
+        </div>
+    </div>
+
+    <!--- Media library summary --------------------------------------- --->
+    <div class="col-md-6 col-lg-4">
+        <div class="card h-100 stat-card stat-card-success">
+            <div class="card-header card-header-soft card-header-soft-success d-flex justify-content-between align-items-baseline">
+                <span class="h6 mb-0">Media library</span>
+                <a href="#event.buildLink( 'admin:Media.index' )#" class="small">Open &rarr;</a>
+            </div>
+            <div class="card-body">
+                <div class="d-flex gap-4 align-items-end">
+                    <div>
+                        <div class="display-6 fw-semibold lh-1">#numberFormat( prc.mediaStats.count )#</div>
+                        <div class="small text-muted">files</div>
+                    </div>
+                    <div>
+                        <div class="display-6 fw-semibold lh-1">#fmtBytes( prc.mediaStats.totalBytes )#</div>
+                        <div class="small text-muted">on disk</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!--- Top 5 posts by views ---------------------------------------- --->
+    <div class="col-md-6 col-lg-6">
+        <div class="card h-100 stat-card stat-card-warning">
+            <div class="card-header card-header-soft card-header-soft-warning">
+                <span class="h6 mb-0">Top posts by views</span>
+            </div>
+            <div class="card-body p-0">
+                <bx:if prc.topPosts.len() == 0>
+                    <p class="small text-muted m-3 mb-0">
+                        No views recorded yet. Views start counting once Phase 6 ships the <code>RecordPostViewJob</code>.
+                    </p>
+                <bx:else>
+                    <table class="table table-sm mb-0">
+                        <tbody>
+                            <bx:loop array="#prc.topPosts#" item="p">
+                                <tr>
+                                    <td class="text-truncate" style="max-width: 24rem;">
+                                        <a href="#event.buildLink( to = 'admin:Posts.editor', queryString = 'id=' & p.id )#">
+                                            #encodeForHTML( p.title )#
+                                        </a>
+                                    </td>
+                                    <td class="text-end text-muted small">
+                                        #numberFormat( p.view_count )# view<bx:if p.view_count neq 1>s</bx:if>
+                                    </td>
+                                </tr>
+                            </bx:loop>
+                        </tbody>
+                    </table>
+                </bx:if>
+            </div>
+        </div>
+    </div>
+
+    <!--- Recent posts (last 5 updated) ------------------------------- --->
+    <div class="col-md-6 col-lg-6">
+        <div class="card h-100 stat-card stat-card-secondary">
+            <div class="card-header card-header-soft card-header-soft-secondary">
+                <span class="h6 mb-0">Recently updated</span>
+            </div>
+            <div class="card-body p-0">
+                <bx:if prc.recentPosts.len() == 0>
+                    <p class="small text-muted m-3 mb-0">No posts yet.</p>
+                <bx:else>
+                    <table class="table table-sm mb-0">
+                        <tbody>
+                            <bx:loop array="#prc.recentPosts#" item="p">
+                                <tr>
+                                    <td class="text-truncate" style="max-width: 22rem;">
+                                        <a href="#event.buildLink( to = 'admin:Posts.editor', queryString = 'id=' & p.id )#">
+                                            #encodeForHTML( p.title )#
+                                        </a>
+                                    </td>
+                                    <td><span class="badge bg-#statusColor( p.status )# text-uppercase">#encodeForHTML( p.status )#</span></td>
+                                    <td class="text-end text-muted small">#dateTimeFormat( p.updated_at, "mmm d, HH:nn" )#</td>
+                                </tr>
+                            </bx:loop>
+                        </tbody>
+                    </table>
+                </bx:if>
+            </div>
+        </div>
+    </div>
+
+    <!--- Recent logins (admin-only) ---------------------------------- --->
+    <bx:if prc.canViewLogins>
+        <div class="col-12">
+            <div class="card stat-card stat-card-danger">
+                <div class="card-header card-header-soft card-header-soft-danger">
+                    <span class="h6 mb-0">Recent successful logins</span>
+                </div>
+                <div class="card-body p-0">
+                    <bx:if prc.recentLogins.len() == 0>
+                        <p class="small text-muted m-3 mb-0">No login activity yet.</p>
+                    <bx:else>
+                        <table class="table table-sm mb-0">
+                            <thead class="table-light">
+                                <tr><th>Email</th><th>IP</th><th class="text-end">When</th></tr>
+                            </thead>
+                            <tbody>
+                                <bx:loop array="#prc.recentLogins#" item="l">
+                                    <tr>
+                                        <td>#encodeForHTML( l.email )#</td>
+                                        <td><code class="small">#encodeForHTML( l.ip )#</code></td>
+                                        <td class="text-end text-muted small">#dateTimeFormat( l.created_at, "yyyy-mm-dd HH:nn" )#</td>
+                                    </tr>
+                                </bx:loop>
+                            </tbody>
+                        </table>
+                    </bx:if>
+                </div>
+            </div>
+        </div>
+    </bx:if>
+
 </div>
 </bx:output>

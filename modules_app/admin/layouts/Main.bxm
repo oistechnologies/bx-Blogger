@@ -13,9 +13,52 @@
 		body { background: ##f8f9fa; }
 		.app-brand { font-weight: 600; letter-spacing: -0.01em; }
 		.card { border: 0; box-shadow: 0 .125rem .25rem rgba(0,0,0,.05); }
-		.admin-sidebar .nav-link { color: ##495057; border-radius: .25rem; }
-		.admin-sidebar .nav-link:hover,
-		.admin-sidebar .nav-link.active { background: ##212529; color: ##fff; }
+
+		/* Sidebar — keep the strong active state, add a left accent bar
+		   so the current section is easy to pick out at a glance. */
+		.admin-sidebar .nav-link {
+			color: ##495057;
+			border-radius: .25rem;
+			border-left: 3px solid transparent;
+			padding-left: calc( .75rem - 3px );
+		}
+		.admin-sidebar .nav-link:hover { background: ##e9ecef; color: ##212529; }
+		.admin-sidebar .nav-link.active {
+			background: ##212529;
+			color: ##fff;
+			border-left-color: var( --bs-primary );
+		}
+
+		/* Dashboard stat cards — subtle left accent so a row of cards
+		   reads as distinct tiles rather than one uniform grid. Opt-in
+		   via the `stat-card-*` modifier; other admin cards unchanged. */
+		.stat-card { border-left: 3px solid var( --bs-secondary ); }
+		.stat-card-primary   { border-left-color: var( --bs-primary   ); }
+		.stat-card-info      { border-left-color: var( --bs-info      ); }
+		.stat-card-success   { border-left-color: var( --bs-success   ); }
+		.stat-card-warning   { border-left-color: var( --bs-warning   ); }
+		.stat-card-danger    { border-left-color: var( --bs-danger    ); }
+		.stat-card-secondary { border-left-color: var( --bs-secondary ); }
+
+		/* Muted tinted card headers — same palette, lower saturation.
+		   Uses rgba() via Bootstrap's -rgb CSS vars so we stay dark-mode
+		   friendly if the admin ever wires a theme toggle. */
+		.card-header-soft { background-color: rgba( var( --bs-secondary-rgb ), .08 ); border-bottom: 0; }
+		.card-header-soft-primary   { background-color: rgba( var( --bs-primary-rgb   ), .08 ); }
+		.card-header-soft-info      { background-color: rgba( var( --bs-info-rgb      ), .12 ); }
+		.card-header-soft-success   { background-color: rgba( var( --bs-success-rgb   ), .10 ); }
+		.card-header-soft-warning   { background-color: rgba( var( --bs-warning-rgb   ), .14 ); }
+		.card-header-soft-danger    { background-color: rgba( var( --bs-danger-rgb    ), .10 ); }
+		.card-header-soft-secondary { background-color: rgba( var( --bs-secondary-rgb ), .10 ); }
+
+		/* Dashboard definition lists — tighter key/value pairing, muted
+		   term labels, a touch of row spacing for legibility. */
+		.dash-dl dt { font-weight: 500; color: ##6c757d; margin-top: .5rem; font-size: .8125rem; }
+		.dash-dl dt:first-child { margin-top: 0; }
+		.dash-dl dd { margin-bottom: 0; }
+		.dash-dl-rows { display: grid; grid-template-columns: 1fr auto; gap: .25rem .75rem; }
+		.dash-dl-rows dt { margin-top: 0; align-self: center; }
+		.dash-dl-rows dd { align-self: center; text-align: right; }
 	</style>
 	<!--- CBWIRE assets — small inline JS + CSS used by reactive components.
 	      Rendered once per request; subsequent wire includes pick up the

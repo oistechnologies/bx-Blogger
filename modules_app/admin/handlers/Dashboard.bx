@@ -1,17 +1,22 @@
 /**
- * bx-Blogger — admin:Dashboard (Chunk 2.B)
+ * bx-Blogger — admin:Dashboard
  *
  * Landing page for signed-in admins. cbsecurity's firewall gates the
  * parent route pattern (`^admin.*`) so every action in this module is
  * already authenticated — handlers never need to re-check.
  *
- * Chunk 2.B ships the skeleton: session info + placeholder widgets.
- * Chunk 2.D+ drop a CBWire component per widget (recent posts, queued
- * reviews, notifications inbox, scheduled drafts, etc.) into the view.
+ * Populates `prc` with stats for the dashboard cards: content counts
+ * by status, top posts by views, recent posts, media totals, and
+ * (for admins with `system.health`) recent login activity.
+ *
+ * Notifications, jobs queue health, and 404/broken-link widgets are
+ * left out because their data sources ship with Phase 6/7 — see
+ * PLAN §Phase UX Post-UX Additions for the tracking.
  */
 class extends="coldbox.system.EventHandler" {
 
     property name="cbauth" inject="AuthenticationService@cbauth";
+    property name="qb"     inject="QueryBuilder@qb";
 
     this.layouts = {
         "Main.bxm" : "*"   // module-local layout (see modules_app/admin/layouts/Main.bxm)
@@ -20,7 +25,81 @@ class extends="coldbox.system.EventHandler" {
     function index( event, rc, prc ) {
         prc.pageTitle = "Admin Dashboard";
         prc.user      = cbauth.getUser();
+
+        prc.statusCounts = statusCounts();
+        prc.topPosts     = topPostsByViews( limit = 5 );
+        prc.recentPosts  = recentPosts( limit = 5 );
+        prc.mediaStats   = mediaStats();
+
+        prc.canViewLogins = prc.user.hasPermission( "system.health" );
+        prc.recentLogins  = prc.canViewLogins ? recentLogins( limit = 5 ) : [];
+
         event.setView( view = "dashboard/index" );
+    }
+
+    /**
+     * Count posts grouped by status, excluding soft-deleted rows.
+     * Returns a struct keyed by status → count; any status not in
+     * the result defaults to 0 via the caller's `?: 0` pattern.
+     */
+    private struct function statusCounts() {
+        var rows = variables.qb.newQuery()
+            .from( "posts" )
+            .whereNull( "deleted_at" )
+            .select( "status" )
+            .selectRaw( "COUNT(*) AS n" )
+            .groupBy( "status" )
+            .get();
+        var out = {};
+        for ( var r in rows ) out[ r.status ] = r.n;
+        return out;
+    }
+
+    private array function topPostsByViews( numeric limit = 5 ) {
+        return variables.qb.newQuery()
+            .from( "posts" )
+            .whereNull( "deleted_at" )
+            .where( "status", "published" )
+            .where( "view_count", ">", 0 )
+            .orderBy( "view_count", "desc" )
+            .limit( arguments.limit )
+            .select( [ "id", "title", "slug", "view_count", "published_at" ] )
+            .get();
+    }
+
+    private array function recentPosts( numeric limit = 5 ) {
+        return variables.qb.newQuery()
+            .from( "posts" )
+            .whereNull( "deleted_at" )
+            .where( "status", "!=", "trashed" )
+            .orderBy( "updated_at", "desc" )
+            .limit( arguments.limit )
+            .select( [ "id", "title", "slug", "status", "updated_at", "author_id" ] )
+            .get();
+    }
+
+    private struct function mediaStats() {
+        var row = variables.qb.newQuery()
+            .from( "media" )
+            .whereNull( "deleted_at" )
+            .selectRaw( "COUNT(*) AS n, COALESCE(SUM(size_bytes),0) AS total_bytes" )
+            .first();
+        // qb.first() on a raw-select returns a struct with lowercase keys
+        // on MySQL driver; be defensive either way.
+        return {
+            "count"      : row.n ?: 0,
+            "totalBytes" : row.total_bytes ?: 0
+        };
+    }
+
+    private array function recentLogins( numeric limit = 5 ) {
+        return variables.qb.newQuery()
+            .from( "login_audit" )
+            .where( "success", 1 )
+            .orderBy( "created_at", "desc" )
+            .limit( arguments.limit )
+            .select( [ "email", "ip", "created_at" ] )
+            .get();
     }
 
 }
