@@ -23,6 +23,7 @@
 property name="postService"         inject="PostService";
 property name="draftPreviewService"  inject="DraftPreviewService";
 property name="aiService"            inject="AiAssistantService";
+property name="aiImageService"       inject="AiImageService";
 property name="cbauth"               inject="AuthenticationService@cbauth";
 
 data = {
@@ -57,7 +58,16 @@ data = {
     "aiBusy"          : false,
     "aiError"         : "",
     "showAiReview"    : false,    // Review-and-Suggest panel
-    "aiSuggestions"   : []
+    "aiSuggestions"   : [],
+    // 2.I AI image-gen state
+    "showImageModal"  : false,
+    "imagePrompt"     : "",
+    "imageStyle"      : "",       // "" | Realistic | Illustration | Watercolor | Minimalist
+    "imagePreviews"   : [],
+    "imageBusy"       : false,
+    "imageError"      : "",
+    "imageTarget"     : "inline", // "inline" appends ![alt](url); "featured" sets featured_media_id
+    "featuredMediaId" : 0         // updated from loadFromDb + by "Use as featured"
 };
 
 /**
@@ -99,6 +109,7 @@ private function loadFromDb( required id ) {
     data.scheduledAt    = len( post.getScheduledAt() ?: "" )
         ? dateTimeFormat( post.getScheduledAt(), "yyyy-mm-dd'T'HH:nn" )
         : "";
+    data.featuredMediaId = val( post.getFeaturedMediaId() ?: 0 );
 }
 
 // --------------------------------------------------------------------
@@ -406,11 +417,98 @@ function dismissSuggestion( required id ) {
 }
 
 // --------------------------------------------------------------------
+// 2.I — AI image generation
+// --------------------------------------------------------------------
+
+function aiImageEnabled() {
+    var user = cbauth.getUser();
+    return aiImageService.isEnabled() && user.hasPermission( "posts.ai.image_generate" );
+}
+
+/**
+ * Open the image modal. `target` is "inline" (insert into body at end)
+ * or "featured" (set featured_media_id on save). Resetting previews
+ * here means every click starts with an empty grid — authors don't
+ * see stale previews from the last attempt.
+ */
+function openImageModal( string target = "inline" ) {
+    if ( !aiImageEnabled() ) { data.imageError = "AI image generation is disabled."; return; }
+    data.showImageModal = true;
+    data.imagePrompt    = "";
+    data.imageStyle     = "";
+    data.imagePreviews  = [];
+    data.imageError     = "";
+    data.imageTarget    = arguments.target;
+}
+
+function closeImageModal() {
+    data.showImageModal = false;
+    data.imageBusy      = false;
+    data.imagePreviews  = [];
+    data.imageError     = "";
+}
+
+function generateImagePreviews() {
+    if ( !aiImageEnabled() ) { data.imageError = "AI image generation is disabled."; return; }
+    data.imageBusy    = true;
+    data.imageError   = "";
+    data.imagePreviews = [];
+    try {
+        var result = aiImageService.generateImages(
+            prompt    = data.imagePrompt,
+            styleHint = data.imageStyle,
+            userId    = cbauth.getUser().getId(),
+            context   = data.imageTarget
+        );
+        data.imagePreviews = result.previews;
+    }
+    catch ( bxBlogger.AiImageRateLimited e )    { data.imageError = e.message; }
+    catch ( bxBlogger.AiImageBudgetExceeded e ) { data.imageError = e.message; }
+    catch ( bxBlogger.AiInvalidInput e )        { data.imageError = e.message; }
+    catch ( bxBlogger.AiImageDisabled e )       { data.imageError = e.message; }
+    catch ( bxBlogger.AiProviderError e )       { data.imageError = "Provider: " & e.message; }
+    catch ( any e )                              { data.imageError = "Unexpected: " & e.message; }
+    finally { data.imageBusy = false; }
+}
+
+/**
+ * Save the chosen preview into the media library and insert/attach.
+ * For "inline" we append a markdown `![alt](url)` to the body buffer;
+ * for "featured" we set featuredMediaId on the post buffer (next
+ * save() persists it).
+ */
+function useImagePreview( required previewId ) {
+    if ( !aiImageEnabled() ) { data.imageError = "AI image generation is disabled."; return; }
+    try {
+        var media = aiImageService.saveGeneratedImage(
+            previewId = arguments.previewId,
+            userId    = cbauth.getUser().getId(),
+            role      = data.imageTarget
+        );
+
+        var url = getInstance( "MediaService" ).urlFor( media );
+        var alt = media.getAltText() ?: "Generated image";
+
+        if ( data.imageTarget == "featured" ) {
+            data.featuredMediaId = media.getId();
+            data.flashOk = "Featured image set.";
+        } else {
+            var snippet = char( 10 ) & char( 10 ) & "![" & alt & "](" & url & ")" & char( 10 );
+            data.bodyMarkdown = ( data.bodyMarkdown ?: "" ) & snippet;
+            data.flashOk = "Image inserted into the post body.";
+        }
+        closeImageModal();
+    }
+    catch ( bxBlogger.AiPreviewExpired e ) { data.imageError = e.message; }
+    catch ( any e )                         { data.imageError = "Could not save image: " & e.message; }
+}
+
+// --------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------
 
 private struct function collectAttrs() {
-    return {
+    var attrs = {
         "title"          : trim( data.title ),
         "slug"           : len( trim( data.slug ) ) ? data.slug : postService.slugify( data.title ),
         "excerpt"        : data.excerpt,
@@ -421,6 +519,10 @@ private struct function collectAttrs() {
         "seoDescription" : data.seoDescription,
         "allowIndexing"  : data.allowIndexing ? 1 : 0
     };
+    if ( val( data.featuredMediaId ?: 0 ) > 0 ) {
+        attrs.featuredMediaId = data.featuredMediaId;
+    }
+    return attrs;
 }
 
 private array function validate() {
@@ -533,6 +635,11 @@ private function clearFlashes() {
 									<button type="button" class="btn btn-sm btn-link p-0"
 									        wire:click="aiRequestReview"
 									        wire:loading.attr="disabled">Review & suggest</button>
+								</bx:if>
+								<bx:if aiImageEnabled()>
+									·
+									<button type="button" class="btn btn-sm btn-link p-0"
+									        wire:click="openImageModal('inline')">Generate image</button>
 								</bx:if>
 								·
 								<button type="button" class="btn btn-sm btn-link p-0"
@@ -654,6 +761,32 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 				</div>
 			</div>
 
+			<!--- Featured image panel ---------------------------- --->
+			<div class="card mb-3">
+				<div class="card-body">
+					<h2 class="h6">Featured image</h2>
+					<bx:if val( args.featuredMediaId ?: 0 ) > 0>
+						<bx:script>
+							fm = getInstance( "Media" ).find( args.featuredMediaId );
+						</bx:script>
+						<bx:if !isNull( fm )>
+							<img src="#getInstance( 'MediaService' ).urlFor( fm )#"
+							     class="img-fluid rounded mb-2"
+							     alt="#encodeForHTMLAttribute( fm.getAltText() ?: '' )#">
+							<p class="small text-muted mb-2">#encodeForHTML( fm.getOriginalFilename() )#</p>
+						</bx:if>
+						<button type="button" class="btn btn-sm btn-outline-secondary w-100"
+						        wire:click="$set('featuredMediaId', 0)">Remove featured image</button>
+					<bx:else>
+						<p class="small text-muted mb-2">No featured image yet.</p>
+					</bx:if>
+					<bx:if aiImageEnabled()>
+						<button type="button" class="btn btn-sm btn-outline-primary w-100 mt-2"
+						        wire:click="openImageModal('featured')">Generate featured image</button>
+					</bx:if>
+				</div>
+			</div>
+
 			<div class="card">
 				<div class="card-body">
 					<h2 class="h6">SEO</h2>
@@ -767,6 +900,74 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 							Your content was sent to the configured AI provider.
 						</small>
 						<button type="button" class="btn btn-outline-secondary" wire:click="closeAiReview">Close</button>
+					</div>
+				</div>
+			</div>
+		</div>
+	</bx:if>
+
+	<!--- 2.I — AI image generation modal ---------------------------- --->
+	<bx:if args.showImageModal>
+		<div class="modal show d-block" tabindex="-1" style="background:rgba(0,0,0,.35);">
+			<div class="modal-dialog modal-lg modal-dialog-scrollable">
+				<div class="modal-content">
+					<div class="modal-header">
+						<h5 class="modal-title">
+							<bx:if args.imageTarget == "featured">Generate featured image<bx:else>Generate image</bx:if>
+						</h5>
+						<button type="button" class="btn-close" wire:click="closeImageModal"></button>
+					</div>
+					<div class="modal-body">
+						<bx:if len( args.imageError )>
+							<div class="alert alert-warning">#encodeForHTML( args.imageError )#</div>
+						</bx:if>
+						<label class="form-label small">Describe the image (up to 500 characters)</label>
+						<textarea class="form-control" rows="3" maxlength="500"
+						          wire:model="imagePrompt"
+						          placeholder="e.g. A quiet coastal town at dusk, soft rain, warm streetlamps reflected on wet cobblestone."></textarea>
+						<label class="form-label small mt-3">Style (optional)</label>
+						<select class="form-select form-select-sm" wire:model="imageStyle">
+							<option value="">None — let the model decide</option>
+							<option value="Realistic">Realistic</option>
+							<option value="Illustration">Illustration</option>
+							<option value="Watercolor">Watercolor</option>
+							<option value="Minimalist">Minimalist</option>
+						</select>
+						<small class="text-muted d-block mt-2">
+							Your description is sent to the configured AI image provider.
+							Generated images are stored in your media library with the original prompt recorded.
+						</small>
+
+						<bx:if args.imagePreviews.len() > 0>
+							<hr>
+							<p class="small text-muted mb-2">Pick one to save + attach:</p>
+							<div class="row row-cols-2 row-cols-md-4 g-2">
+								<bx:loop array="#args.imagePreviews#" item="p">
+									<div class="col">
+										<button type="button"
+										        class="btn p-0 border w-100"
+										        wire:click="useImagePreview('#encodeForHTMLAttribute( p.previewId )#')"
+										        wire:loading.attr="disabled">
+											<img src="#encodeForHTMLAttribute( p.providerUrl )#"
+											     class="img-fluid rounded"
+											     style="object-fit: cover; aspect-ratio: 1/1;"
+											     alt="preview">
+										</button>
+									</div>
+								</bx:loop>
+							</div>
+						</bx:if>
+					</div>
+					<div class="modal-footer">
+						<button type="button" class="btn btn-outline-secondary" wire:click="closeImageModal">Cancel</button>
+						<button type="button" class="btn btn-primary"
+						        wire:click="generateImagePreviews"
+						        wire:loading.attr="disabled">
+							<span wire:loading.remove wire:target="generateImagePreviews">
+								<bx:if args.imagePreviews.len() > 0>Regenerate<bx:else>Generate previews</bx:if>
+							</span>
+							<span wire:loading wire:target="generateImagePreviews">Generating…</span>
+						</button>
 					</div>
 				</div>
 			</div>

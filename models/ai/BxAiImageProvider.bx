@@ -1,0 +1,172 @@
+/**
+ * bx-Blogger — BxAiImageProvider (Chunk 2.I)
+ *
+ * Thin adapter around bx-ai's `aiChat()` BIF configured for image
+ * output. OpenRouter (and other OpenAI-shape providers) drive image
+ * generation through the same chat endpoint with
+ * `modalities=["image"]` and a picture-capable model
+ * (`google/gemini-2.5-flash-image`, `openai/dall-e-3`, etc.).
+ *
+ * Env config (parallel to BxAiProvider but independent):
+ *   AI_IMAGE_PROVIDER   — forwarded to aiChat options.provider
+ *   AI_IMAGE_API_KEY    — API key (OpenRouter "sk-or-v1-…")
+ *   AI_IMAGE_MODEL      — image-capable model slug
+ *   AI_IMAGE_SITE_URL   — HTTP-Referer (OpenRouter attribution)
+ *   AI_IMAGE_APP_NAME   — X-Title (OpenRouter attribution)
+ *
+ * Same provider contract as MockAiImageProvider:
+ *   generate( prompt, styleHint, variants ) → { previews[], usage… }
+ *   fetchPreview( previewId ) → { bytes, mime, width, height } | null
+ *
+ * We keep a short-lived in-memory cache of { previewId → providerUrl }
+ * so saveGeneratedImage() can fetch the chosen preview by id without
+ * the wire having to round-trip the URL. Previews not chosen are
+ * never downloaded — they simply age out of the cache.
+ */
+class accessors="true" singleton {
+
+    property name="log" inject="logbox:logger:{this}";
+
+    variables.defaultMaxTokens = 4000;
+    // previewId → { providerUrl, expiresAt }
+    variables.previewIndex = {};
+
+    struct function generate(
+        required string  prompt,
+                 string  styleHint = "",
+                 numeric variants  = 2
+    ) {
+        var n = clamp( arguments.variants, 1, 8 );
+        var styleSuffix = len( arguments.styleHint ) ? ( " Style: " & arguments.styleHint & "." ) : "";
+        var userContent = arguments.prompt & styleSuffix;
+
+        var messages = [
+            { "role" : "user", "content" : userContent }
+        ];
+
+        var params = {
+            "max_tokens" : variables.defaultMaxTokens,
+            "n"          : n,
+            "modalities" : [ "image" ]
+        };
+        var model = getSystemSetting( "AI_IMAGE_MODEL", "" );
+        if ( len( model ) ) params.model = model;
+
+        var options = {
+            "provider"     : getSystemSetting( "AI_IMAGE_PROVIDER", "openrouter" ),
+            "returnFormat" : "raw"
+        };
+        var apiKey = getSystemSetting( "AI_IMAGE_API_KEY", "" );
+        if ( len( apiKey ) ) options.apiKey = apiKey;
+
+        var headers = {};
+        var referer = getSystemSetting( "AI_IMAGE_SITE_URL", "" );
+        var title   = getSystemSetting( "AI_IMAGE_APP_NAME", "" );
+        if ( len( referer ) ) headers[ "HTTP-Referer" ] = referer;
+        if ( len( title ) )   headers[ "X-Title" ]      = title;
+
+        var response = aiChat(
+            messages = messages,
+            params   = params,
+            options  = options,
+            headers  = headers
+        );
+
+        return unpackResponse( response, n );
+    }
+
+    /**
+     * Fetch the bytes for a previewId that a prior generate() emitted.
+     * Returns null if the provider URL has expired or the previewId
+     * never existed on this process.
+     */
+    any function fetchPreview( required string previewId ) {
+        if ( !structKeyExists( variables.previewIndex, arguments.previewId ) ) return javaCast( "null", "" );
+        var rec = variables.previewIndex[ arguments.previewId ];
+        if ( dateCompare( rec.expiresAt, now() ) != 1 ) {
+            structDelete( variables.previewIndex, arguments.previewId );
+            return javaCast( "null", "" );
+        }
+
+        try {
+            cfhttp(
+                url      = rec.providerUrl,
+                method   = "GET",
+                getAsBinary = "yes",
+                timeout  = 30,
+                result   = "local.fetch"
+            );
+            if ( local.fetch.statusCode contains "200" && isBinary( local.fetch.fileContent ) ) {
+                return {
+                    "bytes"     : local.fetch.fileContent,
+                    "mime"      : rec.mime ?: "image/png",
+                    "width"     : rec.width ?: 0,
+                    "height"    : rec.height ?: 0,
+                    "expiresAt" : rec.expiresAt
+                };
+            }
+        }
+        catch ( any e ) {
+            log.error( "BxAiImageProvider.fetchPreview failed for " & arguments.previewId & ": " & e.message );
+        }
+        return javaCast( "null", "" );
+    }
+
+    // --------------------------------------------------------------------
+
+    /**
+     * Convert an aiChat raw response into our provider contract shape.
+     * OpenRouter returns choices[*].message.images[*].image_url.url
+     * for image output; we cache each URL against a previewId so the
+     * save path can fetch by id.
+     */
+    private struct function unpackResponse( required any response, required numeric expectedCount ) {
+        var previews = [];
+        var expiresAt = dateAdd( "n", 55, now() );   // providers usually expire at ~60m; 55m is safe
+
+        if ( isStruct( arguments.response ) && structKeyExists( arguments.response, "choices" ) ) {
+            for ( var choice in arguments.response.choices ) {
+                var images = choice.message.images ?: [];
+                for ( var img in images ) {
+                    var url = img.image_url.url ?: ( img.url ?: "" );
+                    if ( !len( url ) ) continue;
+                    var previewId = lCase( hash( createUUID(), "SHA-256" ) ).left( 12 );
+                    variables.previewIndex[ previewId ] = {
+                        "providerUrl" : url,
+                        "expiresAt"   : expiresAt,
+                        "mime"        : "image/png",
+                        "width"       : img.width  ?: 0,
+                        "height"      : img.height ?: 0
+                    };
+                    previews.append( {
+                        "previewId"   : previewId,
+                        "providerUrl" : url,
+                        "expiresAt"   : expiresAt,
+                        "width"       : img.width  ?: 0,
+                        "height"      : img.height ?: 0,
+                        "mime"        : "image/png"
+                    } );
+                }
+            }
+        }
+
+        var usage = isStruct( arguments.response ) && structKeyExists( arguments.response, "usage" ) ? arguments.response.usage : {};
+        var pt = val( usage.prompt_tokens     ?: usage.promptTokens     ?: 0 );
+        var ct = val( usage.completion_tokens ?: usage.completionTokens ?: 0 );
+
+        return {
+            "previews"         : previews,
+            "promptTokens"     : pt,
+            "completionTokens" : ct,
+            "totalTokens"      : pt + ct,
+            "costUsdMicro"     : previews.len() * 40000    // ballpark; swap for lookup later
+        };
+    }
+
+    private numeric function clamp( required numeric n, required numeric lo, required numeric hi ) {
+        if ( arguments.n < arguments.lo ) return arguments.lo;
+        if ( arguments.n > arguments.hi ) return arguments.hi;
+        return arguments.n;
+    }
+
+}

@@ -31,6 +31,13 @@ class extends="quick.models.BaseEntity" accessors="true" table="media" {
     property name="title"            column="title";
     property name="caption"          column="caption";
     property name="thumbnailsJson"   column="thumbnails_json";
+    // AI image-gen provenance (Chunk 2.I). `source` is 'upload' |
+    // 'url_import' | 'ai_generated'; the three ai_* columns are only
+    // populated when source = 'ai_generated'.
+    property name="source"           column="source";
+    property name="aiPrompt"         column="ai_prompt";
+    property name="aiProvider"       column="ai_provider";
+    property name="aiModel"          column="ai_model";
     property name="deletedAt"        column="deleted_at";
     property name="createdAt"        column="created_at";
     property name="updatedAt"        column="updated_at";

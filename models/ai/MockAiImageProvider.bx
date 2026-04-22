@@ -1,0 +1,123 @@
+/**
+ * bx-Blogger — MockAiImageProvider (Chunk 2.I)
+ *
+ * Deterministic image-gen provider used in dev (no real API key) and
+ * every spec run. Returns N preview structs with fake provider URLs
+ * and a tiny in-memory blob cache so saveGeneratedImage() can fetch
+ * bytes for the chosen preview without hitting the network.
+ *
+ * Provider contract:
+ *   generate( prompt, styleHint, variants ) → {
+ *       previews : [ { previewId, providerUrl, expiresAt, width, height, mime } ],
+ *       promptTokens, completionTokens, totalTokens, costUsdMicro
+ *   }
+ *   fetchPreview( previewId ) → { bytes, mime, width, height } | null
+ *
+ * BxAiImageProvider implements the same shape by calling aiChat()
+ * with `modalities=["image"]`, extracting URLs from choices[*].message.images,
+ * and fetchPreview() just does an HTTP GET.
+ */
+class accessors="true" singleton {
+
+    property name="simulateFailure" default="";
+
+    variables.simulateFailure = "";
+    // in-memory cache: previewId → { bytes, mime, width, height, expiresAt }
+    variables.previewCache = {};
+
+    struct function generate(
+        required string  prompt,
+                 string  styleHint = "",
+                 numeric variants  = 2
+    ) {
+        maybeFail();
+
+        var n = clamp( arguments.variants, 1, 8 );
+        var previews = [];
+        var tokens = ceiling( len( arguments.prompt ) / 4 );
+
+        for ( var i = 1; i <= n; i++ ) {
+            var previewId = "mock-" & lCase( hash( createUUID(), "SHA-256" ) ).left( 12 );
+            var bytes     = generateMockPngBytes( arguments.prompt & "|" & i );
+            var expiresAt = dateAdd( "n", 60, now() );
+
+            variables.previewCache[ previewId ] = {
+                "bytes"     : bytes,
+                "mime"      : "image/png",
+                "width"     : 512,
+                "height"    : 512,
+                "expiresAt" : expiresAt
+            };
+
+            previews.append( {
+                "previewId"   : previewId,
+                "providerUrl" : "mock://preview/" & previewId,
+                "expiresAt"   : expiresAt,
+                "width"       : 512,
+                "height"      : 512,
+                "mime"        : "image/png"
+            } );
+        }
+
+        return {
+            "previews"         : previews,
+            "promptTokens"     : tokens,
+            "completionTokens" : n * 50,       // rough per-image overhead
+            "totalTokens"      : tokens + n * 50,
+            "costUsdMicro"     : n * 40000      // ~$0.04 per image — OpenRouter-ballpark
+        };
+    }
+
+    /**
+     * Return the cached bytes for a previewId, or null if not found
+     * (expired / unknown / different server instance). AiImageService
+     * catches null and throws a user-friendly "preview expired" error.
+     */
+    any function fetchPreview( required string previewId ) {
+        if ( !structKeyExists( variables.previewCache, arguments.previewId ) ) return javaCast( "null", "" );
+        return variables.previewCache[ arguments.previewId ];
+    }
+
+    // --------------------------------------------------------------------
+
+    private void function maybeFail() {
+        if ( !len( variables.simulateFailure ?: "" ) ) return;
+        var kind = variables.simulateFailure;
+        variables.simulateFailure = "";
+        switch ( kind ) {
+            case "rate_limit": throw( type = "bxBlogger.AiRateLimited",  message = "Mock: provider rate-limited us." );
+            case "timeout":    throw( type = "bxBlogger.AiTimeout",       message = "Mock: provider timed out." );
+            case "auth":       throw( type = "bxBlogger.AiAuth",          message = "Mock: bad API key." );
+            default:           throw( type = "bxBlogger.AiProviderError", message = "Mock: generic upstream error." );
+        }
+    }
+
+    /**
+     * Generate deterministic bytes for a preview — not a real PNG, but
+     * enough of a binary blob that cbfs can write it and the media
+     * row gets a stable hash. Each (prompt, i) pair produces a unique
+     * byte string so dedup works in specs that assert "two generated
+     * images are distinct". Real provider returns actual PNG bytes.
+     */
+    private any function generateMockPngBytes( required string seed ) {
+        // A real PNG's first 8 bytes are the signature
+        // [89 50 4E 47 0D 0A 1A 0A]. We prepend that so fileGetMimeType
+        // on the saved blob returns "image/png" rather than text/plain,
+        // then fill the rest with a hash-derived payload.
+        var pngSig = toBinary( toBase64( "\89PNG\r\n\1a\n" ) );
+        var body   = toBinary( toBase64( hash( arguments.seed, "SHA-512" ) & hash( arguments.seed & "-extra", "SHA-512" ) ) );
+        // BoxLang binary concatenation — build a single byte[] from both
+        return createObject( "java", "java.nio.ByteBuffer" )
+            .allocate( arrayLen( pngSig ) + arrayLen( body ) )
+            .put( pngSig )
+            .put( body )
+            .array();
+    }
+
+    private numeric function clamp( required numeric n, required numeric lo, required numeric hi ) {
+        if ( arguments.n < arguments.lo ) return arguments.lo;
+        if ( arguments.n > arguments.hi ) return arguments.hi;
+        return arguments.n;
+    }
+
+}

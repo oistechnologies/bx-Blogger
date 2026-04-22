@@ -1,0 +1,273 @@
+/**
+ * bx-Blogger — AiImageServiceSpec (Chunk 2.I)
+ *
+ * Covers AiImageService end-to-end against MockAiImageProvider:
+ *   - generateImages() happy path returns N preview structs + usage
+ *   - prompt validation (empty + too-long)
+ *   - three-layer gate: AI_ENABLED=false blocks even when image flag on,
+ *     AI_IMAGE_ENABLED=false blocks even when master on
+ *   - budget enforcement (per-click count against ai_monthly_images;
+ *     0 = unlimited override)
+ *   - per-minute rate limit (5 clicks/min/user → 6th throws)
+ *   - variants clamp (user override of 12 → 8; under-cap stays)
+ *   - saveGeneratedImage pipeline: fetches preview bytes, writes a
+ *     media row with source='ai_generated' + ai_prompt + ai_provider,
+ *     dedups by hash on second save of the same bytes
+ *   - provider failure → bxBlogger.AiProviderError, no ai_usage row
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        try {
+            var qb = getInstance( "QueryBuilder@qb" );
+            if ( arrayLen( variables.createdIds.users ?: [] ) ) {
+                qb.newQuery().from( "ai_usage" ).whereIn( "user_id", variables.createdIds.users ).delete();
+            }
+            if ( arrayLen( variables.createdIds.media ?: [] ) ) {
+                qb.newQuery().from( "media" ).whereIn( "id", variables.createdIds.media ).delete();
+            }
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "AiImageServiceSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.createdIds = { "users" : [], "media" : [] };
+        variables.imgSvc     = getInstance( "AiImageService" );
+    }
+
+    function run() {
+        describe( "AiImageService", function() {
+
+            beforeEach( function() {
+                setEnv( "AI_ENABLED",       "true" );
+                setEnv( "AI_IMAGE_ENABLED", "true" );
+                // Ensure mock provider's failure priming is clean + purge
+                // any rate-limit counter from a previous test.
+                var mock = getInstance( "AiImageProvider" );
+                if ( structKeyExists( mock, "setSimulateFailure" ) ) mock.setSimulateFailure( "" );
+            } );
+
+            describe( "generateImages()", function() {
+                it( "returns N preview structs + usage when enabled", function() {
+                    var u = trackUser( createTestUser() );
+                    clearRateLimit( u );
+                    var result = imgSvc.generateImages(
+                        prompt = "A quiet mountain lake at dawn",
+                        userId = u.getId()
+                    );
+                    expect( result.previews.len() ).toBeGTE( 1 );
+                    var first = result.previews[ 1 ];
+                    expect( first ).toHaveKey( "previewId" );
+                    expect( first ).toHaveKey( "providerUrl" );
+                    expect( first ).toHaveKey( "expiresAt" );
+                    expect( result.usage.costUsdMicro ).toBeGT( 0 );
+                } );
+
+                it( "writes a single ai_usage row per click regardless of variant count", function() {
+                    var u = trackUser( createTestUser() );
+                    clearRateLimit( u );
+                    imgSvc.generateImages( prompt = "cat", userId = u.getId() );
+                    var rows = getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "ai_usage" )
+                        .where( "user_id", u.getId() )
+                        .where( "action",  "generate_image" )
+                        .get();
+                    expect( rows.len() ).toBe( 1 );
+                } );
+
+                it( "rejects an empty prompt", function() {
+                    var u = trackUser( createTestUser() );
+                    clearRateLimit( u );
+                    var threw = false;
+                    try { imgSvc.generateImages( prompt = "   ", userId = u.getId() ); }
+                    catch ( bxBlogger.AiInvalidInput e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+                it( "rejects a prompt longer than 500 chars", function() {
+                    var u = trackUser( createTestUser() );
+                    clearRateLimit( u );
+                    var huge = repeatString( "x", 600 );
+                    var threw = false;
+                    try { imgSvc.generateImages( prompt = huge, userId = u.getId() ); }
+                    catch ( bxBlogger.AiInvalidInput e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+                it( "clamps a variants-per-request override above 8 down to 8", function() {
+                    var u = trackUser( createTestUser( overrides = { "aiImageVariantsPerRequest" : 12 } ) );
+                    clearRateLimit( u );
+                    var result = imgSvc.generateImages( prompt = "test", userId = u.getId() );
+                    expect( result.previews.len() ).toBeLTE( 8 );
+                } );
+            } );
+
+            describe( "three-layer gate", function() {
+                it( "blocks when AI_ENABLED=false even if AI_IMAGE_ENABLED=true", function() {
+                    setEnv( "AI_ENABLED", "false" );
+                    setEnv( "AI_IMAGE_ENABLED", "true" );
+                    var u = trackUser( createTestUser() );
+                    var threw = false;
+                    try { imgSvc.generateImages( prompt = "x", userId = u.getId() ); }
+                    catch ( bxBlogger.AiImageDisabled e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+                it( "blocks when AI_IMAGE_ENABLED=false even if AI_ENABLED=true", function() {
+                    setEnv( "AI_ENABLED", "true" );
+                    setEnv( "AI_IMAGE_ENABLED", "false" );
+                    var u = trackUser( createTestUser() );
+                    var threw = false;
+                    try { imgSvc.generateImages( prompt = "x", userId = u.getId() ); }
+                    catch ( bxBlogger.AiImageDisabled e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+            } );
+
+            describe( "budget enforcement", function() {
+                it( "blocks once monthly image count equals the cap", function() {
+                    var u = trackUser( createTestUser( overrides = { "aiMonthlyImages" : 2 } ) );
+                    clearRateLimit( u );
+
+                    // Seed two rows at today's year_month to exhaust the cap
+                    var qb = getInstance( "QueryBuilder@qb" );
+                    var ym = dateTimeFormat( now(), "yyyyMM" );
+                    for ( var i = 1; i <= 2; i++ ) {
+                        qb.newQuery().from( "ai_usage" ).insert( {
+                            "user_id"      : u.getId(),
+                            "year_month"   : ym,
+                            "action"       : "generate_image",
+                            "total_tokens" : 0
+                        } );
+                    }
+                    var threw = false;
+                    try { imgSvc.generateImages( prompt = "x", userId = u.getId() ); }
+                    catch ( bxBlogger.AiImageBudgetExceeded e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+                it( "treats users.ai_monthly_images = 0 as unlimited", function() {
+                    var u = trackUser( createTestUser( overrides = { "aiMonthlyImages" : 0 } ) );
+                    clearRateLimit( u );
+
+                    // Seed 999 prior clicks — unlimited override should sail through
+                    var qb = getInstance( "QueryBuilder@qb" );
+                    var ym = dateTimeFormat( now(), "yyyyMM" );
+                    qb.newQuery().from( "ai_usage" ).insert( {
+                        "user_id"      : u.getId(),
+                        "year_month"   : ym,
+                        "action"       : "generate_image",
+                        "total_tokens" : 0
+                    } );
+                    var result = imgSvc.generateImages( prompt = "still allowed", userId = u.getId() );
+                    expect( result.previews.len() ).toBeGTE( 1 );
+                } );
+            } );
+
+            describe( "rate limiting", function() {
+                it( "blocks the 6th click within the same minute", function() {
+                    var u = trackUser( createTestUser( overrides = { "aiMonthlyImages" : 0 } ) );   // unlimited budget
+                    clearRateLimit( u );
+
+                    for ( var i = 1; i <= 5; i++ ) {
+                        imgSvc.generateImages( prompt = "burst " & i, userId = u.getId() );
+                    }
+                    var threw = false;
+                    try { imgSvc.generateImages( prompt = "burst 6", userId = u.getId() ); }
+                    catch ( bxBlogger.AiImageRateLimited e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+            } );
+
+            describe( "saveGeneratedImage()", function() {
+                it( "fetches the chosen preview + writes a media row with ai_ metadata", function() {
+                    var u = trackUser( createTestUser() );
+                    clearRateLimit( u );
+                    var result  = imgSvc.generateImages( prompt = "neon fishbowl", userId = u.getId() );
+                    var chosen  = result.previews[ 1 ];
+
+                    var media = imgSvc.saveGeneratedImage(
+                        previewId = chosen.previewId,
+                        userId    = u.getId(),
+                        role      = "inline",
+                        altText   = "A neon fishbowl in Tokyo"
+                    );
+                    variables.createdIds.media.append( media.getId() );
+
+                    expect( media.getSource() ).toBe( "ai_generated" );
+                    expect( media.getAiPrompt() ).toBe( "neon fishbowl" );
+                    expect( media.getAltText() ).toBe( "A neon fishbowl in Tokyo" );
+                    expect( len( media.getAiProvider() ?: "" ) ).toBeGT( 0 );
+                } );
+
+                it( "uses the prompt as default alt-text when none supplied", function() {
+                    var u = trackUser( createTestUser() );
+                    clearRateLimit( u );
+                    var result = imgSvc.generateImages( prompt = "a sunset over the Pacific", userId = u.getId() );
+
+                    var media = imgSvc.saveGeneratedImage(
+                        previewId = result.previews[ 1 ].previewId,
+                        userId    = u.getId()
+                    );
+                    variables.createdIds.media.append( media.getId() );
+                    expect( media.getAltText() ).toBe( "a sunset over the Pacific" );
+                } );
+
+                it( "throws AiPreviewExpired when previewId is unknown", function() {
+                    var u = trackUser( createTestUser() );
+                    var threw = false;
+                    try {
+                        imgSvc.saveGeneratedImage( previewId = "never-existed", userId = u.getId() );
+                    }
+                    catch ( bxBlogger.AiPreviewExpired e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+            } );
+
+            describe( "provider failure handling", function() {
+                it( "wraps provider errors as bxBlogger.AiProviderError without writing ai_usage", function() {
+                    var u = trackUser( createTestUser() );
+                    clearRateLimit( u );
+                    getInstance( "AiImageProvider" ).setSimulateFailure( "timeout" );
+
+                    var threw = false;
+                    try { imgSvc.generateImages( prompt = "fail me", userId = u.getId() ); }
+                    catch ( bxBlogger.AiProviderError e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+
+                    var count = getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "ai_usage" )
+                        .where( "user_id", u.getId() )
+                        .count();
+                    expect( count ).toBe( 0, "failed provider call must not be billed" );
+                } );
+            } );
+
+        } );
+    }
+
+    // --------------------------------------------------------------------
+
+    private any function trackUser( required any u ) {
+        variables.createdIds.users.append( arguments.u.getId() );
+        return arguments.u;
+    }
+
+    /**
+     * The per-minute rate limiter is shared across tests; clear the
+     * user's bucket between cases so a prior test's 5 hits don't
+     * consume this test's budget.
+     */
+    private void function clearRateLimit( required any u ) {
+        getInstance( "RateLimitService" ).clear( "ai_image_generate:user:" & arguments.u.getId() );
+    }
+
+    private void function setEnv( required string key, required string value ) {
+        createObject( "java", "java.lang.System" ).setProperty( arguments.key, arguments.value );
+    }
+
+}

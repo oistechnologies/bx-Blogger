@@ -39,6 +39,18 @@ class extends="coldbox.system.ioc.config.Binder" {
 			? "models.ai.MockAiProvider"
 			: "models.ai.BxAiProvider";
 		map( "AiProvider" ).to( aiProviderClass ).asSingleton();
+
+		// --------------------------------------------------------------
+		// AI image-gen provider (Chunk 2.I)
+		// --------------------------------------------------------------
+		// Separate alias from AiProvider so operators can run real text
+		// AI while keeping image-gen on the mock (cost control during
+		// rollout) or vice-versa. Dispatch is identical to the text
+		// AI path but reads AI_IMAGE_PROVIDER instead.
+		var aiImageProviderClass = ( getSystemSetting( "AI_IMAGE_PROVIDER", "mock" ) == "mock" )
+			? "models.ai.MockAiImageProvider"
+			: "models.ai.BxAiImageProvider";
+		map( "AiImageProvider" ).to( aiImageProviderClass ).asSingleton();
 	}
 
 }

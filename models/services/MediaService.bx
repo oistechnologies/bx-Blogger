@@ -153,6 +153,83 @@ class accessors="true" singleton {
         return media;
     }
 
+    /**
+     * Store bytes produced by the AI image-gen pipeline (Chunk 2.I).
+     * Distinct from upload() because the caller doesn't have a tmp
+     * file — they have a raw byte array from the provider fetch —
+     * and because every AI row carries the prompt / provider / model
+     * trio the moderation + audit UIs surface.
+     *
+     * Dedup by hash still applies: two identical generated images
+     * (same bytes from the same prompt run twice) collapse to one
+     * media row.
+     */
+    any function createFromAiGenerated(
+        required any     bytes,
+        required string  originalFilename,
+        required string  mimeType,
+        required numeric uploaderId,
+        required string  altText,
+        required string  aiPrompt,
+        required string  aiProvider,
+        required string  aiModel,
+                 numeric width  = 0,
+                 numeric height = 0
+    ) {
+        if ( !len( trim( arguments.altText ) ) ) {
+            throw(
+                type    = "bxBlogger.MediaAltRequired",
+                message = "Alt text is required for generated images (accessibility — B18)."
+            );
+        }
+
+        var sha = lCase( hash( arguments.bytes, "SHA-256" ) );
+        var existing = variables.wirebox.getInstance( "Media" )
+            .where( "hash", sha )
+            .whereNull( "deleted_at" )
+            .first();
+        if ( !isNull( existing ) ) {
+            log.info( "MediaService.createFromAiGenerated: dedup hit hash=" & sha & " → media=" & existing.getId() );
+            return existing;
+        }
+
+        var yyyy = dateTimeFormat( now(), "yyyy" );
+        var mm   = dateTimeFormat( now(), "MM" );
+        var safe = safeFilename( arguments.originalFilename );
+        var diskPath = yyyy & "/" & mm & "/ai-" & left( sha, 8 ) & "-" & safe;
+
+        var disk = variables.cbfs.get( variables.diskName );
+        disk.create( path = diskPath, contents = arguments.bytes, overwrite = true );
+
+        var sizeBytes = 0;
+        try { sizeBytes = arrayLen( arguments.bytes ); }
+        catch ( any e ) { sizeBytes = len( arguments.bytes ); }
+
+        var row = {
+            "uploaderId"       : arguments.uploaderId,
+            "disk"             : variables.diskName,
+            "path"             : diskPath,
+            "filename"         : listLast( diskPath, "/" ),
+            "originalFilename" : arguments.originalFilename,
+            "mimeType"         : arguments.mimeType,
+            "sizeBytes"        : sizeBytes,
+            "hash"             : sha,
+            "focalX"           : 0.5,
+            "focalY"           : 0.5,
+            "altText"          : arguments.altText,
+            "source"           : "ai_generated",
+            "aiPrompt"         : arguments.aiPrompt,
+            "aiProvider"       : arguments.aiProvider,
+            "aiModel"          : arguments.aiModel
+        };
+        if ( arguments.width > 0 )  row.width  = arguments.width;
+        if ( arguments.height > 0 ) row.height = arguments.height;
+
+        var media = variables.wirebox.getInstance( "Media" ).create( row );
+        log.info( "MediaService.createFromAiGenerated: media=" & media.getId() & " provider=" & arguments.aiProvider & " model=" & arguments.aiModel );
+        return media;
+    }
+
     // --------------------------------------------------------------------
     // Mutations on existing rows
     // --------------------------------------------------------------------

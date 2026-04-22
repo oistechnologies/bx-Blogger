@@ -1,0 +1,317 @@
+/**
+ * bx-Blogger — AiImageService (Chunk 2.I)
+ *
+ * Generates editorial images + saves the chosen preview into the
+ * media library. Parallel to AiAssistantService: same audit +
+ * budget patterns, separate config + permission so ops can revoke
+ * image-gen independently (per-call cost is 10-50× text).
+ *
+ * Two-step flow:
+ *   1. generateImages( prompt, styleHint, userId, context )
+ *        → array of { previewId, providerUrl, expiresAt, width, height, mime }
+ *      Each click counts as one ai_usage row (action='generate_image'),
+ *      regardless of how many preview variants come back — matches
+ *      the plan's per-click budgeting (E3).
+ *
+ *   2. saveGeneratedImage( previewId, postId, role, userId )
+ *        → Media entity
+ *      Server-side fetches the bytes for that single previewId from
+ *      the provider, writes to cbfs, creates a media row with
+ *      source='ai_generated' + ai_prompt + ai_provider + ai_model.
+ *      Non-chosen previews are never downloaded — they age out of
+ *      the provider's short-lived cache.
+ *
+ * Three-layer gate before any work:
+ *   - AI_ENABLED     — master kill for all AI
+ *   - AI_IMAGE_ENABLED — image-specific kill
+ *   - posts.ai.image_generate — per-user permission
+ * Handler/wire enforces the permission; service double-checks the
+ * two toggles so a runaway fetch can't sneak past a misconfigured UI.
+ *
+ * Rate limiting (R30): 5 image-gen clicks per user per minute,
+ * applied here via RateLimitService with bucket
+ * "ai_image_generate:user:{id}". Exhaustion throws
+ * bxBlogger.AiImageRateLimited.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox"            inject="wirebox";
+    property name="provider"           inject="AiImageProvider";
+    property name="mediaService"       inject="MediaService";
+    property name="rateLimitService"   inject="RateLimitService";
+    property name="interceptorService" inject="coldbox:InterceptorService";
+    property name="log"                inject="logbox:logger:{this}";
+
+    variables.defaultMonthlyImages     = 20;
+    variables.defaultVariantsPerClick  = 2;
+    variables.minVariants              = 1;
+    variables.maxVariants              = 8;
+    variables.maxPromptLength          = 500;
+    variables.rateLimitClicksPerMinute = 5;
+
+    // Cache the current user's prompt per previewId so saveGeneratedImage
+    // can re-attach the original prompt to the media row without the
+    // wire having to round-trip it.
+    variables.previewPrompts = {};
+
+    // --------------------------------------------------------------------
+    // Public API
+    // --------------------------------------------------------------------
+
+    /**
+     * Generate N preview images for a prompt. Returns the preview
+     * handles; bytes stay on the provider side until saveGeneratedImage.
+     *
+     * @context  "inline" | "featured" — informational for audit only.
+     */
+    struct function generateImages(
+        required string  prompt,
+                 string  styleHint = "",
+        required numeric userId,
+                 string  context   = "inline"
+    ) {
+        ensureEnabled();
+
+        var p = trim( arguments.prompt );
+        if ( !len( p ) ) {
+            throw( type = "bxBlogger.AiInvalidInput", message = "Please describe the image you want." );
+        }
+        if ( len( p ) > variables.maxPromptLength ) {
+            throw( type = "bxBlogger.AiInvalidInput",
+                   message = "Prompt is " & len( p ) & " characters — please keep it under " & variables.maxPromptLength & "." );
+        }
+
+        enforceBudget( arguments.userId );
+        enforceRateLimit( arguments.userId );
+
+        var variants = variantsFor( arguments.userId );
+
+        announce( "bxBlogger.preImageGenerate", {
+            "userId"   : arguments.userId,
+            "context"  : arguments.context,
+            "variants" : variants
+        } );
+
+        var result = {};
+        try {
+            result = variables.provider.generate(
+                prompt    = p,
+                styleHint = arguments.styleHint,
+                variants  = variants
+            );
+        }
+        catch ( any e ) {
+            log.error( "AiImageService.generateImages provider failure: " & e.message );
+            throw( type = "bxBlogger.AiProviderError",
+                   message = "Image provider returned an error: " & e.message );
+        }
+
+        // Cache the prompt against every preview id so saveGeneratedImage
+        // can embed it on the media row without re-passing through the wire.
+        for ( var preview in result.previews ) {
+            variables.previewPrompts[ preview.previewId ] = {
+                "prompt"   : p,
+                "provider" : getSystemSetting( "AI_IMAGE_PROVIDER", "mock" ),
+                "model"    : getSystemSetting( "AI_IMAGE_MODEL", "" )
+            };
+        }
+
+        recordUsage(
+            userId = arguments.userId,
+            tokens = result.totalTokens    ?: 0,
+            cost   = result.costUsdMicro   ?: 0,
+            promptTokens = result.promptTokens ?: 0,
+            completionTokens = result.completionTokens ?: 0
+        );
+
+        announce( "bxBlogger.postImageGenerate", {
+            "userId"  : arguments.userId,
+            "count"   : result.previews.len(),
+            "context" : arguments.context
+        } );
+
+        return {
+            "previews" : result.previews,
+            "usage"    : {
+                "totalTokens"  : result.totalTokens  ?: 0,
+                "costUsdMicro" : result.costUsdMicro ?: 0
+            }
+        };
+    }
+
+    /**
+     * Persist the chosen preview into the media library. Returns the
+     * new Media entity. Caller (the wire) decides what to do with it
+     * (drop a markdown `![alt](url)` into the body or set the post's
+     * featured_media_id).
+     *
+     * @role  "inline" | "featured" — recorded on the audit trail.
+     */
+    any function saveGeneratedImage(
+        required string  previewId,
+        required numeric userId,
+                 string  role    = "inline",
+                 string  altText = ""
+    ) {
+        ensureEnabled();
+
+        var rec = variables.previewPrompts[ arguments.previewId ] ?: javaCast( "null", "" );
+        if ( isNull( rec ) ) {
+            throw(
+                type    = "bxBlogger.AiPreviewExpired",
+                message = "That preview is no longer available. Regenerate and try again."
+            );
+        }
+
+        var payload = variables.provider.fetchPreview( arguments.previewId );
+        if ( isNull( payload ) ) {
+            throw(
+                type    = "bxBlogger.AiPreviewExpired",
+                message = "The provider dropped that preview before you could save it. Regenerate and pick another."
+            );
+        }
+
+        // Alt-text default: crib from the prompt. B18 requires alt on
+        // images — an AI-shaped draft is better than nothing and the
+        // library editor lets the user refine later.
+        var alt = len( trim( arguments.altText ) ) ? arguments.altText : rec.prompt;
+        if ( len( alt ) > 500 ) alt = left( alt, 500 );
+
+        var filename = "ai-generated-" & dateTimeFormat( now(), "yyyymmdd-HHnnss" ) & ".png";
+
+        var media = mediaService.createFromAiGenerated(
+            bytes            = payload.bytes,
+            originalFilename = filename,
+            mimeType         = payload.mime,
+            uploaderId       = arguments.userId,
+            altText          = alt,
+            aiPrompt         = rec.prompt,
+            aiProvider       = rec.provider,
+            aiModel          = rec.model,
+            width            = payload.width  ?: 0,
+            height           = payload.height ?: 0
+        );
+
+        structDelete( variables.previewPrompts, arguments.previewId );
+
+        announce( "bxBlogger.postMediaUpload", {
+            "mediaId" : media.getId(),
+            "userId"  : arguments.userId,
+            "source"  : "ai_generated",
+            "role"    : arguments.role
+        } );
+        return media;
+    }
+
+    /**
+     * Is image-gen globally + image-specifically enabled? Both toggles
+     * must be true, per PLAN's three-layer gate.
+     */
+    boolean function isEnabled() {
+        var master = getSystemSetting( "AI_ENABLED",       "false" );
+        var image  = getSystemSetting( "AI_IMAGE_ENABLED", "false" );
+        return ( isBoolean( master ) && master ) && ( isBoolean( image ) && image );
+    }
+
+    /**
+     * Image-gen clicks the user has made this month. Matches the
+     * plan's "per click, not per variant" budget (E3).
+     */
+    numeric function imagesUsedThisMonth( required numeric userId ) {
+        var ym  = dateTimeFormat( now(), "yyyyMM" );
+        var qb  = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery();
+        return qb.from( "ai_usage" )
+            .where( "user_id",    arguments.userId )
+            .where( "year_month", ym )
+            .where( "action",     "generate_image" )
+            .count();
+    }
+
+    numeric function imageBudgetFor( required numeric userId ) {
+        var user = variables.wirebox.getInstance( "User" ).find( arguments.userId );
+        if ( !isNull( user ) && !isNull( user.getAiMonthlyImages() ) && len( user.getAiMonthlyImages() ?: "" ) ) {
+            return val( user.getAiMonthlyImages() );
+        }
+        return val( getSystemSetting( "AI_DEFAULT_MONTHLY_IMAGES", variables.defaultMonthlyImages ) );
+    }
+
+    // --------------------------------------------------------------------
+    // Internals
+    // --------------------------------------------------------------------
+
+    private void function ensureEnabled() {
+        if ( !isEnabled() ) {
+            throw( type = "bxBlogger.AiImageDisabled",
+                   message = "AI image generation is currently disabled." );
+        }
+    }
+
+    private void function enforceBudget( required numeric userId ) {
+        var budget = imageBudgetFor( arguments.userId );
+        if ( budget == 0 ) return;   // unlimited
+
+        var used = imagesUsedThisMonth( arguments.userId );
+        if ( used >= budget ) {
+            announce( "bxBlogger.imageGenerationBudgetExceeded", {
+                "userId" : arguments.userId,
+                "budget" : budget,
+                "used"   : used
+            } );
+            throw( type = "bxBlogger.AiImageBudgetExceeded",
+                   message = "You've reached your monthly image-generation budget (" & budget & " clicks). Resets next month." );
+        }
+    }
+
+    private void function enforceRateLimit( required numeric userId ) {
+        var bucket = "ai_image_generate:user:" & arguments.userId;
+        var hit    = variables.rateLimitService.hit( bucket, 60 );
+        if ( hit.count > variables.rateLimitClicksPerMinute ) {
+            throw( type = "bxBlogger.AiImageRateLimited",
+                   message = "You're generating images too quickly. Wait a minute and try again." );
+        }
+    }
+
+    /**
+     * Effective variants-per-click for a user. User override wins if
+     * non-null; otherwise settings default; either way, clamp to
+     * [minVariants, maxVariants].
+     */
+    private numeric function variantsFor( required numeric userId ) {
+        var user = variables.wirebox.getInstance( "User" ).find( arguments.userId );
+        var raw = variables.defaultVariantsPerClick;
+        if ( !isNull( user ) && !isNull( user.getAiImageVariantsPerRequest() ) && len( user.getAiImageVariantsPerRequest() ?: "" ) ) {
+            raw = val( user.getAiImageVariantsPerRequest() );
+        } else {
+            raw = val( getSystemSetting( "AI_IMAGE_VARIANTS_PER_REQUEST", variables.defaultVariantsPerClick ) );
+        }
+        if ( raw < variables.minVariants ) raw = variables.minVariants;
+        if ( raw > variables.maxVariants ) raw = variables.maxVariants;
+        return raw;
+    }
+
+    private void function recordUsage(
+        required numeric userId,
+        required numeric tokens,
+        required numeric cost,
+        required numeric promptTokens,
+        required numeric completionTokens
+    ) {
+        variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "ai_usage" )
+            .insert( {
+                "user_id"           : arguments.userId,
+                "year_month"        : dateTimeFormat( now(), "yyyyMM" ),
+                "action"            : "generate_image",
+                "prompt_tokens"     : arguments.promptTokens,
+                "completion_tokens" : arguments.completionTokens,
+                "total_tokens"      : arguments.tokens,
+                "cost_usd_micro"    : arguments.cost
+            } );
+    }
+
+    private void function announce( required string state, required struct data ) {
+        try { variables.interceptorService.announce( state = arguments.state, data = arguments.data ); }
+        catch ( any e ) { log.warn( "AiImageService announce failure for " & arguments.state & ": " & e.message ); }
+    }
+
+}
