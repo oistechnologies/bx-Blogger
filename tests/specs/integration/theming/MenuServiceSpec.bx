@@ -1,0 +1,191 @@
+/**
+ * bx-Blogger — MenuServiceSpec (Chunk 4.E)
+ *
+ * Covers menu CRUD + tree building:
+ *   - ensureMenu is idempotent per (theme_slug, location)
+ *   - addItem appends in insertion order
+ *   - move up/down swaps sort_order within the same parent
+ *   - indent / outdent reparent cleanly
+ *   - deleteItem cascades the subtree
+ *   - getTree builds a nested structure
+ *   - Theme.menu(location) proxies to getTree via the VO lookup
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        try {
+            var qb = getInstance( "QueryBuilder@qb" );
+            qb.newQuery().from( "menu_items" )
+                .whereIn( "menu_id", variables.createdMenuIds ?: [] )
+                .delete();
+            qb.newQuery().from( "menus" )
+                .whereIn( "id", variables.createdMenuIds ?: [] )
+                .delete();
+
+            // Restore canonical post-migration active theme.
+            qb.newQuery().from( "themes" ).update( { "is_active" : 0 } );
+            qb.newQuery().from( "themes" )
+                .where( "slug", "bx-blogger-default" )
+                .update( { "is_active" : 1 } );
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "MenuServiceSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.createdMenuIds = [];
+        variables.svc            = getInstance( "MenuService" );
+        variables.themeSvc       = getInstance( "ThemeService" );
+    }
+
+    function run() {
+        describe( "MenuService", function() {
+
+            beforeEach( function() {
+                // Each spec works against a fresh (theme, location) tuple
+                // so write order doesn't leak between tests.
+                variables.testLocation = "spec-" & lCase( replace( createUUID(), "-", "", "all" ) );
+            } );
+
+            describe( "ensureMenu()", function() {
+                it( "creates a menu row the first time; returns the same row thereafter", function() {
+                    var a = svc.ensureMenu( "bx-blogger-default", variables.testLocation );
+                    variables.createdMenuIds.append( a.id );
+                    var b = svc.ensureMenu( "bx-blogger-default", variables.testLocation );
+                    expect( b.id ).toBe( a.id );
+                } );
+            } );
+
+            describe( "addItem() + listItemsFlat()", function() {
+                it( "appends items in sort order", function() {
+                    var menu = svc.ensureMenu( "bx-blogger-default", variables.testLocation );
+                    variables.createdMenuIds.append( menu.id );
+
+                    svc.addItem( menuId = menu.id, label = "Home",  url = "/"     );
+                    svc.addItem( menuId = menu.id, label = "Blog",  url = "/blog" );
+
+                    var flat = svc.listItemsFlat( menu.id );
+                    expect( flat.len() ).toBe( 2 );
+                    expect( flat[ 1 ].label ).toBe( "Home" );
+                    expect( flat[ 2 ].label ).toBe( "Blog" );
+                    expect( flat[ 1 ].depth ).toBe( 0 );
+                } );
+            } );
+
+            describe( "move()", function() {
+                it( "swaps sort_order with the adjacent sibling", function() {
+                    var menu = svc.ensureMenu( "bx-blogger-default", variables.testLocation );
+                    variables.createdMenuIds.append( menu.id );
+                    var a = svc.addItem( menuId = menu.id, label = "A", url = "/a" );
+                    var b = svc.addItem( menuId = menu.id, label = "B", url = "/b" );
+
+                    svc.move( id = b, direction = "up" );
+                    var flat = svc.listItemsFlat( menu.id );
+                    expect( flat[ 1 ].label ).toBe( "B" );
+                    expect( flat[ 2 ].label ).toBe( "A" );
+                } );
+
+                it( "clamps at the top / bottom (no-op)", function() {
+                    var menu = svc.ensureMenu( "bx-blogger-default", variables.testLocation );
+                    variables.createdMenuIds.append( menu.id );
+                    var a = svc.addItem( menuId = menu.id, label = "A", url = "/a" );
+                    var b = svc.addItem( menuId = menu.id, label = "B", url = "/b" );
+
+                    svc.move( id = a, direction = "up" );  // already first
+                    svc.move( id = b, direction = "down" ); // already last
+                    var flat = svc.listItemsFlat( menu.id );
+                    expect( flat[ 1 ].label ).toBe( "A" );
+                    expect( flat[ 2 ].label ).toBe( "B" );
+                } );
+            } );
+
+            describe( "indent() + outdent()", function() {
+                it( "indent makes an item a child of the previous sibling", function() {
+                    var menu = svc.ensureMenu( "bx-blogger-default", variables.testLocation );
+                    variables.createdMenuIds.append( menu.id );
+                    var parent = svc.addItem( menuId = menu.id, label = "Parent", url = "/p" );
+                    var child  = svc.addItem( menuId = menu.id, label = "Child",  url = "/c" );
+
+                    svc.indent( child );
+                    var tree = svc.getTree( "bx-blogger-default", variables.testLocation );
+                    expect( tree.len() ).toBe( 1 );
+                    expect( tree[ 1 ].label ).toBe( "Parent" );
+                    expect( tree[ 1 ].children.len() ).toBe( 1 );
+                    expect( tree[ 1 ].children[ 1 ].label ).toBe( "Child" );
+                } );
+
+                it( "outdent lifts an item back to the parent's level", function() {
+                    var menu = svc.ensureMenu( "bx-blogger-default", variables.testLocation );
+                    variables.createdMenuIds.append( menu.id );
+                    var parent = svc.addItem( menuId = menu.id, label = "P", url = "/" );
+                    var child  = svc.addItem( menuId = menu.id, label = "C", url = "/" );
+                    svc.indent( child );
+                    svc.outdent( child );
+
+                    var tree = svc.getTree( "bx-blogger-default", variables.testLocation );
+                    expect( tree.len() ).toBe( 2 );
+                    expect( tree[ 1 ].children.len() ).toBe( 0 );
+                } );
+
+                it( "outdent is a no-op for already-top-level items", function() {
+                    var menu = svc.ensureMenu( "bx-blogger-default", variables.testLocation );
+                    variables.createdMenuIds.append( menu.id );
+                    var a = svc.addItem( menuId = menu.id, label = "A", url = "/" );
+                    svc.outdent( a );   // should do nothing
+                    var tree = svc.getTree( "bx-blogger-default", variables.testLocation );
+                    expect( tree.len() ).toBe( 1 );
+                } );
+            } );
+
+            describe( "deleteItem()", function() {
+                it( "cascades the subtree via the self-referential FK", function() {
+                    var menu = svc.ensureMenu( "bx-blogger-default", variables.testLocation );
+                    variables.createdMenuIds.append( menu.id );
+                    var p = svc.addItem( menuId = menu.id, label = "P", url = "/" );
+                    var c = svc.addItem( menuId = menu.id, label = "C", url = "/" );
+                    svc.indent( c );
+
+                    svc.deleteItem( p );
+                    var flat = svc.listItemsFlat( menu.id );
+                    expect( flat.len() ).toBe( 0 );
+                } );
+            } );
+
+            describe( "getTree()", function() {
+                it( "returns [] for an unknown location", function() {
+                    var t = svc.getTree( "bx-blogger-default", "never-created" );
+                    expect( t ).toBeArray();
+                    expect( t.len() ).toBe( 0 );
+                } );
+
+                it( "reflects writes after cache invalidation", function() {
+                    var menu = svc.ensureMenu( "bx-blogger-default", variables.testLocation );
+                    variables.createdMenuIds.append( menu.id );
+                    expect( svc.getTree( "bx-blogger-default", variables.testLocation ).len() ).toBe( 0 );
+
+                    svc.addItem( menuId = menu.id, label = "New", url = "/" );
+                    expect( svc.getTree( "bx-blogger-default", variables.testLocation ).len() ).toBe( 1 );
+                } );
+            } );
+
+            describe( "Theme.menu()", function() {
+                it( "proxies to MenuService.getTree via the VO lookup", function() {
+                    var menu = svc.ensureMenu( "bx-blogger-default", variables.testLocation );
+                    variables.createdMenuIds.append( menu.id );
+                    svc.addItem( menuId = menu.id, label = "ViaVO", url = "/vo" );
+
+                    themeSvc.activate( "bx-blogger-default" );
+                    var theme = themeSvc.resolveActive();
+                    var tree  = theme.menu( variables.testLocation );
+                    expect( tree.len() ).toBe( 1 );
+                    expect( tree[ 1 ].label ).toBe( "ViaVO" );
+                } );
+            } );
+
+        } );
+    }
+
+}

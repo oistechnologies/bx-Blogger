@@ -132,6 +132,25 @@ class accessors="true" {
         variables.optionsLookup = arguments.lookup;
     }
 
+    /**
+     * Return the nested menu tree an admin built for this theme +
+     * `location` (e.g. "header", "footer"). Each node is a struct
+     * with id / label / url / target / children (recursive). Empty
+     * array when no menu exists, so the caller can fall back to
+     * hard-coded nav links.
+     *
+     * Same closure-injection pattern as `option()`; the lookup is
+     * wired by `ThemeService.buildTheme()`.
+     */
+    array function menu( required string location ) {
+        if ( !structKeyExists( variables, "menuLookup" ) || isNull( variables.menuLookup ) ) return [];
+        return variables.menuLookup( variables.slug, arguments.location );
+    }
+
+    void function setMenuLookup( required any lookup ) {
+        variables.menuLookup = arguments.lookup;
+    }
+
     // --------------------------------------------------------------------
 
     /**

@@ -1,0 +1,462 @@
+/**
+ * bx-Blogger — MenuService (Chunk 4.E)
+ *
+ * CRUD + tree-building for the `menus` / `menu_items` tables. The
+ * admin wire is the only write-side caller today; render-time
+ * templates hit `Theme.menu(location)` which proxies through to
+ * `getTree(themeSlug, location)` here.
+ *
+ * Tree shape returned by `getTree`:
+ *
+ *   [
+ *     {
+ *       id: 42,
+ *       label: "Home",
+ *       url: "/",
+ *       target: "",     // "" = default _self, "_blank" = new tab
+ *       sortOrder: 0,
+ *       parentId: null,
+ *       children: [ ...same shape... ]
+ *     },
+ *     ...
+ *   ]
+ *
+ * The tree is cached under `menuTree:{slug}:{location}` in the
+ * default CacheBox with a 60-min TTL; every write here invalidates
+ * the matching entry so the admin's changes show up on the next
+ * public render.
+ *
+ * Reorder / nest operations work on the single item being moved and
+ * normalize `sort_order` across its siblings afterwards — keeps the
+ * numbers from drifting after a lot of Up/Down clicks.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox" inject="wirebox";
+    property name="cache"   inject="cachebox:default";
+    property name="log"     inject="logbox:logger:{this}";
+
+    variables.cacheTtlMinutes = 60;
+
+    // --------------------------------------------------------------------
+    // Menu CRUD
+    // --------------------------------------------------------------------
+
+    /**
+     * Fetch or create the menu for `(themeSlug, location)`. Every
+     * render lookup and admin edit funnels through this so there's a
+     * single row per location regardless of click order.
+     */
+    struct function ensureMenu(
+        required string themeSlug,
+        required string location,
+                 string name = ""
+    ) {
+        var existing = freshQb().from( "menus" )
+            .where( "theme_slug", arguments.themeSlug )
+            .where( "location",   arguments.location )
+            .first();
+        if ( hasRow( existing ) ) return existing;
+
+        var now = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+        insertRow( "menus", {
+            "theme_slug" : arguments.themeSlug,
+            "location"   : arguments.location,
+            "name"       : len( arguments.name ) ? arguments.name : ( arguments.location & " menu" ),
+            "created_at" : now,
+            "updated_at" : now
+        } );
+        invalidate( arguments.themeSlug, arguments.location );
+        return freshQb().from( "menus" )
+            .where( "theme_slug", arguments.themeSlug )
+            .where( "location",   arguments.location )
+            .first();
+    }
+
+    /**
+     * Return every menu for a given theme. Used by the admin UI's
+     * per-location breakdown.
+     */
+    array function listForTheme( required string themeSlug ) {
+        return freshQb().from( "menus" )
+            .where( "theme_slug", arguments.themeSlug )
+            .orderBy( "location" )
+            .get();
+    }
+
+    // --------------------------------------------------------------------
+    // Item CRUD
+    // --------------------------------------------------------------------
+
+    /**
+     * Append an item to the end of its parent's children. `parentId`
+     * "", 0, or null lands the item at the top level of the menu.
+     *
+     * Note on the parent-id handling: BoxLang treats
+     * `javaCast("null","")` assigned to a local-then-referenced as
+     * undefined, so instead of carrying a nullable `parentVal` we use
+     * a paired `( hasParent, parentId )` representation. `hasParent`
+     * is a plain boolean and `parentId` is 0 when `!hasParent`.
+     */
+    numeric function addItem(
+        required numeric menuId,
+        required string  label,
+                 string  url        = "##",
+                 string  linkTarget = "",
+                 any     parentId   = ""
+    ) {
+        var parentText = trim( arguments.parentId & "" );
+        var hasParent  = len( parentText ) && parentText != "0";
+        var parentNum  = hasParent ? val( parentText ) : 0;
+        var nextSort   = nextSortOrderFor( arguments.menuId, hasParent, parentNum );
+        var now        = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+
+        var row = {
+            "menu_id"     : arguments.menuId,
+            "sort_order"  : nextSort,
+            "label"       : trim( arguments.label ),
+            "url"         : trim( arguments.url ),
+            "link_target" : trim( arguments.linkTarget ),
+            "created_at"  : now,
+            "updated_at"  : now
+        };
+        if ( hasParent ) row.parent_id = parentNum;
+
+        insertRow( "menu_items", row );
+
+        // Read the row back via its unique triple — (menu_id, parent_id,
+        // sort_order) is unique at this moment because we just reserved
+        // `nextSort` from `nextSortOrderFor()`. Re-reading is more
+        // portable than relying on qb's driver-specific generatedKey.
+        var lookup = freshQb().from( "menu_items" )
+            .where( "menu_id", arguments.menuId )
+            .where( "sort_order", nextSort );
+        if ( hasParent ) lookup.where( "parent_id", parentNum );
+        else             lookup.whereNull( "parent_id" );
+        var inserted = lookup.first();
+
+        invalidateByMenuId( arguments.menuId );
+        return hasRow( inserted ) ? inserted.id : 0;
+    }
+
+    /**
+     * Rewrite an item's label / url / target. Leaves tree position
+     * alone; use `indent` / `outdent` / `move` for that.
+     */
+    function updateItem(
+        required numeric id,
+        required string  label,
+                 string  url        = "##",
+                 string  linkTarget = ""
+    ) {
+        freshQb().from( "menu_items" )
+            .where( "id", arguments.id )
+            .update( {
+                "label"       : trim( arguments.label ),
+                "url"         : trim( arguments.url ),
+                "link_target" : trim( arguments.linkTarget ),
+                "updated_at"  : dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" )
+            } );
+        invalidateByItemId( arguments.id );
+    }
+
+    /**
+     * Delete a single item. The FK CASCADE drops its children too,
+     * so a whole subtree disappears in one call.
+     */
+    function deleteItem( required numeric id ) {
+        var row = freshQb().from( "menu_items" ).where( "id", arguments.id ).first();
+        if ( !hasRow( row ) ) return;
+        freshQb().from( "menu_items" ).where( "id", arguments.id ).delete();
+        invalidateByMenuId( row.menu_id );
+    }
+
+    /**
+     * Move `up` / `down` within the current parent's siblings. The
+     * service swaps sort_order with the adjacent sibling; clamp at
+     * the ends so spam-clicking "up" on the first item is a no-op.
+     */
+    function move( required numeric id, required string direction ) {
+        var row = freshQb().from( "menu_items" ).where( "id", arguments.id ).first();
+        if ( !hasRow( row ) ) return;
+
+        var siblingQuery = freshQb().from( "menu_items" )
+            .where( "menu_id", row.menu_id );
+        if ( rowHasParent( row ) ) siblingQuery.where( "parent_id", row.parent_id );
+        else                       siblingQuery.whereNull( "parent_id" );
+
+        var siblings = siblingQuery.orderBy( "sort_order", "asc" ).orderBy( "id", "asc" ).get();
+        if ( siblings.len() < 2 ) return;
+
+        var index = -1;
+        for ( var i = 1; i <= siblings.len(); i++ ) {
+            if ( siblings[ i ].id == row.id ) { index = i; break; }
+        }
+        if ( index < 0 ) return;
+
+        var swapIndex = arguments.direction == "up" ? index - 1 : index + 1;
+        if ( swapIndex < 1 || swapIndex > siblings.len() ) return;
+
+        // Renormalize every sibling's sort_order after the swap so
+        // subsequent inserts + moves stay densely numbered.
+        var reordered = siblings;
+        var tmp       = reordered[ index ];
+        reordered[ index ]     = reordered[ swapIndex ];
+        reordered[ swapIndex ] = tmp;
+        renumberSiblings( reordered );
+        invalidateByMenuId( row.menu_id );
+    }
+
+    /**
+     * Indent — make the item a child of the sibling immediately
+     * above it. No-op when the item is already the first among its
+     * siblings (nothing to indent under).
+     */
+    function indent( required numeric id ) {
+        var row = freshQb().from( "menu_items" ).where( "id", arguments.id ).first();
+        if ( !hasRow( row ) ) return;
+
+        var q = freshQb().from( "menu_items" )
+            .where( "menu_id", row.menu_id )
+            .where( "sort_order", "<", row.sort_order )
+            .orderBy( "sort_order", "desc" )
+            .orderBy( "id", "desc" )
+            .limit( 1 );
+        if ( rowHasParent( row ) ) q.where( "parent_id", row.parent_id );
+        else                       q.whereNull( "parent_id" );
+        var prev = q.first();
+        if ( !hasRow( prev ) ) return;
+
+        var nextSort = nextSortOrderFor( row.menu_id, true, prev.id );
+        freshQb().from( "menu_items" ).where( "id", row.id ).update( {
+            "parent_id"  : prev.id,
+            "sort_order" : nextSort,
+            "updated_at" : dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" )
+        } );
+        invalidateByMenuId( row.menu_id );
+    }
+
+    /**
+     * Outdent — lift the item one level, dropping it below its
+     * current parent in the grandparent's list. No-op for
+     * already-top-level items.
+     */
+    function outdent( required numeric id ) {
+        var row = freshQb().from( "menu_items" ).where( "id", arguments.id ).first();
+        if ( !hasRow( row ) ) return;
+        if ( !rowHasParent( row ) ) return;   // already top-level
+
+        var parent = freshQb().from( "menu_items" ).where( "id", row.parent_id ).first();
+        if ( !hasRow( parent ) ) return;
+
+        var grandparentHas = rowHasParent( parent );
+        var grandparentId  = grandparentHas ? parent.parent_id : 0;
+        var nextSort       = nextSortOrderFor( row.menu_id, grandparentHas, grandparentId );
+        var nowStr         = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+
+        // qb's `.update( struct )` can't mix a bound NULL with other
+        // bindings cleanly (per CLAUDE.md), so a true NULL parent
+        // goes through queryExecute. The non-null branch uses qb.
+        if ( grandparentHas ) {
+            freshQb().from( "menu_items" ).where( "id", row.id ).update( {
+                "parent_id"  : grandparentId,
+                "sort_order" : nextSort,
+                "updated_at" : nowStr
+            } );
+        }
+        else {
+            queryExecute(
+                "UPDATE menu_items SET parent_id = NULL, sort_order = ?, updated_at = ? WHERE id = ?",
+                [ nextSort, nowStr, row.id ]
+            );
+        }
+        invalidateByMenuId( row.menu_id );
+    }
+
+    // --------------------------------------------------------------------
+    // Reads
+    // --------------------------------------------------------------------
+
+    /**
+     * Flat array of items for the admin builder — ordered by
+     * (parent, sort) but not yet nested. Each row carries a `depth`
+     * hint so the UI can indent each row visually without recursing.
+     */
+    array function listItemsFlat( required numeric menuId ) {
+        var rows = freshQb().from( "menu_items" )
+            .where( "menu_id", arguments.menuId )
+            .orderBy( "sort_order", "asc" )
+            .orderBy( "id", "asc" )
+            .get();
+
+        // Bucket by parent id and walk depth-first.
+        var byParent = {};
+        for ( var r in rows ) {
+            // qb returns NULL columns as empty strings in BoxLang
+            // depending on the driver, so the null/empty branches
+            // both map to "0" (our synthetic top-level key).
+            var rawParent = r.parent_id ?: "";
+            var key       = ( isNull( rawParent ) || !len( rawParent & "" ) ) ? "0" : ( rawParent & "" );
+            if ( !structKeyExists( byParent, key ) ) byParent[ key ] = [];
+            byParent[ key ].append( r );
+        }
+
+        var out = [];
+        walk( byParent, "0", 0, out );
+        return out;
+    }
+
+    /**
+     * Nested tree for render. Cached per `(themeSlug, location)`.
+     */
+    array function getTree( required string themeSlug, required string location ) {
+        var cacheKey = "menuTree:" & arguments.themeSlug & ":" & arguments.location;
+        var cached   = variables.cache.get( cacheKey );
+        if ( !isNull( cached ) && isArray( cached ) ) return cached;
+
+        var menu = freshQb().from( "menus" )
+            .where( "theme_slug", arguments.themeSlug )
+            .where( "location",   arguments.location )
+            .first();
+        if ( !hasRow( menu ) ) {
+            variables.cache.set( cacheKey, [], variables.cacheTtlMinutes, 0 );
+            return [];
+        }
+
+        var rows = freshQb().from( "menu_items" )
+            .where( "menu_id", menu.id )
+            .orderBy( "sort_order", "asc" )
+            .orderBy( "id", "asc" )
+            .get();
+
+        var byParent = {};
+        for ( var r in rows ) {
+            // qb returns NULL columns as empty strings in BoxLang
+            // depending on the driver, so the null/empty branches
+            // both map to "0" (our synthetic top-level key).
+            var rawParent = r.parent_id ?: "";
+            var key       = ( isNull( rawParent ) || !len( rawParent & "" ) ) ? "0" : ( rawParent & "" );
+            if ( !structKeyExists( byParent, key ) ) byParent[ key ] = [];
+            byParent[ key ].append( {
+                "id"        : r.id,
+                "label"     : r.label,
+                "url"       : r.url,
+                "target"    : r.link_target ?: "",
+                "sortOrder" : r.sort_order,
+                "parentId"  : isNull( r.parent_id ) ? "" : r.parent_id,
+                "children"  : []
+            } );
+        }
+
+        var tree = buildChildren( byParent, "0" );
+        variables.cache.set( cacheKey, tree, variables.cacheTtlMinutes, 0 );
+        return tree;
+    }
+
+    function invalidate( required string themeSlug, required string location ) {
+        variables.cache.clear( "menuTree:" & arguments.themeSlug & ":" & arguments.location );
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    private any function freshQb() {
+        return variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery();
+    }
+
+    private boolean function hasRow( required any row ) {
+        if ( isNull( arguments.row ) ) return false;
+        if ( isStruct( arguments.row ) && structIsEmpty( arguments.row ) ) return false;
+        return true;
+    }
+
+    /**
+     * True if the row carries a non-null parent_id. Written as a
+     * paired-representation predicate rather than a nullable helper
+     * because BoxLang flags a `null` local as undefined when it's
+     * reassigned back into scope.
+     */
+    private boolean function rowHasParent( required any row ) {
+        if ( !structKeyExists( arguments.row, "parent_id" ) ) return false;
+        if ( isNull( arguments.row.parent_id ) ) return false;
+        return len( arguments.row.parent_id & "" ) > 0;
+    }
+
+    private numeric function nextSortOrderFor(
+        required numeric menuId,
+        required boolean hasParent,
+        required numeric parentId
+    ) {
+        var q = freshQb().from( "menu_items" )
+            .selectRaw( "COALESCE( MAX( sort_order ), -1 ) + 1 AS next_order" )
+            .where( "menu_id", arguments.menuId );
+        if ( arguments.hasParent ) q.where( "parent_id", arguments.parentId );
+        else                       q.whereNull( "parent_id" );
+        var row = q.first();
+        return hasRow( row ) ? int( row.next_order ?: 0 ) : 0;
+    }
+
+    /**
+     * After a swap, rewrite the whole sibling group's sort_order so
+     * values stay dense (0..N-1). Cheap — a nav menu never has more
+     * than a few hundred items.
+     */
+    private void function renumberSiblings( required array ordered ) {
+        var now = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+        for ( var i = 1; i <= arguments.ordered.len(); i++ ) {
+            var r = arguments.ordered[ i ];
+            freshQb().from( "menu_items" ).where( "id", r.id ).update( {
+                "sort_order" : i - 1,
+                "updated_at" : now
+            } );
+        }
+    }
+
+    private void function walk( required struct byParent, required string key, required numeric depth, required array out ) {
+        if ( !structKeyExists( arguments.byParent, arguments.key ) ) return;
+        for ( var r in arguments.byParent[ arguments.key ] ) {
+            arguments.out.append( {
+                "id"        : r.id,
+                "label"     : r.label,
+                "url"       : r.url,
+                "target"    : r.link_target ?: "",
+                "sortOrder" : r.sort_order,
+                "parentId"  : isNull( r.parent_id ) ? "" : r.parent_id,
+                "depth"     : arguments.depth
+            } );
+            walk( arguments.byParent, r.id & "", arguments.depth + 1, arguments.out );
+        }
+    }
+
+    private array function buildChildren( required struct byParent, required string key ) {
+        if ( !structKeyExists( arguments.byParent, arguments.key ) ) return [];
+        var out = arguments.byParent[ arguments.key ];
+        for ( var node in out ) {
+            node.children = buildChildren( arguments.byParent, node.id & "" );
+        }
+        return out;
+    }
+
+    private void function invalidateByMenuId( required numeric menuId ) {
+        var row = freshQb().from( "menus" ).where( "id", arguments.menuId ).first();
+        if ( hasRow( row ) ) invalidate( row.theme_slug, row.location );
+    }
+
+    private void function invalidateByItemId( required numeric id ) {
+        var item = freshQb().from( "menu_items" ).where( "id", arguments.id ).first();
+        if ( hasRow( item ) ) invalidateByMenuId( item.menu_id );
+    }
+
+    /**
+     * qb's `insert()` return shape for generated keys varies across
+     * BoxLang / Lucee / Adobe drivers, and connection pooling
+     * invalidates a naive `LAST_INSERT_ID()` readback on a second
+     * queryExecute. Callers re-read the inserted row via its
+     * natural-unique tuple instead of relying on the driver's id.
+     */
+    private void function insertRow( required string table, required struct values ) {
+        freshQb().from( arguments.table ).insert( arguments.values );
+    }
+
+}

@@ -385,6 +385,15 @@ class accessors="true" singleton {
         theme.setOptionsLookup( function( slug, key ) {
             return svc.getOption( slug, key );
         } );
+
+        // 4.E — same closure pattern for the nested-menu tree. Templates
+        // call `prc.theme.menu("header")` and get an empty array when
+        // the admin hasn't built one yet, so layouts can fall back
+        // cleanly to hard-coded nav.
+        var menuSvc = variables.wirebox.getInstance( "MenuService" );
+        theme.setMenuLookup( function( slug, location ) {
+            return menuSvc.getTree( slug, location );
+        } );
         return theme;
     }
 

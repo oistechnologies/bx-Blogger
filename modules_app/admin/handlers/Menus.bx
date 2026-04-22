@@ -1,0 +1,17 @@
+/**
+ * bx-Blogger — admin:Menus (Chunk 4.E)
+ *
+ * Mounts the menus.manager wire. The wire reads the active theme's
+ * manifest to discover declared menu locations, then provides CRUD +
+ * reorder controls per location.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    this.layouts = { "Main.bxm" : "*" };
+
+    function index( event, rc, prc ) {
+        prc.pageTitle = "Menus";
+        event.setView( view = "menus/index" );
+    }
+
+}

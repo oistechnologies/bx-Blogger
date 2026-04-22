@@ -1,0 +1,356 @@
+<bx:script>
+// @startWire
+/**
+ * menus.manager — per-location menu builder for the active theme.
+ *
+ * Reads `menus{}` from the active theme's `theme.json` to discover
+ * declared locations (header, footer, etc.), then offers a per-
+ * location inline builder:
+ *   - Add Item (label + url + target checkbox)
+ *   - Rename / edit url / edit target inline
+ *   - Move Up / Move Down within the current parent
+ *   - Indent (nest under the previous sibling) / Outdent (lift out)
+ *   - Delete (cascades the subtree via FK)
+ *
+ * Drag-and-drop reorder is deferred — the button-based controls
+ * cover every nest + reorder case without a JS dependency. A later
+ * chunk can layer Sortable.js on top against the same service.
+ *
+ * Gated on `menus.manage` at every write action; the whole wire
+ * renders a permission-denied panel when the viewer lacks it.
+ */
+
+property name="menuService"   inject="MenuService";
+property name="themeService"  inject="ThemeService";
+property name="cbauth"        inject="AuthenticationService@cbauth";
+
+data = {
+    "activeSlug"   : "",
+    "activeName"   : "",
+    "locations"    : [],
+    "selectedLoc"  : "",
+    "editingId"    : 0,
+    "editLabel"    : "",
+    "editUrl"      : "",
+    "editTarget"   : "",
+    "newLabel"     : "",
+    "newUrl"       : "",
+    "newTarget"    : "",
+    "flashOk"      : "",
+    "flashError"   : ""
+};
+
+function onMount( event, rc, prc, params ) {
+    loadTheme();
+}
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function switchLocation( required string location ) {
+    clearFlashes();
+    data.selectedLoc = arguments.location;
+    cancelEdit();
+}
+
+function addItem() {
+    clearFlashes();
+    if ( !requirePerm( "menus.manage" ) ) return;
+    if ( !len( data.selectedLoc ) ) { data.flashError = "Pick a location first."; return; }
+    var label = trim( data.newLabel );
+    var url   = trim( data.newUrl );
+    if ( !len( label ) ) { data.flashError = "Label is required."; return; }
+    if ( !len( url ) )   url = "##";
+
+    var menu = menuService.ensureMenu( data.activeSlug, data.selectedLoc );
+    menuService.addItem(
+        menuId     = menu.id,
+        label      = label,
+        url        = url,
+        linkTarget = trim( data.newTarget )
+    );
+    data.newLabel = "";
+    data.newUrl = "";
+    data.newTarget = "";
+    data.flashOk = "Menu item added.";
+}
+
+function startEdit( required numeric id ) {
+    clearFlashes();
+    var menu = menuService.ensureMenu( data.activeSlug, data.selectedLoc );
+    var items = menuService.listItemsFlat( menu.id );
+    for ( var it in items ) {
+        if ( it.id == arguments.id ) {
+            data.editingId = it.id;
+            data.editLabel = it.label;
+            data.editUrl   = it.url;
+            data.editTarget = it.target;
+            return;
+        }
+    }
+}
+
+function cancelEdit() {
+    data.editingId = 0;
+    data.editLabel = "";
+    data.editUrl   = "";
+    data.editTarget = "";
+}
+
+function saveEdit() {
+    clearFlashes();
+    if ( !requirePerm( "menus.manage" ) ) return;
+    if ( data.editingId <= 0 ) return;
+    var label = trim( data.editLabel );
+    if ( !len( label ) ) { data.flashError = "Label is required."; return; }
+
+    menuService.updateItem(
+        id         = data.editingId,
+        label      = label,
+        url        = trim( len( data.editUrl ) ? data.editUrl : "##" ),
+        linkTarget = trim( data.editTarget )
+    );
+    cancelEdit();
+    data.flashOk = "Menu item updated.";
+}
+
+function moveUp(     required numeric id ) { doMove( arguments.id, "up"   ); }
+function moveDown(   required numeric id ) { doMove( arguments.id, "down" ); }
+function indentItem( required numeric id ) {
+    clearFlashes();
+    if ( !requirePerm( "menus.manage" ) ) return;
+    menuService.indent( arguments.id );
+}
+function outdentItem( required numeric id ) {
+    clearFlashes();
+    if ( !requirePerm( "menus.manage" ) ) return;
+    menuService.outdent( arguments.id );
+}
+
+function deleteItem( required numeric id ) {
+    clearFlashes();
+    if ( !requirePerm( "menus.manage" ) ) return;
+    menuService.deleteItem( arguments.id );
+    if ( data.editingId == arguments.id ) cancelEdit();
+    data.flashOk = "Menu item removed.";
+}
+
+// --------------------------------------------------------------------
+// View-side helpers
+// --------------------------------------------------------------------
+
+array function currentItems() {
+    if ( !len( data.selectedLoc ) ) return [];
+    var menu = menuService.ensureMenu( data.activeSlug, data.selectedLoc );
+    return menuService.listItemsFlat( menu.id );
+}
+
+// --------------------------------------------------------------------
+// Private
+// --------------------------------------------------------------------
+
+private void function loadTheme() {
+    var theme = themeService.resolveActive();
+    data.activeSlug = theme.getSlug();
+    data.activeName = theme.getName();
+
+    var manifest  = theme.getManifest();
+    var declared  = ( isStruct( manifest ) && structKeyExists( manifest, "menus" ) && isStruct( manifest.menus ) )
+        ? manifest.menus
+        : {};
+
+    // Default locations for themes that don't declare any — every
+    // bx-Blogger theme surfaces header + footer, so seed those.
+    if ( structIsEmpty( declared ) ) {
+        declared = { "header" : "Header Navigation", "footer" : "Footer Navigation" };
+    }
+
+    var locs = [];
+    for ( var key in structKeyArray( declared ) ) {
+        locs.append( { "location" : key, "label" : declared[ key ] } );
+    }
+    data.locations   = locs;
+    data.selectedLoc = locs.len() ? locs[ 1 ].location : "";
+}
+
+private void function doMove( required numeric id, required string direction ) {
+    clearFlashes();
+    if ( !requirePerm( "menus.manage" ) ) return;
+    menuService.move( id = arguments.id, direction = arguments.direction );
+}
+
+private void function clearFlashes() {
+    data.flashOk    = "";
+    data.flashError = "";
+}
+
+private boolean function requirePerm( required string perm ) {
+    var user = cbauth.getUser();
+    if ( user.hasPermission( arguments.perm ) ) return true;
+    data.flashError = "You don't have permission to manage menus.";
+    return false;
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:script>
+    items = currentItems();
+</bx:script>
+
+<div>
+    <bx:if len( args.flashOk )>
+        <div class="alert alert-success alert-dismissible">
+            #encodeForHTML( args.flashOk )#
+            <button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+        </div>
+    </bx:if>
+    <bx:if len( args.flashError )>
+        <div class="alert alert-danger alert-dismissible">
+            #encodeForHTML( args.flashError )#
+            <button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+        </div>
+    </bx:if>
+
+    <p class="text-muted small mb-3">
+        Editing menus for the active theme <strong>#encodeForHTML( args.activeName )#</strong>
+        (<code>#encodeForHTML( args.activeSlug )#</code>).
+        Locations come from the theme's <code>theme.json</code>.
+    </p>
+
+    <bx:if !args.locations.len()>
+        <div class="alert alert-light border">This theme doesn&rsquo;t declare any menu locations.</div>
+    <bx:else>
+        <ul class="nav nav-pills mb-4">
+            <bx:loop array="#args.locations#" item="loc">
+                <li class="nav-item">
+                    <button type="button"
+                            class="nav-link #( args.selectedLoc == loc.location ? 'active' : '' )#"
+                            wire:click="switchLocation('#encodeForHTMLAttribute( loc.location )#')">
+                        #encodeForHTML( loc.label )#
+                    </button>
+                </li>
+            </bx:loop>
+        </ul>
+
+        <div class="row g-4">
+            <!--- Existing items, flat + depth-indented --->
+            <div class="col-lg-8">
+                <div class="card">
+                    <div class="card-body">
+                        <bx:if !items.len()>
+                            <p class="text-muted mb-0">
+                                No items yet &mdash; add one from the panel on the right.
+                            </p>
+                        <bx:else>
+                            <ul class="list-group list-group-flush">
+                                <bx:loop array="#items#" item="it">
+                                    <li class="list-group-item px-2" style="padding-left: #( 0.75 + ( it.depth * 1.5 ) )rem !important;">
+                                        <bx:if args.editingId == it.id>
+                                            <div class="row g-2 align-items-end">
+                                                <div class="col-md-5">
+                                                    <label class="form-label small mb-0">Label</label>
+                                                    <input type="text" class="form-control form-control-sm"
+                                                           wire:model.blur="editLabel">
+                                                </div>
+                                                <div class="col-md-5">
+                                                    <label class="form-label small mb-0">URL</label>
+                                                    <input type="text" class="form-control form-control-sm"
+                                                           wire:model.blur="editUrl">
+                                                </div>
+                                                <div class="col-md-2">
+                                                    <label class="form-label small mb-0">
+                                                        <input type="checkbox"
+                                                               wire:model.blur="editTarget"
+                                                               value="_blank"
+                                                               class="form-check-input me-1">
+                                                        New tab
+                                                    </label>
+                                                </div>
+                                                <div class="col-12 mt-2 d-flex gap-1">
+                                                    <button class="btn btn-sm btn-primary" wire:click="saveEdit">Save</button>
+                                                    <button class="btn btn-sm btn-outline-secondary" wire:click="cancelEdit">Cancel</button>
+                                                </div>
+                                            </div>
+                                        <bx:else>
+                                            <div class="d-flex justify-content-between align-items-center gap-2">
+                                                <div class="me-auto">
+                                                    <strong>#encodeForHTML( it.label )#</strong>
+                                                    <div class="text-muted small">
+                                                        <code>#encodeForHTML( it.url )#</code>
+                                                        <bx:if it.target == "_blank">
+                                                            <span class="badge text-bg-light border ms-1">new tab</span>
+                                                        </bx:if>
+                                                    </div>
+                                                </div>
+                                                <div class="btn-group btn-group-sm" role="group" aria-label="Move">
+                                                    <button type="button" class="btn btn-outline-secondary"
+                                                            wire:click="moveUp(#it.id#)" title="Move up">&uarr;</button>
+                                                    <button type="button" class="btn btn-outline-secondary"
+                                                            wire:click="moveDown(#it.id#)" title="Move down">&darr;</button>
+                                                    <button type="button" class="btn btn-outline-secondary"
+                                                            wire:click="outdentItem(#it.id#)" title="Outdent">&larr;</button>
+                                                    <button type="button" class="btn btn-outline-secondary"
+                                                            wire:click="indentItem(#it.id#)" title="Indent">&rarr;</button>
+                                                </div>
+                                                <div class="btn-group btn-group-sm" role="group" aria-label="Edit">
+                                                    <button type="button" class="btn btn-outline-primary"
+                                                            wire:click="startEdit(#it.id#)">Edit</button>
+                                                    <button type="button" class="btn btn-outline-danger"
+                                                            wire:click="deleteItem(#it.id#)"
+                                                            wire:confirm="Remove &##34;#encodeForHTMLAttribute( it.label )#&##34; and any items nested under it?">
+                                                        Delete
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        </bx:if>
+                                    </li>
+                                </bx:loop>
+                            </ul>
+                        </bx:if>
+                    </div>
+                </div>
+            </div>
+
+            <!--- Add-item panel --->
+            <div class="col-lg-4">
+                <div class="card">
+                    <div class="card-body">
+                        <h3 class="h6 mb-3">Add item</h3>
+                        <div class="mb-2">
+                            <label for="newItemLabel" class="form-label small">Label</label>
+                            <input type="text" id="newItemLabel" class="form-control form-control-sm"
+                                   wire:model.blur="newLabel" placeholder="Home">
+                        </div>
+                        <div class="mb-2">
+                            <label for="newItemUrl" class="form-label small">URL</label>
+                            <input type="text" id="newItemUrl" class="form-control form-control-sm"
+                                   wire:model.blur="newUrl" placeholder="/">
+                        </div>
+                        <div class="mb-3 form-check">
+                            <input type="checkbox" id="newItemTarget"
+                                   class="form-check-input"
+                                   value="_blank"
+                                   wire:model.blur="newTarget">
+                            <label for="newItemTarget" class="form-check-label small">Open in new tab</label>
+                        </div>
+                        <button class="btn btn-primary btn-sm w-100" wire:click="addItem">Add item</button>
+                    </div>
+                </div>
+
+                <div class="card mt-3">
+                    <div class="card-body small text-muted">
+                        <p class="mb-1"><strong>Tips</strong></p>
+                        <ul class="mb-0 ps-3">
+                            <li>Use <code>&rarr;</code> to nest an item under the one above it.</li>
+                            <li>Delete cascades &mdash; the subtree under an item goes with it.</li>
+                            <li>Switching themes hides the nav builder for locations the new theme doesn't declare; data is preserved.</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </bx:if>
+</div>
+</bx:output>

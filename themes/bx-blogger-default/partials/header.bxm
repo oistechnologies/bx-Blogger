@@ -1,4 +1,5 @@
 <bx:output>
+<bx:set headerMenu = prc.theme.menu( "header" )>
 <header class="border-bottom bg-body-tertiary site-header">
     <nav class="container navbar navbar-expand-md py-2" aria-label="Site header">
         <a class="navbar-brand fw-semibold" href="/">#encodeForHTML( getSetting( "AppName" ) )#</a>
@@ -14,9 +15,41 @@
         </button>
         <div class="collapse navbar-collapse" id="site-header-nav">
             <ul class="navbar-nav ms-auto align-items-md-center gap-md-2">
-                <li class="nav-item"><a class="nav-link" href="/">Home</a></li>
-                <li class="nav-item"><a class="nav-link" href="/blog">Blog</a></li>
-                <li class="nav-item"><a class="nav-link" href="/search">Search</a></li>
+                <bx:if headerMenu.len()>
+                    <bx:loop array="#headerMenu#" item="item">
+                        <bx:if item.children.len()>
+                            <li class="nav-item dropdown">
+                                <a class="nav-link dropdown-toggle" href="#encodeForHTMLAttribute( item.url )#"
+                                   role="button" data-bs-toggle="dropdown" aria-expanded="false"
+                                   <bx:if len( item.target )>target="#encodeForHTMLAttribute( item.target )#"</bx:if>>
+                                    #encodeForHTML( item.label )#
+                                </a>
+                                <ul class="dropdown-menu">
+                                    <bx:loop array="#item.children#" item="child">
+                                        <li>
+                                            <a class="dropdown-item" href="#encodeForHTMLAttribute( child.url )#"
+                                               <bx:if len( child.target )>target="#encodeForHTMLAttribute( child.target )#"</bx:if>>
+                                                #encodeForHTML( child.label )#
+                                            </a>
+                                        </li>
+                                    </bx:loop>
+                                </ul>
+                            </li>
+                        <bx:else>
+                            <li class="nav-item">
+                                <a class="nav-link" href="#encodeForHTMLAttribute( item.url )#"
+                                   <bx:if len( item.target )>target="#encodeForHTMLAttribute( item.target )#"</bx:if>>
+                                    #encodeForHTML( item.label )#
+                                </a>
+                            </li>
+                        </bx:if>
+                    </bx:loop>
+                <bx:else>
+                    <!--- Hard-coded fallback when no menu has been built yet. --->
+                    <li class="nav-item"><a class="nav-link" href="/">Home</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/blog">Blog</a></li>
+                    <li class="nav-item"><a class="nav-link" href="/search">Search</a></li>
+                </bx:if>
                 <li class="nav-item">
                     <button
                         type="button"

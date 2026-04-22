@@ -60,6 +60,10 @@
 						<a class="nav-link #( currentEvent.startsWith( 'admin:Themes.' ) ? 'active' : '' )#"
 						   href="#event.buildLink( 'admin:Themes.index' )#">Themes</a>
 					</bx:if>
+					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "menus.manage" )>
+						<a class="nav-link #( currentEvent.startsWith( 'admin:Menus.' ) ? 'active' : '' )#"
+						   href="#event.buildLink( 'admin:Menus.index' )#">Menus</a>
+					</bx:if>
 				</nav>
 			</aside>
 			<main class="col-12 col-md-9 col-lg-10">

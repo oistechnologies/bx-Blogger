@@ -1,0 +1,5 @@
+<bx:output>
+<h1 class="h3 mb-4">Menus</h1>
+
+#wire( "menus.manager" )#
+</bx:output>
