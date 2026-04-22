@@ -246,7 +246,7 @@ private boolean function requirePerm( required string perm ) {
                         <bx:else>
                             <ul class="list-group list-group-flush">
                                 <bx:loop array="#items#" item="it">
-                                    <li class="list-group-item px-2" style="padding-left: #( 0.75 + ( it.depth * 1.5 ) )rem !important;">
+                                    <li class="list-group-item px-2" style="padding-left: #( 0.75 + ( it.depth * 1.5 ) )#rem !important;">
                                         <bx:if args.editingId == it.id>
                                             <div class="row g-2 align-items-end">
                                                 <div class="col-md-5">
