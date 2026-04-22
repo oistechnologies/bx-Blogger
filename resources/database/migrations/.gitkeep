@@ -1,0 +1,2 @@
+# Placeholder — ensures resources/database/migrations/ exists for cfmigrations.
+# Real migrations land here starting with Chunk 1.B (user/role/permission schema).

@@ -23,11 +23,13 @@ cd "${APP_DIR}"
 # ---------------------------------------------------------------------------
 MIGRATIONS_DIR="${APP_DIR}/resources/database/migrations"
 
-if [ -d "$MIGRATIONS_DIR" ] && [ -n "$(ls -A "$MIGRATIONS_DIR" 2>/dev/null)" ]; then
+# Check for actual migration files (*.cfc / *.bx) — the directory may have
+# only a .gitkeep placeholder and in that case we skip migrate.
+if [ -d "$MIGRATIONS_DIR" ] && [ -n "$(find "$MIGRATIONS_DIR" -maxdepth 1 -type f \( -name '*.cfc' -o -name '*.bx' \) 2>/dev/null)" ]; then
     echo "[bx-blogger] Running database migrations..."
     box migrate up --force
 else
-    echo "[bx-blogger] No migrations present at $MIGRATIONS_DIR — skipping"
+    echo "[bx-blogger] No migration files present at $MIGRATIONS_DIR — skipping"
 fi
 
 # ---------------------------------------------------------------------------
