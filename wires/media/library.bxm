@@ -331,8 +331,8 @@ private function clearFlashes() {
 			<div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
 				<div class="modal-content">
 					<div class="modal-header">
-						<h2 class="h6 modal-title mb-0" id="mediaLightboxTitle">Preview</h2>
-						<div class="d-flex gap-2 align-items-center">
+						<h2 class="h6 modal-title mb-0 me-auto text-truncate" id="mediaLightboxTitle">Preview</h2>
+						<div class="d-flex gap-2 align-items-center flex-shrink-0">
 							<a class="btn btn-sm btn-outline-secondary"
 							   id="mediaLightboxOpen"
 							   href="##"
