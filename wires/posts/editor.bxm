@@ -24,6 +24,7 @@ property name="postService"         inject="PostService";
 property name="draftPreviewService"  inject="DraftPreviewService";
 property name="aiService"            inject="AiAssistantService";
 property name="aiImageService"       inject="AiImageService";
+property name="themeService"         inject="ThemeService";
 property name="cbauth"               inject="AuthenticationService@cbauth";
 
 data = {
@@ -39,6 +40,7 @@ data = {
     "seoTitle"       : "",
     "seoDescription" : "",
     "allowIndexing"  : true,
+    "templateOverride" : "",
     "scheduledAt"    : "",
     "showPreview"    : false,
     "flashOk"        : "",
@@ -106,6 +108,7 @@ private function loadFromDb( required id ) {
     data.seoTitle       = post.getSeoTitle() ?: "";
     data.seoDescription = post.getSeoDescription() ?: "";
     data.allowIndexing  = !!( post.getAllowIndexing() ?: 1 );
+    data.templateOverride = post.getTemplateOverride() ?: "";
     data.scheduledAt    = len( post.getScheduledAt() ?: "" )
         ? dateTimeFormat( post.getScheduledAt(), "yyyy-mm-dd'T'HH:nn" )
         : "";
@@ -517,7 +520,13 @@ private struct function collectAttrs() {
         "visibility"     : data.visibility,
         "seoTitle"       : data.seoTitle,
         "seoDescription" : data.seoDescription,
-        "allowIndexing"  : data.allowIndexing ? 1 : 0
+        "allowIndexing"  : data.allowIndexing ? 1 : 0,
+        // 4.C — Theme.templateView() treats empty and the literal
+        // "default" interchangeably as "render the base view", so we
+        // persist whichever the user picks without routing through
+        // a qb null-clear (Quick drops null-assigns silently; the
+        // clean-to-null variant is a Phase 4.D follow-up).
+        "templateOverride" : trim( data.templateOverride ?: "" )
     };
     if ( val( data.featuredMediaId ?: 0 ) > 0 ) {
         attrs.featuredMediaId = data.featuredMediaId;
@@ -557,6 +566,15 @@ private function clearFlashes() {
     data.flashOk = "";
     data.flashError = "";
     data.validationErrors = [];
+}
+
+/**
+ * 4.C — build dropdown options for the Template sidebar control.
+ * Reads the active theme's manifest via ThemeService; always leads
+ * with a `{ slug: "default", label: "Default" }` entry.
+ */
+array function availableTemplates() {
+    return themeService.templatesForPostType( data.postType ?: "post" );
 }
 // @endWire
 </bx:script>
@@ -687,6 +705,28 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 							<option value="password">Password-protected</option>
 						</select>
 					</div>
+
+					<!---
+						4.C — Template override. Options come from the active
+						theme's manifest `templates.{postType}[]`. Theme.templateView()
+						treats an empty pick as "default", so "Default" here is
+						really a sentinel for "render post.bxm unchanged".
+					--->
+					<bx:set templateOptions = availableTemplates()>
+					<bx:if templateOptions.len() > 1>
+						<div class="mb-2">
+							<label for="postTemplate" class="form-label small">Template</label>
+							<select id="postTemplate" class="form-select form-select-sm"
+							        wire:model.blur="templateOverride">
+								<bx:loop array="#templateOptions#" item="opt">
+									<option value="#encodeForHTMLAttribute( opt.slug )#">
+										#encodeForHTML( opt.label )#
+									</option>
+								</bx:loop>
+							</select>
+						</div>
+					</bx:if>
+
 					<div class="mb-3">
 						<label for="postSchedule" class="form-label small">Publish at (leave blank for now)</label>
 						<input type="datetime-local"

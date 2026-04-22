@@ -30,8 +30,12 @@ class extends="coldbox.system.EventHandler" {
         prc.pageTitle      = page.getTitle() & " &middot; " & getSetting( "AppName" );
         prc.pageDescription = page.getSeoDescription() ?: ( page.getExcerpt() ?: "" );
 
+        // 4.C — per-page template override. `templates.page[]` in the
+        // theme's manifest lists valid variants ("wide", "sidebar",
+        // etc.). Theme.templateView() falls back to the base view when
+        // the variant isn't shipped.
         event.setLayout( prc.theme.layout( "Page" ) );
-        event.setView( prc.theme.view( "page" ) );
+        event.setView( prc.theme.templateView( "page", page.getTemplateOverride() ?: "" ) );
     }
 
     // --------------------------------------------------------------------

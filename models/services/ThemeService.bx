@@ -108,6 +108,50 @@ class accessors="true" singleton {
     }
 
     /**
+     * Return the active theme's declared template variants for the
+     * given post_type (`"post"` or `"page"`). Reads directly from the
+     * manifest so adding a new variant is a theme.json + file drop,
+     * no code change required.
+     *
+     * Shape: array of structs, always leads with `{ slug: "default",
+     * label: "Default" }` so a post with no override still has a
+     * sensible pick in the editor dropdown. Unknown post_types return
+     * just the default entry.
+     *
+     * Empty manifest (fallback theme) returns `[ { default } ]`.
+     */
+    array function templatesForPostType( required string postType ) {
+        var out = [ { "slug" : "default", "label" : "Default" } ];
+
+        var theme    = resolveActive();
+        var manifest = theme.getManifest();
+        if ( !isStruct( manifest ) || !structKeyExists( manifest, "templates" ) ) return out;
+        if ( !structKeyExists( manifest.templates, arguments.postType ) ) return out;
+
+        var declared = manifest.templates[ arguments.postType ];
+        if ( !isArray( declared ) ) return out;
+
+        for ( var slug in declared ) {
+            if ( slug == "default" ) continue;  // already seeded
+            out.append( {
+                "slug"  : slug,
+                "label" : humanize( slug )
+            } );
+        }
+        return out;
+    }
+
+    /**
+     * Turn `"photo-essay"` into `"Photo essay"` for a dropdown label.
+     */
+    private string function humanize( required string slug ) {
+        var words = listToArray( arguments.slug, "-_" );
+        if ( !words.len() ) return arguments.slug;
+        return uCase( left( words[ 1 ], 1 ) ) & right( words[ 1 ], len( words[ 1 ] ) - 1 )
+            & ( words.len() > 1 ? " " & words.slice( 2 ).toList( " " ) : "" );
+    }
+
+    /**
      * Walk the `themes/` folder, register a row for every valid
      * `theme.json` we don't already know about, and flag the row for
      * any theme whose folder has disappeared (kept visible in the

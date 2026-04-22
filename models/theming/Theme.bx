@@ -62,6 +62,43 @@ class accessors="true" {
     }
 
     /**
+     * Per-post template-variant lookup (Chunk 4.C).
+     *
+     * Posts can set `template_override` to any slug declared in the
+     * active theme's `theme.json` `templates[post_type]` array. The
+     * handler calls `templateView("post", override)` and we:
+     *
+     *   - If the override is empty or the literal `"default"` we hand
+     *     back the base view ("post" -> post.bxm).
+     *   - Otherwise we look for `views/{base}-{variant}.bxm` in the
+     *     active theme; if it exists, return that path.
+     *   - If the variant isn't on disk (theme was switched to one that
+     *     doesn't ship it, or the override slug was hand-edited), we
+     *     degrade silently to the base view rather than 500ing.
+     *
+     * `base` is the normal view name (e.g. "post", "page"); `variant`
+     * is the raw `posts.template_override` column value.
+     */
+    string function templateView( required string base, string variant = "" ) {
+        var v = trim( arguments.variant );
+        if ( !len( v ) || v == "default" ) return view( arguments.base );
+
+        var candidate    = arguments.base & "-" & v;
+        var activePath   = variables.directory   & "/views/" & candidate & ".bxm";
+        var fallbackPath = variables.fallbackDir & "/views/" & candidate & ".bxm";
+
+        if ( variables.slug != variables.fallbackSlug && fileExists( expandPath( "/" & activePath ) ) ) {
+            return variables.slug & "/views/" & candidate;
+        }
+        if ( fileExists( expandPath( "/" & fallbackPath ) ) ) {
+            return variables.fallbackSlug & "/views/" & candidate;
+        }
+        // Variant not shipped anywhere — silent fall-through to the base
+        // view keeps a stale or mistyped override from breaking the render.
+        return view( arguments.base );
+    }
+
+    /**
      * Versioned public URL for a theme-owned asset.
      * Example: asset("css/theme.css") → "/themes/bx-blogger-default/assets/css/theme.css?v=1.0.0"
      */

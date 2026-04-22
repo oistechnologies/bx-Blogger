@@ -57,8 +57,12 @@ class extends="coldbox.system.EventHandler" {
         // cached by RelatedPostsService for 1h.
         prc.relatedPosts = getInstance( "RelatedPostsService" ).forPost( post, 5 );
 
+        // 4.C — per-post template override. `post.template_override`
+        // picks one of the variants the active theme's manifest
+        // declares under `templates.post[]`; Theme.templateView() silently
+        // degrades to post.bxm if the variant isn't shipped.
         event.setLayout( prc.theme.layout( "Post" ) );
-        event.setView( prc.theme.view( "post" ) );
+        event.setView( prc.theme.templateView( "post", post.getTemplateOverride() ?: "" ) );
     }
 
     /**

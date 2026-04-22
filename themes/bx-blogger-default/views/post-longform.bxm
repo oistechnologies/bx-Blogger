@@ -1,0 +1,35 @@
+<bx:output>
+<bx:if structKeyExists( prc, "post" ) && !isNull( prc.post )>
+    <header class="mb-5 text-center">
+        <h1 class="display-4 mb-3">#encodeForHTML( prc.post.getTitle() )#</h1>
+        <p class="text-secondary small mb-0">
+            <bx:if len( prc.authorName ?: "" )>
+                By #encodeForHTML( prc.authorName )#
+            </bx:if>
+            <bx:if !isNull( prc.post.getPublishedAt() )>
+                <bx:if len( prc.authorName ?: "" )>&middot;</bx:if>
+                <time datetime="#dateTimeFormat( prc.post.getPublishedAt(), 'yyyy-mm-dd' )#">
+                    #dateFormat( prc.post.getPublishedAt(), "mmm d, yyyy" )#
+                </time>
+            </bx:if>
+            <bx:if ( prc.post.getReadingTime() ?: 0 ) > 0>
+                &middot; #prc.post.getReadingTime()# min read
+            </bx:if>
+        </p>
+    </header>
+
+    <bx:if len( prc.post.getExcerpt() ?: "" )>
+        <p class="lead fs-4 text-secondary-emphasis mb-5 text-center fw-light">
+            #encodeForHTML( prc.post.getExcerpt() )#
+        </p>
+    </bx:if>
+
+    <div class="post-body post-body--longform" style="font-size: 1.1875rem; line-height: 1.8;">
+        #( prc.post.getBodyHtml() ?: "" )#
+    </div>
+
+    #view( view = "bx-blogger-default/partials/related-posts" )#
+<bx:else>
+    <p class="text-secondary">Post unavailable.</p>
+</bx:if>
+</bx:output>

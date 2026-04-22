@@ -1,0 +1,125 @@
+/**
+ * bx-Blogger — TemplateOverrideSpec (Chunk 4.C)
+ *
+ * Covers the per-post template override contract:
+ *   - Theme.templateView("post", "") → base "post" view
+ *   - Theme.templateView("post", "longform") → "post-longform" when
+ *     the active theme ships that variant
+ *   - Theme.templateView("post", "unknown") → silent fall-through to
+ *     the base view when the variant isn't on disk
+ *   - ThemeService.templatesForPostType() reflects the active theme's
+ *     manifest so the editor dropdown stays in sync with whatever
+ *     theme the admin switched to
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        try {
+            // Restore the canonical active-theme state regardless of
+            // which theme this spec left hot.
+            var qb = getInstance( "QueryBuilder@qb" );
+            qb.newQuery().from( "themes" ).update( { "is_active" : 0 } );
+            qb.newQuery().from( "themes" )
+                .where( "slug", "bx-blogger-default" )
+                .update( { "is_active" : 1 } );
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "TemplateOverrideSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.themeSvc = getInstance( "ThemeService" );
+    }
+
+    function run() {
+        describe( "Per-post template override (4.C)", function() {
+
+            describe( "Theme.templateView()", function() {
+                it( "returns the base view when variant is empty", function() {
+                    themeSvc.activate( "bx-blogger-default" );
+                    var theme = themeSvc.resolveActive();
+                    expect( theme.templateView( "post", "" ) ).toBe( "bx-blogger-default/views/post" );
+                } );
+
+                it( "returns the base view when variant is 'default'", function() {
+                    themeSvc.activate( "bx-blogger-default" );
+                    var theme = themeSvc.resolveActive();
+                    expect( theme.templateView( "post", "default" ) ).toBe( "bx-blogger-default/views/post" );
+                } );
+
+                it( "returns the variant view when the theme ships it", function() {
+                    themeSvc.activate( "bx-blogger-default" );
+                    var theme = themeSvc.resolveActive();
+                    expect( theme.templateView( "post", "longform" ) ).toBe( "bx-blogger-default/views/post-longform" );
+                    expect( theme.templateView( "post", "wide" ) ).toBe( "bx-blogger-default/views/post-wide" );
+                } );
+
+                it( "falls back to the base view when the variant is missing on disk", function() {
+                    themeSvc.activate( "bx-blogger-default" );
+                    var theme = themeSvc.resolveActive();
+                    // Magazine ships `photoessay`, default does not.
+                    expect( theme.templateView( "post", "photoessay" ) ).toBe( "bx-blogger-default/views/post" );
+                    expect( theme.templateView( "post", "no-such-variant" ) ).toBe( "bx-blogger-default/views/post" );
+                } );
+
+                it( "resolves magazine's own variants after a theme switch", function() {
+                    themeSvc.activate( "bx-blogger-magazine" );
+                    var theme = themeSvc.resolveActive();
+                    expect( theme.templateView( "post", "longform" ) ).toBe( "bx-blogger-magazine/views/post-longform" );
+                    expect( theme.templateView( "post", "photoessay" ) ).toBe( "bx-blogger-magazine/views/post-photoessay" );
+                    // `wide` ships with default but not magazine — falls back
+                    expect( theme.templateView( "post", "wide" ) ).toBe( "bx-blogger-magazine/views/post" );
+                } );
+            } );
+
+            describe( "ThemeService.templatesForPostType()", function() {
+                it( "always leads with a Default entry", function() {
+                    themeSvc.activate( "bx-blogger-default" );
+                    var list = themeSvc.templatesForPostType( "post" );
+                    expect( list.len() ).toBeGTE( 1 );
+                    expect( list[ 1 ].slug ).toBe( "default" );
+                    expect( list[ 1 ].label ).toBe( "Default" );
+                } );
+
+                it( "reflects the active theme's manifest entries for the post type", function() {
+                    themeSvc.activate( "bx-blogger-default" );
+                    var defaultList = themeSvc.templatesForPostType( "post" );
+                    var defaultSlugs = defaultList.map( function( r ) { return r.slug; } );
+                    expect( defaultSlugs ).toInclude( "longform" );
+                    expect( defaultSlugs ).toInclude( "wide" );
+
+                    themeSvc.activate( "bx-blogger-magazine" );
+                    var magSlugs = themeSvc.templatesForPostType( "post" )
+                        .map( function( r ) { return r.slug; } );
+                    expect( magSlugs ).toInclude( "photoessay" );
+                    expect( magSlugs ).notToInclude( "wide" );
+                } );
+
+                it( "returns only the Default entry for an unknown post_type", function() {
+                    themeSvc.activate( "bx-blogger-default" );
+                    var list = themeSvc.templatesForPostType( "no-such-type" );
+                    expect( list.len() ).toBe( 1 );
+                    expect( list[ 1 ].slug ).toBe( "default" );
+                } );
+
+                it( "humanizes multi-word slugs for the dropdown label", function() {
+                    themeSvc.activate( "bx-blogger-magazine" );
+                    var list  = themeSvc.templatesForPostType( "post" );
+                    var found = false;
+                    for ( var opt in list ) {
+                        if ( opt.slug == "photoessay" ) {
+                            expect( opt.label ).toBe( "Photoessay" );
+                            found = true;
+                        }
+                    }
+                    expect( found ).toBeTrue();
+                } );
+            } );
+
+        } );
+    }
+
+}
