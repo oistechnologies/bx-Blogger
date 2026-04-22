@@ -35,6 +35,7 @@
         #( prc.post.getBodyHtml() ?: "" )#
     </div>
 
+    #view( view = "bx-blogger-magazine/partials/post-taxonomy" )#
     #view( view = "bx-blogger-magazine/partials/related-posts" )#
 <bx:else>
     <p class="text-secondary">Post unavailable.</p>

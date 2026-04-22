@@ -1,0 +1,28 @@
+<bx:output>
+<bx:if ( prc.postCategories ?: [] ).len() || ( prc.postTags ?: [] ).len()>
+    <section class="post-taxonomy border-top mt-5 pt-4 mb-4">
+        <bx:if ( prc.postCategories ?: [] ).len()>
+            <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+                <span class="text-uppercase small text-muted letter-spaced">Categories</span>
+                <bx:loop array="#prc.postCategories#" item="c">
+                    <a href="/category/#encodeForHTMLAttribute( c.slug )#"
+                       class="badge rounded-pill text-bg-primary text-decoration-none">
+                        #encodeForHTML( c.name )#
+                    </a>
+                </bx:loop>
+            </div>
+        </bx:if>
+        <bx:if ( prc.postTags ?: [] ).len()>
+            <div class="d-flex flex-wrap align-items-center gap-2">
+                <span class="text-uppercase small text-muted letter-spaced">Tags</span>
+                <bx:loop array="#prc.postTags#" item="t">
+                    <a href="/tag/#encodeForHTMLAttribute( t.slug )#"
+                       class="badge rounded-pill text-bg-light border text-decoration-none">
+                        ###encodeForHTML( t.name )#
+                    </a>
+                </bx:loop>
+            </div>
+        </bx:if>
+    </section>
+</bx:if>
+</bx:output>

@@ -53,6 +53,27 @@ class extends="coldbox.system.EventHandler" {
         prc.pageTitle  = post.getTitle() & " &middot; " & getSetting( "AppName" );
         prc.pageDescription = post.getSeoDescription() ?: ( post.getExcerpt() ?: "" );
 
+        // Preload taxonomy so theme partials can render chips / tag
+        // clouds without re-hitting the DB. qb rather than the Quick
+        // relation because we only need a small projection (id +
+        // slug + name) and the belongsToMany loader is heavier than
+        // we need for a render-only read.
+        var qb = getInstance( "QueryBuilder@qb" );
+        prc.postCategories = qb.newQuery()
+            .from( "post_categories" )
+            .join( "categories", "categories.id", "post_categories.category_id" )
+            .where( "post_categories.post_id", post.getId() )
+            .orderBy( "categories.path", "asc" )
+            .select( [ "categories.id AS id", "categories.name AS name", "categories.slug AS slug" ] )
+            .get();
+        prc.postTags = qb.newQuery()
+            .from( "post_tags" )
+            .join( "tags", "tags.id", "post_tags.tag_id" )
+            .where( "post_tags.post_id", post.getId() )
+            .orderBy( "tags.name", "asc" )
+            .select( [ "tags.id AS id", "tags.name AS name", "tags.slug AS slug" ] )
+            .get();
+
         // B3 — related posts panel. Up to 5 overlap-ranked posts,
         // cached by RelatedPostsService for 1h.
         prc.relatedPosts = getInstance( "RelatedPostsService" ).forPost( post, 5 );

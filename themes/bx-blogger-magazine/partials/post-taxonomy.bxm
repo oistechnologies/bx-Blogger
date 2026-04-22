@@ -1,0 +1,27 @@
+<bx:output>
+<bx:if ( prc.postCategories ?: [] ).len() || ( prc.postTags ?: [] ).len()>
+    <section class="post-taxonomy border-top border-bottom my-5 py-4 text-center">
+        <bx:if ( prc.postCategories ?: [] ).len()>
+            <p class="text-uppercase small text-muted mb-2 letter-spaced">Filed Under</p>
+            <p class="mb-3">
+                <bx:loop array="#prc.postCategories#" item="c">
+                    <a href="/category/#encodeForHTMLAttribute( c.slug )#"
+                       class="fs-5 fw-semibold text-decoration-none mx-2 link-body-emphasis">
+                        #encodeForHTML( c.name )#
+                    </a>
+                </bx:loop>
+            </p>
+        </bx:if>
+        <bx:if ( prc.postTags ?: [] ).len()>
+            <p class="mb-0">
+                <bx:loop array="#prc.postTags#" item="t">
+                    <a href="/tag/#encodeForHTMLAttribute( t.slug )#"
+                       class="badge rounded-pill text-bg-light border text-decoration-none mx-1">
+                        ###encodeForHTML( t.name )#
+                    </a>
+                </bx:loop>
+            </p>
+        </bx:if>
+    </section>
+</bx:if>
+</bx:output>
