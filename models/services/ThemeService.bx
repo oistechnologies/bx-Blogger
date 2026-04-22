@@ -244,11 +244,9 @@ class accessors="true" singleton {
     }
 
     /**
-     * Hard-delete a theme row (and its manifest cache). Refuses the
-     * currently-active theme and the system fallback.
-     *
-     * Phase 4.D will also sweep any `theme_options` rows belonging to
-     * the slug.
+     * Hard-delete a theme row. The `theme_options` FK is ON DELETE
+     * CASCADE so any stored per-theme options drop with it.
+     * Refuses the currently-active theme and the system fallback.
      */
     function remove( required string slug ) {
         if ( arguments.slug == variables.FALLBACK_SLUG ) {
@@ -370,13 +368,24 @@ class accessors="true" singleton {
             }
         }
 
-        return variables.wirebox.getInstance( "Theme" )
+        var theme = variables.wirebox.getInstance( "Theme" )
             .setSlug( arguments.row.slug )
             .setName( arguments.row.name )
             .setVersion( arguments.row.version )
             .setAuthor( arguments.row.author ?: "" )
             .setDirectory( arguments.row.directory )
             .setManifest( manifest );
+
+        // 4.D — wire up the options lookup. Theme value objects are
+        // built outside WireBox's autowire (they're pojos); we hand
+        // the resolved service down via a closure so `prc.theme.option(
+        // "accent_color" )` works in templates without the VO needing
+        // to know about the container.
+        var svc = variables.wirebox.getInstance( "ThemeOptionsService" );
+        theme.setOptionsLookup( function( slug, key ) {
+            return svc.getOption( slug, key );
+        } );
+        return theme;
     }
 
 }

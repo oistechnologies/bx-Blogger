@@ -1,9 +1,11 @@
 /**
- * bx-Blogger — admin:Themes (Chunk 4.A)
+ * bx-Blogger — admin:Themes (Chunks 4.A + 4.D)
  *
- * Mounts the themes.manager wire. All discover / activate / remove
- * logic lives inside the wire against ThemeService; the handler just
- * sets the page title.
+ * Mounts the themes.manager wire for the list/activate/remove flow
+ * and the themes.options wire for per-theme configuration. All
+ * actual state transitions live inside the wires against
+ * ThemeService / ThemeOptionsService; the handler just titles the
+ * page and hands a slug through to the wire.
  */
 class extends="coldbox.system.EventHandler" {
 
@@ -12,6 +14,22 @@ class extends="coldbox.system.EventHandler" {
     function index( event, rc, prc ) {
         prc.pageTitle = "Themes";
         event.setView( view = "themes/index" );
+    }
+
+    /**
+     * GET /admin/themes/:slug/options (Chunk 4.D).
+     *
+     * Renders the theme-options form wire for `slug`. Missing /
+     * unknown slug bounces back to the themes list.
+     */
+    function options( event, rc, prc ) {
+        prc.themeSlug = trim( rc.slug ?: "" );
+        if ( !len( prc.themeSlug ) ) {
+            relocate( event = "admin:Themes.index" );
+            return;
+        }
+        prc.pageTitle = "Theme Options";
+        event.setView( view = "themes/options" );
     }
 
 }

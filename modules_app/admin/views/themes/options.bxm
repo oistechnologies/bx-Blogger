@@ -1,0 +1,10 @@
+<bx:output>
+<div class="d-flex align-items-center justify-content-between mb-4">
+    <h1 class="h3 mb-0">Theme Options</h1>
+    <a class="btn btn-outline-secondary btn-sm" href="#event.buildLink( 'admin:Themes.index' )#">
+        &laquo; Back to themes
+    </a>
+</div>
+
+#wire( name = "themes.options", params = { "slug" : prc.themeSlug } )#
+</bx:output>

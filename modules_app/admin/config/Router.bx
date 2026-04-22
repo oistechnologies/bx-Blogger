@@ -16,6 +16,12 @@ class {
         // Bare /admin → Dashboard.index
         route( "/" ).to( "Dashboard.index" );
 
+        // 4.D — /admin/themes/:slug/options → Themes.options
+        // (Registered before the conventional catch-all so the
+        // two-segment slug-bearing URL isn't swallowed by
+        // `:handler/:action` matching `themes/foo`.)
+        route( "themes/:slug/options" ).to( "Themes.options" );
+
         // Conventional :handler/:action — catches /admin/posts,
         // /admin/media/upload, etc. as they ship.
         route( ":handler/:action?" ).end();

@@ -208,6 +208,12 @@ private boolean function requirePerm( required string perm ) {
                                 </bx:if>
                             </td>
                             <td class="text-end">
+                                <bx:if !t.isMissing>
+                                    <a class="btn btn-sm btn-outline-secondary"
+                                       href="#event.buildLink( 'admin:Themes.options' )#/#encodeForHTMLAttribute( t.slug )#">
+                                        Options
+                                    </a>
+                                </bx:if>
                                 <bx:if !t.isActive && !t.isMissing>
                                     <button class="btn btn-sm btn-primary"
                                             wire:click="activate('#encodeForHTMLAttribute( t.slug )#')">

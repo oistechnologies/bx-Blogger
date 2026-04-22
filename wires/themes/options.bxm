@@ -1,0 +1,238 @@
+<bx:script>
+// @startWire
+/**
+ * themes.options — per-theme configuration form.
+ *
+ * Driven entirely by the active-or-target theme's manifest
+ * `options[]` — each declared option renders the right input type
+ * (color picker / number / checkbox / textarea / string), the wire
+ * binds the value into `data.values` via `wire:model.blur`, and
+ * `save()` hands the struct to ThemeOptionsService which normalizes
+ * per-type and upserts into `theme_options`.
+ *
+ * Reset returns every option to its manifest default by wiping the
+ * theme's rows, so the live site instantly matches the unmodified
+ * theme again.
+ *
+ * The wire is mounted with `{ slug: "<theme-slug>" }`; if the slug
+ * doesn't resolve to a registered theme the form renders an error
+ * state rather than 500ing the page.
+ */
+
+property name="themeService"        inject="ThemeService";
+property name="themeOptionsService" inject="ThemeOptionsService";
+property name="cbauth"              inject="AuthenticationService@cbauth";
+
+data = {
+    "slug"        : "",
+    "themeName"   : "",
+    "values"      : {},
+    "flashOk"     : "",
+    "flashError"  : "",
+    "missing"     : false
+};
+
+/**
+ * CBWire skips auto-copying wire() params into data once onMount is
+ * defined; pull slug out explicitly (same pattern as posts.editor).
+ */
+function onMount( event, rc, prc, params ) {
+    data.slug = trim( arguments.params.slug ?: "" );
+    loadEffective();
+}
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function save() {
+    clearFlashes();
+    if ( !requirePerm( "themes.manage" ) ) return;
+    if ( data.missing ) {
+        data.flashError = "Unknown theme.";
+        return;
+    }
+    themeOptionsService.setMany( slug = data.slug, values = data.values );
+    loadEffective();
+    data.flashOk = "Theme options saved.";
+}
+
+function reset() {
+    clearFlashes();
+    if ( !requirePerm( "themes.manage" ) ) return;
+    if ( data.missing ) return;
+    themeOptionsService.reset( data.slug );
+    loadEffective();
+    data.flashOk = "Options reset to manifest defaults.";
+}
+
+// --------------------------------------------------------------------
+// View-side helpers
+// --------------------------------------------------------------------
+
+/**
+ * Declared options with the *current effective value* merged in. Each
+ * entry: { key, type, label, default, value }. Drives the form render.
+ */
+array function effectiveOptions() {
+    if ( data.missing ) return [];
+    return themeOptionsService.getEffectiveOptions( data.slug );
+}
+
+// --------------------------------------------------------------------
+// Private
+// --------------------------------------------------------------------
+
+private void function loadEffective() {
+    data.missing   = false;
+    data.themeName = "";
+    data.values    = {};
+
+    try {
+        var theme = themeService.get( data.slug );
+        data.themeName = theme.getName();
+
+        var options = themeOptionsService.getEffectiveOptions( data.slug );
+        for ( var opt in options ) {
+            data.values[ opt.key ] = opt.value;
+        }
+    }
+    catch ( bxBlogger.ThemeNotFound e ) {
+        data.missing = true;
+    }
+}
+
+private void function clearFlashes() {
+    data.flashOk    = "";
+    data.flashError = "";
+}
+
+private boolean function requirePerm( required string perm ) {
+    var user = cbauth.getUser();
+    if ( user.hasPermission( arguments.perm ) ) return true;
+    data.flashError = "You don't have permission to manage themes.";
+    return false;
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:script>
+    options = effectiveOptions();
+</bx:script>
+
+<div>
+    <bx:if args.missing>
+        <div class="alert alert-danger">
+            Theme <code>#encodeForHTML( args.slug )#</code> isn't registered. It may have
+            been removed on disk; scan the themes folder to rediscover it.
+        </div>
+        <a class="btn btn-outline-secondary" href="#event.buildLink( 'admin:Themes.index' )#">Back to themes</a>
+    <bx:else>
+
+        <bx:if len( args.flashOk )>
+            <div class="alert alert-success alert-dismissible">
+                #encodeForHTML( args.flashOk )#
+                <button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+            </div>
+        </bx:if>
+        <bx:if len( args.flashError )>
+            <div class="alert alert-danger alert-dismissible">
+                #encodeForHTML( args.flashError )#
+                <button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+            </div>
+        </bx:if>
+
+        <div class="card">
+            <div class="card-body">
+                <p class="text-muted small mb-4">
+                    Editing options for <strong>#encodeForHTML( args.themeName )#</strong>
+                    (<code>#encodeForHTML( args.slug )#</code>).
+                    Each field is declared in the theme's <code>theme.json</code>;
+                    reset to restore every field to its shipped default.
+                </p>
+
+                <bx:if !options.len()>
+                    <p class="text-muted mb-0">This theme doesn&rsquo;t declare any configurable options.</p>
+                <bx:else>
+                    <form wire:submit.prevent="save">
+                        <bx:loop array="#options#" item="opt">
+                            <bx:set fieldId = "opt-" & encodeForHTMLAttribute( opt.key )>
+
+                            <div class="mb-3">
+                                <bx:switch expression="#opt.type#">
+                                    <bx:case value="bool">
+                                        <div class="form-check">
+                                            <input type="checkbox"
+                                                   class="form-check-input"
+                                                   id="#fieldId#"
+                                                   wire:model.blur="values.#opt.key#">
+                                            <label class="form-check-label" for="#fieldId#">
+                                                #encodeForHTML( opt.label )#
+                                            </label>
+                                        </div>
+                                    </bx:case>
+                                    <bx:case value="color">
+                                        <label for="#fieldId#" class="form-label">#encodeForHTML( opt.label )#</label>
+                                        <div class="input-group" style="max-width: 16rem;">
+                                            <input type="color"
+                                                   class="form-control form-control-color"
+                                                   id="#fieldId#"
+                                                   wire:model.blur="values.#opt.key#"
+                                                   value="#encodeForHTMLAttribute( opt.value )#">
+                                            <input type="text"
+                                                   class="form-control"
+                                                   aria-label="Hex value"
+                                                   wire:model.blur="values.#opt.key#"
+                                                   pattern="##[0-9a-fA-F]{6}"
+                                                   placeholder="##000000">
+                                        </div>
+                                    </bx:case>
+                                    <bx:case value="int">
+                                        <label for="#fieldId#" class="form-label">#encodeForHTML( opt.label )#</label>
+                                        <input type="number"
+                                               class="form-control"
+                                               id="#fieldId#"
+                                               wire:model.blur="values.#opt.key#"
+                                               style="max-width: 10rem;">
+                                    </bx:case>
+                                    <bx:case value="textarea">
+                                        <label for="#fieldId#" class="form-label">#encodeForHTML( opt.label )#</label>
+                                        <textarea class="form-control"
+                                                  id="#fieldId#"
+                                                  rows="4"
+                                                  wire:model.blur="values.#opt.key#"></textarea>
+                                    </bx:case>
+                                    <bx:defaultcase>
+                                        <label for="#fieldId#" class="form-label">#encodeForHTML( opt.label )#</label>
+                                        <input type="text"
+                                               class="form-control"
+                                               id="#fieldId#"
+                                               wire:model.blur="values.#opt.key#">
+                                    </bx:defaultcase>
+                                </bx:switch>
+                                <bx:if len( opt.default ?: "" ) && opt.type != "bool">
+                                    <div class="form-text small">
+                                        Default: <code>#encodeForHTML( opt.default )#</code>
+                                    </div>
+                                </bx:if>
+                            </div>
+                        </bx:loop>
+
+                        <div class="d-flex gap-2 mt-4">
+                            <button type="submit" class="btn btn-primary">Save options</button>
+                            <button type="button"
+                                    class="btn btn-outline-danger"
+                                    wire:click="reset"
+                                    wire:confirm="Reset every option to its manifest default?">
+                                Reset to defaults
+                            </button>
+                        </div>
+                    </form>
+                </bx:if>
+            </div>
+        </div>
+
+    </bx:if>
+</div>
+</bx:output>

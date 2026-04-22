@@ -106,6 +106,32 @@ class accessors="true" {
         return "/" & variables.directory & "/assets/" & arguments.path & "?v=" & variables.version;
     }
 
+    /**
+     * Read an admin-configurable option for this theme (4.D). Returns
+     * the stored value when the admin has overridden it, else the
+     * manifest's declared default, else an empty string. Used by
+     * layouts / views to react to the themes-options admin form:
+     *   `prc.theme.option("accent_color")`
+     *
+     * Delegated lazily to ThemeOptionsService via the injected
+     * lookup — keeps the Theme value object free of container
+     * coupling (wirebox isn't reachable on a non-autowired VO).
+     */
+    any function option( required string key ) {
+        if ( !structKeyExists( variables, "optionsLookup" ) || isNull( variables.optionsLookup ) ) return "";
+        return variables.optionsLookup( variables.slug, arguments.key );
+    }
+
+    /**
+     * Install the options-lookup closure. Called by
+     * `ThemeService.buildTheme()` immediately after construction so
+     * every Theme instance can resolve `option(...)` without being
+     * wired through WireBox itself.
+     */
+    void function setOptionsLookup( required any lookup ) {
+        variables.optionsLookup = arguments.lookup;
+    }
+
     // --------------------------------------------------------------------
 
     /**

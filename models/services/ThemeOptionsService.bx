@@ -1,0 +1,256 @@
+/**
+ * bx-Blogger — ThemeOptionsService (Chunk 4.D)
+ *
+ * Per-theme key/value store, backed by the `theme_options` table.
+ * The contract is built on each theme's manifest `options[]` array:
+ *   - Manifest declares what options exist, their type, label, and
+ *     default — this is the schema.
+ *   - Admin form writes override values keyed by `(theme_slug,
+ *     option_key)`.
+ *   - `getEffectiveOptions(slug)` merges the two so callers get
+ *     `[ { key, type, label, value, default } ]` without having to
+ *     reach into manifest parsing themselves.
+ *
+ * Values are JSON-encoded on write so type round-trips (true vs
+ * "true", 10 vs "10") stay stable. Read misses fall back to the
+ * manifest default; an explicit stored `null` is preserved.
+ *
+ * Cache: per-theme effective options are cached under
+ * `themeOptions:{slug}` in the default CacheBox so templates calling
+ * `prc.theme.option("accent_color")` on every render don't re-query
+ * the DB. `invalidate(slug)` is called by `setOption` / `setMany`
+ * and can be called by themes.manager when the admin rediscovers.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox"      inject="wirebox";
+    property name="themeService" inject="ThemeService";
+    property name="cache"        inject="cachebox:default";
+    property name="log"          inject="logbox:logger:{this}";
+
+    variables.cacheTtlMinutes = 60;
+
+    /**
+     * Return the manifest-declared options for `slug` with any admin
+     * overrides merged on top of each entry's default. Shape per entry:
+     *   { key, type, label, default, value }
+     *
+     * Unknown theme → `[]`; manifest with no options → `[]`.
+     */
+    array function getEffectiveOptions( required string slug ) {
+        var cacheKey = "themeOptions:" & arguments.slug;
+        var cached   = variables.cache.get( cacheKey );
+        if ( !isNull( cached ) && isArray( cached ) ) return cached;
+
+        var manifest = manifestFor( arguments.slug );
+        if ( !isStruct( manifest ) || !structKeyExists( manifest, "options" ) || !isArray( manifest.options ) ) {
+            return [];
+        }
+
+        var stored = readStoredOptions( arguments.slug );
+        var out    = [];
+        for ( var decl in manifest.options ) {
+            if ( !isStruct( decl ) || !structKeyExists( decl, "key" ) ) continue;
+            var entry = {
+                "key"     : decl.key,
+                "type"    : decl.type  ?: "string",
+                "label"   : decl.label ?: decl.key,
+                "default" : decl.default ?: "",
+                "value"   : structKeyExists( stored, decl.key )
+                    ? stored[ decl.key ]
+                    : ( decl.default ?: "" )
+            };
+            out.append( entry );
+        }
+
+        variables.cache.set( cacheKey, out, variables.cacheTtlMinutes, 0 );
+        return out;
+    }
+
+    /**
+     * Value-only lookup — returns the effective value for a single
+     * option. Used by `Theme.option(key)` and any render-time code
+     * that just needs the final value.
+     */
+    any function getOption( required string slug, required string key ) {
+        var stored = readStoredOptions( arguments.slug );
+        if ( structKeyExists( stored, arguments.key ) ) return stored[ arguments.key ];
+
+        var manifest = manifestFor( arguments.slug );
+        if ( isStruct( manifest ) && structKeyExists( manifest, "options" ) && isArray( manifest.options ) ) {
+            for ( var decl in manifest.options ) {
+                if ( ( decl.key ?: "" ) == arguments.key ) return decl.default ?: "";
+            }
+        }
+        return "";
+    }
+
+    /**
+     * Persist a single option. `value` is normalized for the declared
+     * type (bool becomes boolean, int becomes numeric) before being
+     * JSON-encoded and written.
+     */
+    function setOption(
+        required string slug,
+        required string key,
+                 any    value
+    ) {
+        var normalized = normalizeForType( arguments.slug, arguments.key, arguments.value ?: "" );
+        upsertOption( arguments.slug, arguments.key, normalized );
+        invalidate( arguments.slug );
+    }
+
+    /**
+     * Batch setter — used by the form wire on save. Takes a
+     * `{ key: value, ... }` struct and writes each entry through
+     * the normalizer. Unknown keys (not declared in the manifest)
+     * are silently ignored so a stale client can't smuggle arbitrary
+     * rows into the options table.
+     */
+    function setMany( required string slug, required struct values ) {
+        var decls = declaredOptionsFor( arguments.slug );
+        for ( var key in decls ) {
+            if ( !structKeyExists( arguments.values, key ) ) continue;
+            var normalized = normalizeForType( arguments.slug, key, arguments.values[ key ] );
+            upsertOption( arguments.slug, key, normalized );
+        }
+        invalidate( arguments.slug );
+    }
+
+    /**
+     * Drop every stored override for a theme. Leaves the theme row
+     * alone; `Theme.option(key)` will then fall back to the
+     * manifest-declared default.
+     */
+    function reset( required string slug ) {
+        variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "theme_options" )
+            .where( "theme_slug", arguments.slug )
+            .delete();
+        invalidate( arguments.slug );
+    }
+
+    function invalidate( required string slug ) {
+        variables.cache.clear( "themeOptions:" & arguments.slug );
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    /**
+     * Pull the manifest for a theme. Prefers the themes-table
+     * `manifest_json` cache; falls back to a live re-read of the
+     * theme.json on disk when the column is empty (freshly-registered
+     * theme, or migration-seeded row).
+     */
+    private struct function manifestFor( required string slug ) {
+        var row = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "themes" )
+            .where( "slug", arguments.slug )
+            .first();
+        if ( isNull( row ) || ( isStruct( row ) && structIsEmpty( row ) ) ) return {};
+
+        if ( len( row.manifest_json ?: "" ) ) {
+            try { return jsonDeserialize( row.manifest_json ); }
+            catch ( any e ) { /* fall through to disk re-read */ }
+        }
+
+        var manifestPath = expandPath( "/" & row.directory & "/theme.json" );
+        if ( fileExists( manifestPath ) ) {
+            try { return jsonDeserialize( fileRead( manifestPath ) ); }
+            catch ( any e ) { return {}; }
+        }
+        return {};
+    }
+
+    /**
+     * Struct of `{ key: declared-struct }` for every option a theme
+     * declares. Empty when the theme ships no options.
+     */
+    private struct function declaredOptionsFor( required string slug ) {
+        var out      = {};
+        var manifest = manifestFor( arguments.slug );
+        if ( !isStruct( manifest ) || !structKeyExists( manifest, "options" ) || !isArray( manifest.options ) ) return out;
+        for ( var decl in manifest.options ) {
+            if ( isStruct( decl ) && len( decl.key ?: "" ) ) out[ decl.key ] = decl;
+        }
+        return out;
+    }
+
+    /**
+     * Read every stored option row for a theme and return them as a
+     * `{ key: value }` struct. Values are JSON-decoded.
+     */
+    private struct function readStoredOptions( required string slug ) {
+        var out  = {};
+        var rows = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "theme_options" )
+            .where( "theme_slug", arguments.slug )
+            .get();
+        for ( var r in rows ) {
+            try { out[ r.option_key ] = jsonDeserialize( r.option_value ?: "" ); }
+            catch ( any e )            { out[ r.option_key ] = r.option_value ?: ""; }
+        }
+        return out;
+    }
+
+    private void function upsertOption( required string slug, required string key, required any value ) {
+        var encoded = jsonSerialize( arguments.value );
+        var now     = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+
+        var existing = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "theme_options" )
+            .where( "theme_slug", arguments.slug )
+            .where( "option_key", arguments.key )
+            .first();
+
+        if ( isNull( existing ) || ( isStruct( existing ) && structIsEmpty( existing ) ) ) {
+            variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "theme_options" )
+                .insert( {
+                    "theme_slug"   : arguments.slug,
+                    "option_key"   : arguments.key,
+                    "option_value" : encoded,
+                    "updated_at"   : now
+                } );
+        }
+        else {
+            variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "theme_options" )
+                .where( "theme_slug", arguments.slug )
+                .where( "option_key", arguments.key )
+                .update( {
+                    "option_value" : encoded,
+                    "updated_at"   : now
+                } );
+        }
+    }
+
+    /**
+     * Coerce the admin-submitted value to the right BoxLang type
+     * based on the manifest declaration. Unknown types pass through
+     * as a string.
+     */
+    private any function normalizeForType( required string slug, required string key, required any value ) {
+        var decls = declaredOptionsFor( arguments.slug );
+        if ( !structKeyExists( decls, arguments.key ) ) return arguments.value;
+        var type = decls[ arguments.key ].type ?: "string";
+
+        switch ( type ) {
+            case "bool":
+                return isBoolean( arguments.value ) && arguments.value;
+            case "int":
+                return isNumeric( arguments.value ) ? int( arguments.value ) : 0;
+            case "color":
+                // Six-char hex with leading # — any malformed input
+                // falls back to the manifest default.
+                var v = trim( arguments.value );
+                if ( reFind( "^##[0-9a-fA-F]{6}$", v ) ) return lCase( v );
+                return decls[ arguments.key ].default ?: "";
+            default:
+                return arguments.value & "";
+        }
+    }
+
+}
