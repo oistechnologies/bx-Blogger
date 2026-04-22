@@ -173,7 +173,10 @@ function trashPost( required postId ) {
 		</div>
 	</form>
 
-	<div class="card">
+	<div class="card stat-card stat-card-secondary">
+		<div class="card-header card-header-soft card-header-soft-secondary">
+			<span class="h6 mb-0">All posts</span>
+		</div>
 		<bx:if rows.len() == 0>
 			<div class="card-body text-center text-muted py-5">
 				No posts match those filters.

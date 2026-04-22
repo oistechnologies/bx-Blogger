@@ -607,7 +607,10 @@ array function availableTemplates() {
 	<div class="row g-3">
 		<!--- Main editor column --->
 		<div class="col-lg-8">
-			<div class="card">
+			<div class="card stat-card stat-card-primary">
+				<div class="card-header card-header-soft card-header-soft-primary">
+					<span class="h6 mb-0">Post content</span>
+				</div>
 				<div class="card-body">
 					<div class="mb-3">
 						<label for="postTitle" class="form-label">Title</label>
@@ -699,9 +702,11 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 
 		<!--- Sidebar --->
 		<div class="col-lg-4">
-			<div class="card mb-3">
+			<div class="card stat-card stat-card-info mb-3">
+				<div class="card-header card-header-soft card-header-soft-info">
+					<span class="h6 mb-0">Status</span>
+				</div>
 				<div class="card-body">
-					<h2 class="h6">Status</h2>
 					<p class="small mb-2">
 						Current: <span class="badge bg-secondary text-uppercase">#encodeForHTML( args.status )#</span>
 					</p>
@@ -799,9 +804,11 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 				</div>
 			</div>
 
-			<div class="card mb-3">
+			<div class="card stat-card stat-card-secondary mb-3">
+				<div class="card-header card-header-soft card-header-soft-secondary">
+					<span class="h6 mb-0">Post type</span>
+				</div>
 				<div class="card-body">
-					<h2 class="h6">Post type</h2>
 					<select class="form-select form-select-sm" wire:model.live="postType">
 						<option value="post">Post</option>
 						<option value="page">Page</option>
@@ -810,9 +817,11 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 			</div>
 
 			<!--- Featured image panel ---------------------------- --->
-			<div class="card mb-3">
+			<div class="card stat-card stat-card-success mb-3">
+				<div class="card-header card-header-soft card-header-soft-success">
+					<span class="h6 mb-0">Featured image</span>
+				</div>
 				<div class="card-body">
-					<h2 class="h6">Featured image</h2>
 					<bx:if val( args.featuredMediaId ?: 0 ) gt 0>
 						<bx:script>
 							fm = getInstance( "Media" ).find( args.featuredMediaId );
@@ -835,9 +844,11 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 				</div>
 			</div>
 
-			<div class="card">
+			<div class="card stat-card stat-card-warning">
+				<div class="card-header card-header-soft card-header-soft-warning">
+					<span class="h6 mb-0">SEO</span>
+				</div>
 				<div class="card-body">
-					<h2 class="h6">SEO</h2>
 					<div class="mb-2">
 						<label for="postSeoTitle" class="form-label small">SEO title</label>
 						<input type="text" id="postSeoTitle" class="form-control form-control-sm"

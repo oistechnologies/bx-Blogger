@@ -14,9 +14,11 @@
       Lives in the view rather than the library wire because CBWIRE file
       uploads add a round-trip and a preview step we don't need at this
       scope; a standard form keeps the ingest path narrow and testable. --->
-<div class="card mb-4">
+<div class="card stat-card stat-card-info mb-4">
+	<div class="card-header card-header-soft card-header-soft-info">
+		<span class="h6 mb-0">Upload a file</span>
+	</div>
 	<div class="card-body">
-		<h2 class="h6">Upload a file</h2>
 		<form method="POST"
 		      action="#event.buildLink( 'admin:Media.upload' )#"
 		      enctype="multipart/form-data"

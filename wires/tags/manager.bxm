@@ -160,9 +160,11 @@ private boolean function requirePerm( required string perm ) {
 
 	<div class="row g-3">
 		<div class="col-md-4">
-			<div class="card">
+			<div class="card stat-card stat-card-info">
+				<div class="card-header card-header-soft card-header-soft-info">
+					<span class="h6 mb-0">Add tag</span>
+				</div>
 				<div class="card-body">
-					<h2 class="h6">Add tag</h2>
 					<form wire:submit.prevent="addTag">
 						<div class="mb-2">
 							<label for="newTagName" class="form-label small">Name</label>
@@ -175,13 +177,12 @@ private boolean function requirePerm( required string perm ) {
 		</div>
 
 		<div class="col-md-8">
-			<div class="card">
+			<div class="card stat-card stat-card-secondary">
+				<div class="card-header card-header-soft card-header-soft-secondary d-flex justify-content-between align-items-baseline">
+					<span class="h6 mb-0">All tags</span>
+					<small class="text-muted">#tags.len()# total</small>
+				</div>
 				<div class="card-body">
-					<h2 class="h6 d-flex justify-content-between align-items-center">
-						<span>All tags</span>
-						<small class="text-muted">#tags.len()# total</small>
-					</h2>
-
 					<bx:if tags.len() == 0>
 						<p class="text-muted small mb-0">No tags yet.</p>
 					<bx:else>

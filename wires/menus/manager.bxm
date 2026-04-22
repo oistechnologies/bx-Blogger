@@ -237,7 +237,10 @@ private boolean function requirePerm( required string perm ) {
         <div class="row g-4">
             <!--- Existing items, flat + depth-indented --->
             <div class="col-lg-8">
-                <div class="card">
+                <div class="card stat-card stat-card-secondary">
+                    <div class="card-header card-header-soft card-header-soft-secondary">
+                        <span class="h6 mb-0">Existing items</span>
+                    </div>
                     <div class="card-body">
                         <bx:if !items.len()>
                             <p class="text-muted mb-0">
@@ -315,9 +318,11 @@ private boolean function requirePerm( required string perm ) {
 
             <!--- Add-item panel --->
             <div class="col-lg-4">
-                <div class="card">
+                <div class="card stat-card stat-card-info">
+                    <div class="card-header card-header-soft card-header-soft-info">
+                        <span class="h6 mb-0">Add item</span>
+                    </div>
                     <div class="card-body">
-                        <h3 class="h6 mb-3">Add item</h3>
                         <div class="mb-2">
                             <label for="newItemLabel" class="form-label small">Label</label>
                             <input type="text" id="newItemLabel" class="form-control form-control-sm"
@@ -339,9 +344,11 @@ private boolean function requirePerm( required string perm ) {
                     </div>
                 </div>
 
-                <div class="card mt-3">
+                <div class="card stat-card stat-card-warning mt-3">
+                    <div class="card-header card-header-soft card-header-soft-warning">
+                        <span class="h6 mb-0">Tips</span>
+                    </div>
                     <div class="card-body small text-muted">
-                        <p class="mb-1"><strong>Tips</strong></p>
                         <ul class="mb-0 ps-3">
                             <li>Use <code>&rarr;</code> to nest an item under the one above it.</li>
                             <li>Delete cascades &mdash; the subtree under an item goes with it.</li>

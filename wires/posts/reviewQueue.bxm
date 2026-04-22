@@ -79,7 +79,10 @@ private function clearFlashes() {
 		</div>
 	</bx:if>
 
-	<div class="card">
+	<div class="card stat-card stat-card-warning">
+		<div class="card-header card-header-soft card-header-soft-warning">
+			<span class="h6 mb-0">Pending review</span>
+		</div>
 		<bx:if rows.len() == 0>
 			<div class="card-body text-center text-muted py-5">
 				No posts are waiting for review.

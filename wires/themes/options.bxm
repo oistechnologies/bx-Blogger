@@ -143,11 +143,15 @@ private boolean function requirePerm( required string perm ) {
             </div>
         </bx:if>
 
-        <div class="card">
+        <div class="card stat-card stat-card-info">
+            <div class="card-header card-header-soft card-header-soft-info">
+                <span class="h6 mb-0">
+                    Options for <strong>#encodeForHTML( args.themeName )#</strong>
+                    <small class="text-muted fw-normal">(<code>#encodeForHTML( args.slug )#</code>)</small>
+                </span>
+            </div>
             <div class="card-body">
                 <p class="text-muted small mb-4">
-                    Editing options for <strong>#encodeForHTML( args.themeName )#</strong>
-                    (<code>#encodeForHTML( args.slug )#</code>).
                     Each field is declared in the theme's <code>theme.json</code>;
                     reset to restore every field to its shipped default.
                 </p>

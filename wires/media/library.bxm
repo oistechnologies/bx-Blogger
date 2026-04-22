@@ -240,13 +240,12 @@ private function clearFlashes() {
 			openRow = getInstance( "Media" ).find( args.openId );
 		</bx:script>
 		<bx:if !isNull( openRow )>
-			<div class="card mt-4">
+			<div class="card stat-card stat-card-primary mt-4">
+				<div class="card-header card-header-soft card-header-soft-primary d-flex justify-content-between align-items-center">
+					<span class="h6 mb-0">Edit metadata &mdash; #encodeForHTML( openRow.getOriginalFilename() )#</span>
+					<button class="btn btn-sm btn-link p-0" wire:click="closeTile">Close</button>
+				</div>
 				<div class="card-body">
-					<div class="d-flex justify-content-between align-items-start mb-3">
-						<h2 class="h6 mb-0">Edit metadata — #encodeForHTML( openRow.getOriginalFilename() )#</h2>
-						<button class="btn btn-sm btn-link" wire:click="closeTile">Close</button>
-					</div>
-
 					<div class="row g-3">
 						<div class="col-md-4">
 							<bx:if isImage( openRow.getMimeType() )>
