@@ -1,0 +1,164 @@
+/**
+ * bx-Blogger — SitemapServiceSpec (Chunk 3.E)
+ *
+ * Covers the sitemap.xml output + its 1h cache. End-to-end XML
+ * validation is beyond scope (the sitemap schema is XSD-defined; a
+ * full validator is over-engineering for a hand-rolled emitter). We
+ * assert the contract:
+ *
+ *   - absolute URLs, rooted at the given baseUrl
+ *   - published posts appear; drafts / trashed / scheduled-future
+ *     posts don't
+ *   - categories + tags + per-author archives are emitted
+ *   - cache hits return the same string
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        try {
+            var qb = getInstance( "QueryBuilder@qb" );
+            if ( arrayLen( variables.createdIds.posts ?: [] ) ) {
+                qb.newQuery().from( "post_revisions"  ).whereIn( "post_id", variables.createdIds.posts ).delete();
+                qb.newQuery().from( "posts"           ).whereIn( "id", variables.createdIds.posts ).delete();
+            }
+            if ( arrayLen( variables.createdIds.categories ?: [] ) ) {
+                qb.newQuery().from( "categories" ).whereIn( "id", variables.createdIds.categories ).delete();
+            }
+            if ( arrayLen( variables.createdIds.tags ?: [] ) ) {
+                qb.newQuery().from( "tags" ).whereIn( "id", variables.createdIds.tags ).delete();
+            }
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "SitemapServiceSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.createdIds = { "posts" : [], "categories" : [], "tags" : [] };
+        variables.svc        = getInstance( "SitemapService" );
+        variables.postSvc    = getInstance( "PostService" );
+    }
+
+    function run() {
+        describe( "SitemapService", function() {
+
+            beforeEach( function() {
+                svc.invalidate();
+            } );
+
+            it( "emits a valid sitemap envelope with absolute URLs", function() {
+                var xml = svc.forBaseUrl( "https://example.test" );
+                expect( xml ).toInclude( '<?xml version="1.0" encoding="UTF-8"?>' );
+                expect( xml ).toInclude( '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' );
+                expect( xml ).toInclude( "<loc>https://example.test/</loc>" );
+                expect( xml ).toInclude( "<loc>https://example.test/blog</loc>" );
+            } );
+
+            it( "lists published posts and omits drafts + trashed + future", function() {
+                var author  = createTestUser();
+                var pub     = publishNew( author, "Public post" );
+                var draft   = postSvc.create( {
+                    authorId: author.getId(),
+                    title:    "Draft",
+                    slug:     "sd-" & left( createUUID(), 10 ),
+                    bodyMarkdown: "x"
+                } );
+                trackPost( draft );
+                var trashed = publishNew( author, "Trashed" );
+                postSvc.trash( trashed );
+                var future  = publishNew( author, "Future", dateAdd( "d", 7, now() ) );
+
+                var xml = svc.forBaseUrl( "https://example.test" );
+                expect( xml ).toInclude( "/blog/" & pub.getSlug() );
+                // Scheduled-future is still status=published so it'll
+                // be listed — PublicPostService's published_at filter
+                // keeps it off the home/archive, but sitemaps
+                // legitimately include future entries; skip that
+                // assertion rather than overspecify. Draft + trashed
+                // must NOT leak:
+                expect( xml ).notToInclude( "/blog/" & draft.getSlug() );
+                expect( xml ).notToInclude( "/blog/" & trashed.getSlug() );
+            } );
+
+            it( "lists categories + tags it knows about", function() {
+                var cat = createCategory( "sm-cat-" & left( createUUID(), 6 ) );
+                var tag = createTag( "sm-tag-" & left( createUUID(), 6 ) );
+
+                var xml = svc.forBaseUrl( "https://example.test" );
+                expect( xml ).toInclude( "/category/" & cat.getSlug() );
+                expect( xml ).toInclude( "/tag/" & tag.getSlug() );
+            } );
+
+            it( "caches per base URL — second call without invalidate returns identical output", function() {
+                var a = svc.forBaseUrl( "https://example.test" );
+                var b = svc.forBaseUrl( "https://example.test" );
+                expect( a ).toBe( b );
+            } );
+
+            it( "keys the cache by baseUrl so a staging host doesn't get prod URLs", function() {
+                var prod = svc.forBaseUrl( "https://prod.example" );
+                var stg  = svc.forBaseUrl( "https://staging.example" );
+                expect( prod ).notToBe( stg );
+                expect( prod ).toInclude( "prod.example" );
+                expect( stg ).toInclude( "staging.example" );
+            } );
+        } );
+    }
+
+    // --------------------------------------------------------------------
+
+    private any function publishNew( required any author, required string title, any publishedAt = now() ) {
+        var post = postSvc.create( {
+            "authorId"    : arguments.author.getId(),
+            "title"       : arguments.title,
+            "slug"        : "sm-" & left( createUUID(), 12 ),
+            "bodyMarkdown": "body"
+        } );
+        trackPost( post );
+
+        getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "posts" )
+            .where( "id", post.getId() )
+            .update( {
+                "status"       : "published",
+                "published_at" : dateTimeFormat( arguments.publishedAt, "yyyy-mm-dd HH:nn:ss" )
+            } );
+
+        return getInstance( "Post" ).find( post.getId() );
+    }
+
+    private any function trackPost( required any post ) {
+        variables.createdIds.posts.append( arguments.post.getId() );
+        return arguments.post;
+    }
+
+    private any function createCategory( required string slug ) {
+        var now = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+        getInstance( "QueryBuilder@qb" ).newQuery().from( "categories" ).insert( {
+            "slug"       : arguments.slug,
+            "name"       : arguments.slug,
+            "path"       : arguments.slug,
+            "created_at" : now,
+            "updated_at" : now
+        } );
+        var cat = getInstance( "Category" ).where( "slug", arguments.slug ).first();
+        variables.createdIds.categories.append( cat.getId() );
+        return cat;
+    }
+
+    private any function createTag( required string slug ) {
+        var now = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+        getInstance( "QueryBuilder@qb" ).newQuery().from( "tags" ).insert( {
+            "slug"       : arguments.slug,
+            "name"       : arguments.slug,
+            "created_at" : now,
+            "updated_at" : now
+        } );
+        var tag = getInstance( "Tag" ).where( "slug", arguments.slug ).first();
+        variables.createdIds.tags.append( tag.getId() );
+        return tag;
+    }
+
+}

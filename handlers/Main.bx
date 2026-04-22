@@ -69,6 +69,29 @@ class extends="coldbox.system.EventHandler" {
 	}
 
 	/**
+	 * `/sitemap.xml` (Chunk 3.E) — cached 1h per base URL. Phase 7 B20
+	 * splits this into a sitemap-index once the published-post count
+	 * exceeds 40k; SitemapService logs a warning today when it crosses
+	 * that threshold so ops know to schedule the Phase-7 work.
+	 */
+	function sitemap( event, rc, prc ) {
+		var proto   = event.getHTTPHeader( "X-Forwarded-Proto", cgi.server_protocol contains "HTTPS" ? "https" : "http" );
+		var host    = event.getHTTPHeader( "Host", cgi.server_name ?: "localhost" );
+		var baseUrl = proto & "://" & host;
+
+		var xml = getInstance( "SitemapService" ).forBaseUrl( baseUrl );
+
+		// contentType on renderData wins over a late setHTTPHeader —
+		// ColdBox's plain renderer otherwise reverts the type to
+		// text/html.
+		event.renderData(
+			type        = "plain",
+			data        = xml,
+			contentType = "application/xml; charset=utf-8"
+		);
+	}
+
+	/**
 	 * /__health — lightweight healthcheck.
 	 *
 	 * Returns HTTP 200 + JSON body when the app is responsive. Used by Docker

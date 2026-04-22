@@ -1,0 +1,237 @@
+/**
+ * bx-Blogger — SitemapService (Chunk 3.E)
+ *
+ * Builds a sitemap.xml 0.9 document covering:
+ *   - Home
+ *   - All published posts  (/blog/{slug})
+ *   - All published pages  (/{slug})
+ *   - Category archives    (/category/{slug})
+ *   - Tag archives         (/tag/{slug})
+ *   - Author archives      (/author/{username})
+ *
+ * Cached in CacheBox's default cache under `sitemap:{baseUrl}` with a
+ * 60-minute TTL. Phase 6's `RebuildSitemapJob` + Phase 5's
+ * `cacheInvalidate` hook will tighten this — for now the hour
+ * window is enough to keep the cost of hitting `/sitemap.xml` on an
+ * LLM crawler flood manageable.
+ *
+ * Sitemap-index threshold (PLAN B20) — once `count(posts WHERE
+ * status=published) > 40000`, the output flips to a
+ * `<sitemapindex>` document referencing per-year sub-sitemaps. Phase
+ * 7 owns that milestone; this service stubs the check but always
+ * emits a single sitemap for now.
+ *
+ * Interception: fires `bxBlogger.preSitemapGenerate` +
+ * `postSitemapGenerate` so modules can add custom URLs (Phase 4's
+ * themes manager could add theme preview pages, for example).
+ */
+class accessors="true" singleton {
+
+    property name="wirebox"            inject="wirebox";
+    property name="cache"              inject="cachebox:default";
+    property name="interceptorService" inject="coldbox:InterceptorService";
+    property name="log"                inject="logbox:logger:{this}";
+
+    variables.cacheTtlMinutes = 60;
+    variables.sitemapIndexThreshold = 40000;  // B20
+
+    /**
+     * Produce the sitemap.xml string for the given base URL. Cached
+     * per-baseUrl — the cache key varies because multi-host setups
+     * (staging + prod from the same image) need different URLs.
+     */
+    string function forBaseUrl( required string baseUrl ) {
+        var key    = "sitemap:" & arguments.baseUrl;
+        var cached = variables.cache.get( key );
+        if ( !isNull( cached ) && isSimpleValue( cached ) && len( cached ) ) {
+            return cached;
+        }
+
+        var xml = build( arguments.baseUrl );
+        variables.cache.set( key, xml, variables.cacheTtlMinutes, 0 );
+        return xml;
+    }
+
+    /**
+     * Drop the cached entry. Called by Phase 5's cacheInvalidate hook
+     * on post publish / theme switch / category edit.
+     */
+    function invalidate() {
+        variables.cache.clearByKeySnippet( keySnippet = "sitemap:", regex = false );
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    private string function build( required string baseUrl ) {
+        var wb = variables.wirebox;
+
+        // Cheap count so B20's threshold check stays here even though
+        // the Phase 7 branch hasn't shipped.
+        var publishedCount = wb.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "posts" )
+            .where( "post_type",  "post" )
+            .where( "status",     "published" )
+            .where( "visibility", "public" )
+            .whereNull( "deleted_at" )
+            .count();
+
+        if ( publishedCount > variables.sitemapIndexThreshold ) {
+            variables.log.warn(
+                "SitemapService: published post count " & publishedCount
+                & " exceeds single-sitemap threshold " & variables.sitemapIndexThreshold
+                & " — index-split ships in Phase 7 B20; serving truncated sitemap for now."
+            );
+        }
+
+        var urls = [];
+
+        // Home
+        urls.append( { "loc" : arguments.baseUrl & "/",      "changefreq" : "daily",   "priority" : "1.0" } );
+        urls.append( { "loc" : arguments.baseUrl & "/blog",  "changefreq" : "daily",   "priority" : "0.9" } );
+
+        // Published posts
+        var postRows = wb.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "posts" )
+            .select( [ "slug", "updated_at" ] )
+            .where( "post_type",  "post" )
+            .where( "status",     "published" )
+            .where( "visibility", "public" )
+            .whereNull( "deleted_at" )
+            .orderBy( "published_at", "desc" )
+            .limit( variables.sitemapIndexThreshold )
+            .get();
+        for ( var p in postRows ) {
+            urls.append( {
+                "loc"        : arguments.baseUrl & "/blog/" & p.slug,
+                "lastmod"    : w3cDate( p.updated_at ),
+                "changefreq" : "weekly",
+                "priority"   : "0.8"
+            } );
+        }
+
+        // Published pages
+        var pageRows = wb.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "posts" )
+            .select( [ "slug", "updated_at" ] )
+            .where( "post_type",  "page" )
+            .where( "status",     "published" )
+            .where( "visibility", "public" )
+            .whereNull( "deleted_at" )
+            .get();
+        for ( var pg in pageRows ) {
+            urls.append( {
+                "loc"        : arguments.baseUrl & "/" & pg.slug,
+                "lastmod"    : w3cDate( pg.updated_at ),
+                "changefreq" : "monthly",
+                "priority"   : "0.6"
+            } );
+        }
+
+        // Category archives
+        var catRows = wb.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "categories" )
+            .select( [ "slug", "updated_at" ] )
+            .get();
+        for ( var c in catRows ) {
+            urls.append( {
+                "loc"        : arguments.baseUrl & "/category/" & c.slug,
+                "lastmod"    : w3cDate( c.updated_at ),
+                "changefreq" : "weekly",
+                "priority"   : "0.5"
+            } );
+        }
+
+        // Tag archives
+        var tagRows = wb.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "tags" )
+            .select( [ "slug", "updated_at" ] )
+            .get();
+        for ( var t in tagRows ) {
+            urls.append( {
+                "loc"        : arguments.baseUrl & "/tag/" & t.slug,
+                "lastmod"    : w3cDate( t.updated_at ),
+                "changefreq" : "weekly",
+                "priority"   : "0.4"
+            } );
+        }
+
+        // Author archives — only users who have at least one published post
+        var authorRows = wb.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "users" )
+            .select( [ "users.username", "users.updated_at" ] )
+            .distinct()
+            .join( "posts", "posts.author_id", "=", "users.id" )
+            .where( "posts.post_type",  "post" )
+            .where( "posts.status",     "published" )
+            .where( "posts.visibility", "public" )
+            .whereNull( "posts.deleted_at" )
+            .get();
+        for ( var a in authorRows ) {
+            if ( !len( a.username ?: "" ) ) continue;
+            urls.append( {
+                "loc"        : arguments.baseUrl & "/author/" & a.username,
+                "lastmod"    : w3cDate( a.updated_at ),
+                "changefreq" : "weekly",
+                "priority"   : "0.4"
+            } );
+        }
+
+        // Let modules mutate the URL list before emission.
+        var data = { "baseUrl" : arguments.baseUrl, "urls" : urls };
+        variables.interceptorService.announce( state = "bxBlogger.preSitemapGenerate", data = data );
+
+        var buf = createObject( "java", "java.lang.StringBuilder" ).init();
+        buf.append( '<?xml version="1.0" encoding="UTF-8"?>' );
+        buf.append( char( 10 ) );
+        buf.append( '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' );
+        buf.append( char( 10 ) );
+
+        for ( var u in data.urls ) {
+            buf.append( "  <url>" & char( 10 ) );
+            buf.append( "    <loc>" & xmlSafe( u.loc ) & "</loc>" & char( 10 ) );
+            if ( structKeyExists( u, "lastmod" ) && len( u.lastmod ) ) {
+                buf.append( "    <lastmod>" & xmlSafe( u.lastmod ) & "</lastmod>" & char( 10 ) );
+            }
+            buf.append( "    <changefreq>" & xmlSafe( u.changefreq ) & "</changefreq>" & char( 10 ) );
+            buf.append( "    <priority>"   & xmlSafe( u.priority )   & "</priority>"   & char( 10 ) );
+            buf.append( "  </url>" & char( 10 ) );
+        }
+
+        buf.append( "</urlset>" & char( 10 ) );
+        data.xml = buf.toString();
+        variables.interceptorService.announce( state = "bxBlogger.postSitemapGenerate", data = data );
+        return data.xml;
+    }
+
+    /**
+     * W3C Datetime (ISO 8601) — YYYY-MM-DD for the `<lastmod>` element.
+     * sitemap.org accepts either date-only or full timestamp; we keep
+     * it date-only so trivial content-version bumps don't cause crawlers
+     * to re-fetch an otherwise unchanged URL too aggressively.
+     */
+    private string function w3cDate( required any dt ) {
+        if ( isNull( arguments.dt ) || ( isSimpleValue( arguments.dt ) && !len( arguments.dt ) ) ) return "";
+        var d = isDate( arguments.dt ) ? arguments.dt : parseDateTime( arguments.dt );
+        return dateFormat( d, "yyyy-mm-dd" );
+    }
+
+    /**
+     * Minimal XML text-safe escape. bx-esapi's `encodeForXML` is more
+     * aggressive — it percent-escapes colons / slashes too, which
+     * turns a clean URL into `http&##x3a;&##x2f;&##x2f;...` in the
+     * <loc>. Crawlers accept both forms, but the tighter five-entity
+     * escape matches what every other CMS emits.
+     */
+    private string function xmlSafe( required string text ) {
+        var t = arguments.text;
+        t = replace( t, "&",  "&amp;",  "all" );
+        t = replace( t, "<",  "&lt;",   "all" );
+        t = replace( t, ">",  "&gt;",   "all" );
+        t = replace( t, '"',  "&quot;", "all" );
+        t = replace( t, "'",  "&##39;",  "all" );
+        return t;
+    }
+
+}

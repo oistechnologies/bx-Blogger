@@ -112,9 +112,22 @@ class {
 		 * last — everything above it is a reserved path.
 		 */
 
-		// Site-wide endpoints
-		route( "/robots.txt" ).to( "main.robots" );
-		route( "/search"     ).to( "main.search" );
+		// Site-wide endpoints.
+		//
+		// ColdBox's RoutingService strips whitelisted extensions (json,
+		// xml, rss, ...) from the URL before matching, setting
+		// `rc.format = "xml"` instead. So we register these routes
+		// without the `.xml` suffix even though the canonical URL
+		// includes it. `/feed.xml` still hits the browser exactly as
+		// expected — ColdBox just matches against the bare segment.
+		route( "/robots.txt" ).to( "main.robots"  );
+		route( "/sitemap"    ).to( "main.sitemap" );
+		route( "/search"     ).to( "main.search"  );
+
+		// Site-wide RSS. Scope-specific variants map to dedicated
+		// actions below — keeps each feed handler small instead of
+		// dispatching on an rc param.
+		route( "/feed" ).to( "blog.feed" );
 
 		// /blog family — most-specific first. ColdBox matches routes
 		// top-down; a bare `/blog` pattern placed above `/blog/:slug`
@@ -129,13 +142,16 @@ class {
 		// regex syntax that varies by version. Nested URL support is
 		// deferred to Phase 4 when the themes manager + admin builder
 		// land; the CategoryService data model is unchanged.
-		route( "/category/:slug" ).to( "blog.category" );
+		route( "/category/:slug/feed" ).to( "blog.categoryFeed" );
+		route( "/category/:slug"      ).to( "blog.category"     );
 
 		// Tag
-		route( "/tag/:slug" ).to( "blog.tag" );
+		route( "/tag/:slug/feed" ).to( "blog.tagFeed" );
+		route( "/tag/:slug"      ).to( "blog.tag"     );
 
 		// Author
-		route( "/author/:username" ).to( "blog.author" );
+		route( "/author/:username/feed" ).to( "blog.authorFeed" );
+		route( "/author/:username"      ).to( "blog.author"     );
 
 		// Date archive — year, then year+month. Handler validates the
 		// numeric shape so no regex constraint is needed at the route

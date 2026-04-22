@@ -1,0 +1,237 @@
+/**
+ * bx-Blogger — FeedService (Chunk 3.E)
+ *
+ * Hand-rolled RSS 2.0 feed generation — `cbfeeds` is stale on
+ * ForgeBox (last release Aug 2022) and a ~60-line template here is
+ * lower-maintenance than pinning a dormant module (see PLAN R13).
+ *
+ * Supports four feed scopes:
+ *   - site       — `/feed.xml` (latest published posts)
+ *   - category   — `/category/{slug}/feed.xml`
+ *   - tag        — `/tag/{slug}/feed.xml`
+ *   - author     — `/author/{username}/feed.xml`
+ *
+ * Each returns a fully-formed XML string ready to hand to
+ * `event.renderData(type="xml", data=...)`. Item count is capped at
+ * 25 (the common feed-reader default); callers pass a lower `limit`
+ * if they want a smaller payload.
+ *
+ * Caching: none here — Phase 5's `feedCache` + `cacheInvalidate`
+ * hook will wrap per-scope calls. The underlying `PublicPostService`
+ * query is cheap enough for an uncached Phase 3 baseline.
+ *
+ * Interception: fires `bxBlogger.preRssGenerate` + `postRssGenerate`
+ * around assembly so modules can rewrite channel metadata or filter
+ * items (e.g., an ad module could splice a sponsored entry).
+ */
+class accessors="true" singleton {
+
+    property name="wirebox"            inject="wirebox";
+    property name="controller"         inject="coldbox";
+    property name="publicPostService"  inject="PublicPostService";
+    property name="interceptorService" inject="coldbox:InterceptorService";
+    property name="log"                inject="logbox:logger:{this}";
+
+    variables.defaultLimit = 25;
+    variables.maxLimit     = 50;
+
+    // --------------------------------------------------------------------
+    // Scope-specific generators
+    // --------------------------------------------------------------------
+
+    string function siteFeed( required string baseUrl, numeric limit ) {
+        var posts = variables.publicPostService.listPublished(
+            page    = 1,
+            perPage = resolveLimit( arguments.limit )
+        ).posts;
+
+        return buildRss(
+            baseUrl    = arguments.baseUrl,
+            selfPath   = "/feed.xml",
+            title      = variables.controller.getSetting( "AppName" ),
+            description = "Latest posts from " & variables.controller.getSetting( "AppName" ),
+            posts      = posts
+        );
+    }
+
+    string function categoryFeed( required any category, required string baseUrl, numeric limit ) {
+        var posts = variables.publicPostService.listPublishedByCategory(
+            category = arguments.category,
+            page     = 1,
+            perPage  = resolveLimit( arguments.limit )
+        ).posts;
+
+        return buildRss(
+            baseUrl     = arguments.baseUrl,
+            selfPath    = "/category/" & arguments.category.getSlug() & "/feed.xml",
+            title       = arguments.category.getName() & " — " & variables.controller.getSetting( "AppName" ),
+            description = arguments.category.getDescription() ?: ( "Posts in category " & arguments.category.getName() ),
+            posts       = posts
+        );
+    }
+
+    string function tagFeed( required any tag, required string baseUrl, numeric limit ) {
+        var posts = variables.publicPostService.listPublishedByTag(
+            tag     = arguments.tag,
+            page    = 1,
+            perPage = resolveLimit( arguments.limit )
+        ).posts;
+
+        return buildRss(
+            baseUrl     = arguments.baseUrl,
+            selfPath    = "/tag/" & arguments.tag.getSlug() & "/feed.xml",
+            title       = "##" & arguments.tag.getSlug() & " — " & variables.controller.getSetting( "AppName" ),
+            description = "Posts tagged ##" & arguments.tag.getSlug(),
+            posts       = posts
+        );
+    }
+
+    string function authorFeed( required any author, required string baseUrl, numeric limit ) {
+        var posts = variables.publicPostService.listPublishedByAuthor(
+            author  = arguments.author,
+            page    = 1,
+            perPage = resolveLimit( arguments.limit )
+        ).posts;
+
+        var displayName = arguments.author.getDisplayName() ?: arguments.author.getUsername();
+        return buildRss(
+            baseUrl     = arguments.baseUrl,
+            selfPath    = "/author/" & arguments.author.getUsername() & "/feed.xml",
+            title       = displayName & " — " & variables.controller.getSetting( "AppName" ),
+            description = "Posts by " & displayName,
+            posts       = posts
+        );
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    private numeric function resolveLimit( numeric limit ) {
+        var n = isNull( arguments.limit ) || !isNumeric( arguments.limit ?: "" )
+            ? variables.defaultLimit
+            : int( arguments.limit );
+        if ( n <= 0 ) n = variables.defaultLimit;
+        if ( n > variables.maxLimit ) n = variables.maxLimit;
+        return n;
+    }
+
+    /**
+     * Build an RSS 2.0 document from a channel struct + array of Quick
+     * Post entities. Announces the `bxBlogger.preRssGenerate` +
+     * `postRssGenerate` interception points so modules can mutate the
+     * channel or item list in flight (data is pass-by-ref).
+     */
+    private string function buildRss(
+        required string baseUrl,
+        required string selfPath,
+        required string title,
+        required string description,
+        required array  posts
+    ) {
+        var channel = {
+            "title"       : arguments.title,
+            "description" : arguments.description,
+            "link"        : arguments.baseUrl,
+            "selfUrl"     : arguments.baseUrl & arguments.selfPath,
+            "language"    : "en-us",
+            "generator"   : "bx-Blogger " & variables.controller.getSetting( "app.version" )
+        };
+        var data = {
+            "channel" : channel,
+            "posts"   : arguments.posts
+        };
+
+        variables.interceptorService.announce( state = "bxBlogger.preRssGenerate", data = data );
+
+        var buf = createObject( "java", "java.lang.StringBuilder" ).init();
+        buf.append( '<?xml version="1.0" encoding="UTF-8"?>' );
+        buf.append( char( 10 ) );
+        buf.append( '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">' );
+        buf.append( char( 10 ) & "  <channel>" & char( 10 ) );
+        buf.append( xmlElement( "title",          data.channel.title ) );
+        buf.append( xmlElement( "link",           data.channel.link  ) );
+        buf.append( xmlElement( "description",    data.channel.description ) );
+        buf.append( xmlElement( "language",       data.channel.language ) );
+        buf.append( xmlElement( "generator",      data.channel.generator ) );
+        buf.append( xmlElement( "lastBuildDate",  rfc822( now() ) ) );
+        buf.append( '    <atom:link href="' & xmlSafe( data.channel.selfUrl ) & '" rel="self" type="application/rss+xml" />' );
+        buf.append( char( 10 ) );
+
+        for ( var post in data.posts ) {
+            // Local vars named `url` resolve to the CFML `url` scope
+            // (the query-string struct), not to the local — same
+            // reserved-name gotcha captured in CLAUDE.md. Use
+            // `itemLink` instead.
+            var slug     = post.getSlug()  & "";
+            var title    = post.getTitle() & "";
+            var itemLink = data.channel.link & "/blog/" & slug;
+            var pubDate  = isNull( post.getPublishedAt() ) ? now() : post.getPublishedAt();
+            var excerpt  = post.getExcerpt() ?: "";
+            var bodyHtml = post.getBodyHtml() ?: "";
+            var descHtml = len( excerpt ) ? excerpt : bodyHtml;
+
+            buf.append( "    <item>" & char( 10 ) );
+            buf.append( xmlElement( "title",       title, 6 ) );
+            buf.append( xmlElement( "link",        itemLink, 6 ) );
+            buf.append( '      <guid isPermaLink="true">' & xmlSafe( itemLink ) & "</guid>" & char( 10 ) );
+            buf.append( xmlElement( "pubDate",     rfc822( pubDate ), 6 ) );
+            buf.append( xmlElement( "description", descHtml, 6, true ) );
+            buf.append( "    </item>" & char( 10 ) );
+        }
+
+        buf.append( "  </channel>" & char( 10 ) & "</rss>" & char( 10 ) );
+
+        var xml = buf.toString();
+        data.xml = xml;
+        variables.interceptorService.announce( state = "bxBlogger.postRssGenerate", data = data );
+        return data.xml;
+    }
+
+    /**
+     * Render a single XML element. `cdata=true` wraps the value in
+     * `<![CDATA[ ... ]]>` so HTML excerpts don't have to be
+     * double-escaped. `indent` defaults to 4 spaces (channel-level);
+     * items override to 6.
+     */
+    private string function xmlElement(
+        required string  name,
+        required string  value,
+                 numeric indent = 4,
+                 boolean cdata  = false
+    ) {
+        var pad     = repeatString( " ", arguments.indent );
+        var payload = arguments.cdata
+            ? "<![CDATA[" & arguments.value & "]]>"
+            : xmlSafe( arguments.value );
+        return pad & "<" & arguments.name & ">" & payload & "</" & arguments.name & ">" & char( 10 );
+    }
+
+    /**
+     * Minimal XML-safe text escape — only the five spec-required
+     * entities. bx-esapi's `encodeForXML` is more aggressive
+     * (percent-escapes colons, slashes, etc.), which produces an
+     * XML-compliant but gnarly `<link>http&##x3a;&##x2f;&##x2f;...`
+     * output. Feed readers all handle the looser form that every
+     * other CMS emits.
+     */
+    private string function xmlSafe( required string text ) {
+        var t = arguments.text;
+        t = replace( t, "&",  "&amp;",  "all" );
+        t = replace( t, "<",  "&lt;",   "all" );
+        t = replace( t, ">",  "&gt;",   "all" );
+        t = replace( t, '"',  "&quot;", "all" );
+        t = replace( t, "'",  "&##39;",  "all" );
+        return t;
+    }
+
+    /**
+     * RFC-822 date stamp, as required by the RSS 2.0 spec.
+     * Example: "Wed, 22 Apr 2026 15:04:05 +0000".
+     */
+    private string function rfc822( required any dt ) {
+        var d = isDate( arguments.dt ) ? arguments.dt : parseDateTime( arguments.dt );
+        return dateTimeFormat( d, "EEE, dd mmm yyyy HH:nn:ss" ) & " +0000";
+    }
+
+}

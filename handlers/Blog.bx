@@ -196,9 +196,109 @@ class extends="coldbox.system.EventHandler" {
         event.setView( prc.theme.view( "archive" ) );
     }
 
+    /**
+     * GET /feed.xml — site-wide RSS.
+     */
+    function feed( event, rc, prc ) {
+        var xml = getInstance( "FeedService" ).siteFeed( baseUrl = siteBaseUrl( event ) );
+        writeFeedResponse( event, xml );
+    }
+
+    /**
+     * GET /category/:slug/feed.xml
+     */
+    function categoryFeed( event, rc, prc ) {
+        var slug   = trim( rc.slug ?: "" );
+        var catRow = getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "categories" )
+            .where( "slug", slug )
+            .first();
+        if ( !hasRow( catRow ) ) {
+            renderFeedNotFound( event );
+            return;
+        }
+        var foundCategory = getInstance( "Category" ).find( catRow.id );
+        var xml = getInstance( "FeedService" ).categoryFeed(
+            category = foundCategory,
+            baseUrl  = siteBaseUrl( event )
+        );
+        writeFeedResponse( event, xml );
+    }
+
+    /**
+     * GET /tag/:slug/feed.xml
+     */
+    function tagFeed( event, rc, prc ) {
+        var slug     = trim( rc.slug ?: "" );
+        var foundTag = getInstance( "Tag" ).where( "slug", slug ).first();
+        if ( isNull( foundTag ) ) {
+            renderFeedNotFound( event );
+            return;
+        }
+        var xml = getInstance( "FeedService" ).tagFeed(
+            tag     = foundTag,
+            baseUrl = siteBaseUrl( event )
+        );
+        writeFeedResponse( event, xml );
+    }
+
+    /**
+     * GET /author/:username/feed.xml
+     */
+    function authorFeed( event, rc, prc ) {
+        var username    = trim( rc.username ?: "" );
+        var foundAuthor = getInstance( "User" ).where( "username", username ).first();
+        if ( isNull( foundAuthor ) ) {
+            renderFeedNotFound( event );
+            return;
+        }
+        var xml = getInstance( "FeedService" ).authorFeed(
+            author  = foundAuthor,
+            baseUrl = siteBaseUrl( event )
+        );
+        writeFeedResponse( event, xml );
+    }
+
     // --------------------------------------------------------------------
     // Private helpers
     // --------------------------------------------------------------------
+
+    /**
+     * RSS spec wants absolute URLs — build the site's base (protocol +
+     * host, no trailing slash) from the current request.
+     */
+    private string function siteBaseUrl( required any event ) {
+        var proto = arguments.event.getHTTPHeader( "X-Forwarded-Proto", cgi.server_protocol contains "HTTPS" ? "https" : "http" );
+        var host  = arguments.event.getHTTPHeader( "Host", cgi.server_name ?: "localhost" );
+        return proto & "://" & host;
+    }
+
+    /**
+     * Stamp the RSS Content-Type and flush the XML body. Shared by
+     * every feed action so the header list lives in one place.
+     *
+     * `renderData(type="plain", ...)` clobbers Content-Type back to
+     * text/html, so we pass `contentType="application/rss+xml"`
+     * directly to renderData instead of calling setHTTPHeader.
+     */
+    private void function writeFeedResponse( required any event, required string xml ) {
+        arguments.event.renderData(
+            type        = "plain",
+            data        = arguments.xml,
+            contentType = "application/rss+xml; charset=utf-8"
+        );
+    }
+
+    private void function renderFeedNotFound( required any event ) {
+        arguments.event.renderData(
+            type        = "plain",
+            statusCode  = 404,
+            statusText  = "Not Found",
+            contentType = "application/rss+xml; charset=utf-8",
+            data = '<?xml version="1.0" encoding="UTF-8"?>' & char( 10 )
+                 & '<rss version="2.0"><channel><title>Not Found</title></channel></rss>' & char( 10 )
+        );
+    }
 
     /**
      * Render the theme's 404 view inside the 500 (error) layout.
