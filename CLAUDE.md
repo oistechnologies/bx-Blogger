@@ -157,11 +157,20 @@ Hard-won lessons from Chunks 1.E → 1.I. Read these before adding new handlers,
 - **Route ordering matters — specific before generic.** `route("/account/password")` must be declared before `route("/account")`, otherwise the parent swallows the more specific path.
 - **`index.bxm` is a placeholder — never call `processColdBoxRequest()`** in it. `Application.bx`'s lifecycle hooks own the request; duplicating in `index.bxm` renders the page twice.
 - **Flash scope in this app auto-purges after one render** (per `variables.flash.autoPurge = true` in `config/Coldbox.bx`). Curl-based test sequences must GET the page once to consume the flash before asserting the next flash is fresh.
+- **HMVC module routes live in `modules_app/{name}/config/Router.bx`**, not in `routes = [...]` inside ModuleConfig. Declaring `routes` inside the module's `configure()` method is silently ignored by ColdBox — it looks for the Router.bx / Router.cfc file convention instead. Without a router, the module falls back to `:handler/:action?` conventions, which means bare `/{entryPoint}` (no sub-path) fails to resolve.
+- **ModuleService auto-registers the entry-point route** via `addModuleRoutes(pattern=entryPoint, append=false)` — you don't need `route("/admin").moduleRouting("admin")` in the app router. Just set `this.entryPoint = "admin"` in ModuleConfig.bx and drop a `config/Router.bx` in the module.
 
 ### BoxLang + MySQL
 
 - **`users.password_hash` is exactly `VARCHAR(60)` for bcrypt.** Test-fixture placeholder hashes must be exactly 60 chars or MySQL throws "Data too long for column".
 - **`queryExecute` is available in any scope** and bypasses qb's binding logic entirely. Useful fallback for edge cases that trip up qb (mixed raw/bound updates, NULL assignment in a struct).
+
+### CBWIRE
+
+- **Single-file components need `@startWire` / `@endWire` markers** inside the `<bx:script>` block. Only code between those markers is treated as the component class; everything else (including `data = {...}` sitting outside) is discarded into "remaining template contents" and never runs. Result: `_getDataProperties()` returns empty and the template throws `key [...] not found`.
+- **Template interpolation uses BoxLang syntax, not Livewire's mustache.** Write `<bx:output>#args.count#</bx:output>` (or `#variables.count#`), not `{{ count }}`. `{{ }}` renders as literal text. Data properties are exposed in `variables`, `variables.data`, and `variables.args` in the encapsulated render context.
+- **CBWIRE compiles single-file components into a `modules/cbwire/views/tmp/` cache.** When you edit a wire's structure and nothing picks up, delete the matching tmp file(s) (`docker compose exec app rm -f /app/modules/cbwire/views/tmp/hello.*`). `fwreinit` alone doesn't invalidate this cache.
+- **Every layout that renders a wire must call `#wireStyles()#` in `<head>` and `#wireScripts()#` before `</body>`.** Without these, the client runtime isn't loaded and `wire:click` / reactive updates silently no-op.
 
 ### Testing
 

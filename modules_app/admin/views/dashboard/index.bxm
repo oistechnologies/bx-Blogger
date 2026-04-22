@@ -1,0 +1,63 @@
+<bx:output>
+<div class="d-flex justify-content-between align-items-center mb-4">
+	<h1 class="h3 mb-0">Welcome back, #encodeForHTML( prc.user.getDisplayName() )#</h1>
+	<span class="badge bg-secondary">Phase 2 · Chunk 2.B</span>
+</div>
+
+<div class="row g-3 mb-4">
+	<div class="col-md-6 col-lg-4">
+		<div class="card h-100">
+			<div class="card-body">
+				<h2 class="h6 text-muted">Account</h2>
+				<dl class="small mb-0">
+					<dt>Signed in as</dt>
+					<dd>#encodeForHTML( prc.user.getEmail() )#</dd>
+					<dt>Last login</dt>
+					<dd>
+						<bx:if !isNull( prc.user.getLastLoginAt() )>
+							#dateTimeFormat( prc.user.getLastLoginAt(), "yyyy-mm-dd HH:nn:ss" )# UTC
+						<bx:else>
+							this is your first session
+						</bx:if>
+					</dd>
+					<dt>Roles</dt>
+					<dd>
+						<bx:loop array="#prc.user.getRoles()#" item="role">
+							<span class="badge bg-secondary me-1">#encodeForHTML( role.getName() )#</span>
+						</bx:loop>
+					</dd>
+				</dl>
+			</div>
+		</div>
+	</div>
+
+	<div class="col-md-6 col-lg-4">
+		<div class="card h-100">
+			<div class="card-body">
+				<h2 class="h6 text-muted">CBWIRE smoke test</h2>
+				<p class="small text-muted mb-2">
+					Proves the reactive pipeline end-to-end before the real
+					editor wires land in 2.D.
+				</p>
+				#wire( "hello" )#
+			</div>
+		</div>
+	</div>
+
+	<div class="col-md-6 col-lg-4">
+		<div class="card h-100">
+			<div class="card-body">
+				<h2 class="h6 text-muted">Shipping next</h2>
+				<ul class="small mb-0">
+					<li>2.C — PostService CRUD + slug/scheduling/reading-time rules</li>
+					<li>2.D — <code>posts.list</code> + <code>posts.editor</code> wires</li>
+					<li>2.E — Categories + tags managers</li>
+					<li>2.F — Media library + uploads</li>
+					<li>2.G — Editorial workflow (review queue, preview links, autosave)</li>
+					<li>2.H/2.I — AI authoring + image generation</li>
+				</ul>
+			</div>
+		</div>
+	</div>
+</div>
+</bx:output>

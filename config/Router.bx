@@ -82,11 +82,15 @@ class {
 			.toHandler( "account" );
 
 		/**
-		 * Admin dashboard. cbsecurity firewall (config/Coldbox.bx
-		 * moduleSettings.cbsecurity.firewall) redirects unauthenticated
-		 * requests to /login before the handler runs.
+		 * /admin/* is served by the `admin` HMVC module
+		 * (modules_app/admin/). ModuleService auto-registers the
+		 * module's routes using its `entryPoint = "admin"` — and it
+		 * *prepends* the entry-point route, so the module takes
+		 * priority over the trailing conventions pattern. We don't
+		 * need an explicit `addModuleRoutes` here. cbsecurity's
+		 * `^admin.*` firewall rule still gates every request before
+		 * the module handler runs.
 		 */
-		route( "/admin" ).to( "admin.index" );
 
 		/**
 		 * Conventions-based routing — resolves /:handler/:action against

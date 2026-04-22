@@ -1,0 +1,69 @@
+/**
+ * bx-Blogger — admin HMVC module (Chunk 2.B).
+ *
+ * Owns the /admin URL namespace — dashboard, posts, media library,
+ * categories/tags managers, settings, notifications, etc. ColdBox
+ * auto-registers everything under `modules_app/` at boot, so the only
+ * job of this file is to declare the entry point, register module-
+ * specific custom interception points, and wire a layout.
+ *
+ * Phase 2 ships the module skeleton; feature chunks 2.D–2.I fill in
+ * the handlers, views, and CBWire components inside this folder.
+ *
+ * Route wiring:
+ *   GET /admin         → admin:Dashboard.index          (the dashboard)
+ *   GET /admin/:handler/:action? → conventional routing inside the module
+ */
+class {
+
+    // --------------------------------------------------------------------
+    // Module metadata
+    // --------------------------------------------------------------------
+    this.title             = "bx-Blogger Admin";
+    this.author            = "Michael Rigsby";
+    this.webURL            = "https://github.com/mrigsby/bx-Blogger";
+    this.description       = "Admin/back-office UI for bx-Blogger";
+    this.version           = "0.1.0";
+    this.viewParentLookup  = true;   // root views/ wins over module views when present
+    this.layoutParentLookup = true;
+
+    // The URL prefix — all routes in this module mount under /admin.
+    this.entryPoint        = "admin";
+
+    // WireBox model namespace: admin:models.*. Lets us write
+    // inject="SomeService@admin" if we ever need a module-scoped singleton.
+    this.modelNamespace    = "admin";
+
+    // Dependencies — keeps module load-order predictable. cbsecurity is
+    // what enforces the firewall on /admin/*; cbwire powers the reactive
+    // components that ship in later chunks.
+    this.dependencies      = [ "cbsecurity", "cbwire" ];
+
+    function configure() {
+        // Per-module settings — seed now so 2.D+ can hang flags off
+        // moduleSettings.admin without editing config/Coldbox.bx.
+        settings = {
+            // When true, handlers under this module render using the
+            // module-local layouts/Main.bxm; false passes through to the
+            // root layouts/ (current behavior is module-local).
+            "useModuleLayout" : true
+        };
+
+        // Module-level interceptors — none yet. Chunk 2.G will add a
+        // preProcess hook that enforces the `posts.publish.own`
+        // permission on the `posts.publish` action.
+        interceptors = [];
+
+        // Routes for this module live in modules_app/admin/config/Router.bx.
+        // A `routes = [...]` declaration here is silently ignored by
+        // ColdBox — the router file convention is authoritative.
+    }
+
+    function onLoad() {
+        // Placeholder — Phase 2+ registers scheduled tasks / interceptors
+        // here (e.g. editor autosave pruning, notification broadcast).
+    }
+
+    function onUnload() {}
+
+}

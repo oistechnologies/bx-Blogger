@@ -1,0 +1,33 @@
+<bx:script>
+// @startWire
+// CBWIRE single-file component (Chunk 2.B smoke test).
+// Everything between @startWire and @endWire is extracted into a
+// synthetic component class; outside the markers is template content.
+// When the real editor wires ship in 2.D they'll move into
+// modules_app/admin/wires/ using this same shape.
+data = {
+    "count" : 0
+};
+
+function increment() {
+    data.count = data.count + 1;
+}
+
+function reset() {
+    data.count = 0;
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<div class="small">
+	<p class="mb-2">
+		Counter value:
+		<strong data-testid="wire-count">#args.count#</strong>
+	</p>
+	<div class="btn-group btn-group-sm">
+		<button type="button" class="btn btn-primary" wire:click="increment">+1</button>
+		<button type="button" class="btn btn-outline-secondary" wire:click="reset">Reset</button>
+	</div>
+</div>
+</bx:output>

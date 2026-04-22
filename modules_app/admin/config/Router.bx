@@ -1,0 +1,24 @@
+/**
+ * bx-Blogger — admin module router (Chunk 2.B).
+ *
+ * ColdBox auto-loads this when a module declares `entryPoint = "admin"`
+ * (see ModuleConfig.bx). Every route here is automatically prefixed
+ * with /admin. A module-level `routes = [...]` array inside the
+ * ModuleConfig's configure() does NOT get picked up — ColdBox expects
+ * a dedicated Router under the module's config/ folder.
+ *
+ * Phase 2 ships just the dashboard landing route; later chunks add
+ * /admin/posts, /admin/categories, /admin/tags, /admin/media, etc.
+ */
+class {
+
+    function configure() {
+        // Bare /admin → Dashboard.index
+        route( "/" ).to( "Dashboard.index" );
+
+        // Conventional :handler/:action — catches /admin/posts,
+        // /admin/media/upload, etc. as they ship.
+        route( ":handler/:action?" ).end();
+    }
+
+}

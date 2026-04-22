@@ -1,0 +1,26 @@
+/**
+ * bx-Blogger — admin:Dashboard (Chunk 2.B)
+ *
+ * Landing page for signed-in admins. cbsecurity's firewall gates the
+ * parent route pattern (`^admin.*`) so every action in this module is
+ * already authenticated — handlers never need to re-check.
+ *
+ * Chunk 2.B ships the skeleton: session info + placeholder widgets.
+ * Chunk 2.D+ drop a CBWire component per widget (recent posts, queued
+ * reviews, notifications inbox, scheduled drafts, etc.) into the view.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    property name="cbauth" inject="AuthenticationService@cbauth";
+
+    this.layouts = {
+        "Main.bxm" : "*"   // module-local layout (see modules_app/admin/layouts/Main.bxm)
+    };
+
+    function index( event, rc, prc ) {
+        prc.pageTitle = "Admin Dashboard";
+        prc.user      = cbauth.getUser();
+        event.setView( view = "dashboard/index" );
+    }
+
+}

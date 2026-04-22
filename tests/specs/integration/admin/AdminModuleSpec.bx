@@ -1,0 +1,46 @@
+/**
+ * bx-Blogger — AdminModuleSpec (Chunk 2.B)
+ *
+ * Assertions:
+ *   - the `admin` HMVC module loaded successfully and is registered
+ *     with ColdBox's module service
+ *   - the entry-point route pattern `admin/` is present in the app
+ *     router's module routing table, so /admin dispatches to the module
+ *     before the conventions catch-all
+ *   - the Dashboard handler resolves via WireBox with the module's
+ *     `@admin` namespace suffix
+ *
+ * The live HTTP round-trip (login → /admin → dashboard view → wire
+ * smoke test) is validated by hand during Chunk 2.B — repeating it
+ * here would require bootstrapping a session + cbauth inside the spec,
+ * which is heavier than we need to prove the seam is wired.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function run() {
+        describe( "admin HMVC module", function() {
+
+            it( "loaded at boot and registered with ModuleService", function() {
+                var controller = getController();
+                var modules    = controller.getSetting( "modules" );
+                expect( modules ).toHaveKey( "admin" );
+                expect( modules.admin.activated ).toBeTrue();
+                expect( modules.admin.entryPoint ).toBe( "admin" );
+            } );
+
+            it( "registered its entry-point route with the app router", function() {
+                var router       = getController().getRoutingService().getRouter();
+                var moduleTable  = router.getModuleRoutingTable();
+                expect( moduleTable ).toHaveKey( "admin" );
+                expect( arrayLen( moduleTable.admin ) ).toBeGT( 0 );
+            } );
+
+            it( "placed Dashboard.bx in the module's handlers/ folder", function() {
+                var path = getController().getSetting( "modules" ).admin.path & "/handlers/Dashboard.bx";
+                expect( fileExists( path ) ).toBeTrue( "expected handler at " & path );
+            } );
+
+        } );
+    }
+
+}
