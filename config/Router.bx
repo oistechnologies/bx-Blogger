@@ -101,8 +101,58 @@ class {
 		 */
 
 		/**
-		 * Conventions-based routing — resolves /:handler/:action against
-		 * handlers/{Handler}.bx.
+		 * Public site routes (Chunk 3.B).
+		 *
+		 * The `/:year` and `/:year/:month` archive routes use strict
+		 * numeric regex so they don't swallow a legitimate page slug
+		 * that happens to look like a year. Same for `/blog/page/:page`.
+		 *
+		 * Order matters: specific patterns BEFORE generic ones. The
+		 * `/:slug` page catch-all at the bottom of this block must stay
+		 * last — everything above it is a reserved path.
+		 */
+
+		// Site-wide endpoints
+		route( "/robots.txt" ).to( "main.robots" );
+		route( "/search"     ).to( "main.search" );
+
+		// /blog family — most-specific first. ColdBox matches routes
+		// top-down; a bare `/blog` pattern placed above `/blog/:slug`
+		// swallows the slug variant.
+		route( "/blog/page/:page" ).to( "blog.index" );
+		route( "/blog/:slug"      ).to( "blog.show"  );
+		route( "/blog"            ).to( "blog.index" );
+
+		// Category — flat-slug lookup only. The `categories.path`
+		// column can hold a nested `parent/child` slug trail, but
+		// ColdBox route params don't accept slashes without special
+		// regex syntax that varies by version. Nested URL support is
+		// deferred to Phase 4 when the themes manager + admin builder
+		// land; the CategoryService data model is unchanged.
+		route( "/category/:slug" ).to( "blog.category" );
+
+		// Tag
+		route( "/tag/:slug" ).to( "blog.tag" );
+
+		// Author
+		route( "/author/:username" ).to( "blog.author" );
+
+		// Date archive — year, then year+month. Handler validates the
+		// numeric shape so no regex constraint is needed at the route
+		// layer (ColdBox route-regex syntax is inconsistent across
+		// versions; validating in one place keeps things predictable).
+		route( "/archive/:year/:month" ).to( "blog.archive" );
+		route( "/archive/:year"        ).to( "blog.archive" );
+
+		// /:slug catch-all → static page lookup. Must stay directly
+		// above the conventions fallback so single-segment URLs don't
+		// collide with legacy `/:handler/:action?` resolution.
+		route( "/:slug" ).to( "page.show" );
+
+		/**
+		 * Conventions-based routing — resolves /:handler/:action
+		 * against handlers/{Handler}.bx. Kept for multi-segment URLs
+		 * that aren't covered above (admin tooling, internal handlers).
 		 */
 		route( ":handler/:action?" ).end();
 	}

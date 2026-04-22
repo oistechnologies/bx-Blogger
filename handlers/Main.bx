@@ -14,13 +14,58 @@
 class extends="coldbox.system.EventHandler" {
 
 	/**
-	 * Phase-0 placeholder home page.
+	 * Public home page (Chunk 3.B).
+	 *
+	 * Renders the latest published posts through the active theme's
+	 * `home.bxm` view inside its `Main.bxm` layout. `prc.theme` is
+	 * populated by ThemeResolutionInterceptor.
 	 */
 	function index( event, rc, prc ) {
-		prc.appName    = getSetting( "AppName" );
-		prc.appVersion = getSetting( "app.version" );
-		prc.appPhase   = getSetting( "app.phase" );
-		event.setView( "main/index" );
+		var page = max( 1, int( rc.page ?: 1 ) );
+		var list = getInstance( "PublicPostService" ).listPublished( page = page );
+
+		prc.siteName       = getSetting( "AppName" );
+		prc.siteTagline    = "";
+		prc.posts          = list.posts;
+		prc.pagination     = buildPagination( baseUrl = "/", list = list );
+		prc.pageTitle      = prc.siteName;
+		prc.pageDescription = "";
+
+		event.setLayout( prc.theme.layout( "Main" ) );
+		event.setView( prc.theme.view( "home" ) );
+	}
+
+	/**
+	 * Public search results (Chunk 3.B).
+	 */
+	function search( event, rc, prc ) {
+		var q    = trim( rc.q ?: "" );
+		var page = max( 1, int( rc.page ?: 1 ) );
+		var list = getInstance( "PublicPostService" ).listPublishedMatching( q = q, page = page );
+
+		prc.searchQuery    = q;
+		prc.posts          = list.posts;
+		prc.totalResults   = list.total;
+		prc.pagination     = buildPagination( baseUrl = "/search", extraQs = "q=" & urlEncodedFormat( q ), list = list );
+		prc.pageTitle      = len( q ) ? ( "Search: " & q ) : "Search";
+		prc.pageDescription = "";
+
+		event.setLayout( prc.theme.layout( "Archive" ) );
+		event.setView( prc.theme.view( "search" ) );
+	}
+
+	/**
+	 * `/robots.txt` — Phase 3 ships a permissive default. Phase 7 (B23)
+	 * ships the admin SEO panel that lets an editor override this body
+	 * via `settings.seo.robots_txt`.
+	 */
+	function robots( event, rc, prc ) {
+		event.setHTTPHeader( name = "Content-Type", value = "text/plain; charset=utf-8" );
+		event.renderData(
+			type       = "plain",
+			data       = "User-agent: *" & char( 10 ) & "Allow: /" & char( 10 ) & "Sitemap: /sitemap.xml" & char( 10 ),
+			statusCode = 200
+		);
 	}
 
 	/**
@@ -115,13 +160,31 @@ class extends="coldbox.system.EventHandler" {
 
 	/**
 	 * Global exception handler — wired via coldbox.exceptionHandler in
-	 * app/config/Coldbox.bx. Logs and returns a friendly 500. Replaced by
-	 * B8 custom error page in Phase 10.
+	 * config/Coldbox.bx. Logs and returns a friendly 500 rendered
+	 * through the active theme's `500.bxm` view + layout. Phase 10
+	 * replaces the reference token with a proper correlation id + ties
+	 * into the IErrorReporter hook.
 	 */
 	function onException( event, rc, prc ) {
 		event.setHTTPHeader( statusCode = 500 );
-		prc.exception = prc.exception ?: {};
-		event.setView( "main/index" ); // Phase 0 fallback; Phase 10 ships a real error view.
+		prc.exception      = prc.exception ?: {};
+		prc.errorReference = lCase( replace( createUUID(), "-", "", "all" ) );
+		prc.pageTitle      = "Server error";
+
+		// prc.theme is populated by ThemeResolutionInterceptor on
+		// preProcess; if a failure in that interceptor itself drops
+		// us here, fall back to inline HTML so the user sees *something*.
+		if ( !structKeyExists( prc, "theme" ) ) {
+			event.renderData(
+				type       = "html",
+				data       = "<!doctype html><html><body><h1>Server error</h1><p>Reference: " & prc.errorReference & "</p></body></html>",
+				statusCode = 500
+			);
+			return;
+		}
+
+		event.setLayout( prc.theme.layout( "500" ) );
+		event.setView( prc.theme.view( "500" ) );
 	}
 
 }

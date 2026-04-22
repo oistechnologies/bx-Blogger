@@ -53,7 +53,17 @@ class {
 			eventCaching             : false,
 			viewCaching              : false,
 			autoMapModels            : true,
-			jsonPayloadToRC          : true
+			jsonPayloadToRC          : true,
+			// Chunk 3.A — `/themes` is registered as the external views +
+			// layouts lookup root. Every Theme.view("home") /
+			// Theme.layout("Main") call returns a slug-prefixed path like
+			// "bx-blogger-fallback/views/home" which ColdBox resolves to
+			// `/app/themes/bx-blogger-fallback/views/home.bxm` via
+			// `expandPath( externalLocation & "/" & view )`. Leading slash
+			// is required — without it ColdBox's expandPath resolves
+			// relative to whatever CWD the Renderer is running under.
+			viewsExternalLocation    : "/themes",
+			layoutsExternalLocation  : "/themes"
 		};
 
 		/**

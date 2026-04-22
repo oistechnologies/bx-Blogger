@@ -1,0 +1,239 @@
+/**
+ * bx-Blogger — Blog handler (Chunk 3.B)
+ *
+ * Powers every public-site post / taxonomy / archive route:
+ *
+ *   GET /blog                            → index()     latest posts
+ *   GET /blog/page/:page                 → index()     paginated list
+ *   GET /blog/:slug                      → show()      single post
+ *   GET /category/:slug                  → category()  posts in category (nested via parent/child)
+ *   GET /tag/:slug                       → tag()       posts with tag
+ *   GET /author/:username                → author()    posts by author
+ *   GET /archive/:year                   → archive()   year archive
+ *   GET /archive/:year/:month            → archive()   month archive
+ *
+ * Each action resolves its subject (post / category / tag / author /
+ * year-month) and then renders through the active theme's matching
+ * layout + view. 404s are funneled to `renderNotFound()` so a missing
+ * slug produces a themed 404 page rather than a blank ColdBox error.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    /**
+     * GET /blog[/page/:page]
+     */
+    function index( event, rc, prc ) {
+        var page = max( 1, int( rc.page ?: 1 ) );
+        var list = getInstance( "PublicPostService" ).listPublished( page = page );
+
+        prc.posts          = list.posts;
+        prc.pagination     = buildPagination( baseUrl = "/blog", list = list );
+        prc.pageTitle      = "Blog &middot; " & getSetting( "AppName" );
+        prc.pageDescription = "";
+        prc.breadcrumbs    = [ { "label" : "Blog", "url" : "/blog" } ];
+
+        event.setLayout( prc.theme.layout( "Archive" ) );
+        event.setView( prc.theme.view( "home" ) );
+    }
+
+    /**
+     * GET /blog/:slug
+     */
+    function show( event, rc, prc ) {
+        var post = getInstance( "PublicPostService" ).findPublishedBySlug( rc.slug ?: "" );
+        if ( isNull( post ) ) {
+            renderNotFound( event, prc );
+            return;
+        }
+
+        // Quick relation access — pull author display name for the byline.
+        var author = post.author().first();
+        prc.post       = post;
+        prc.authorName = isNull( author ) ? "" : ( author.getDisplayName() ?: "" );
+        prc.pageTitle  = post.getTitle() & " &middot; " & getSetting( "AppName" );
+        prc.pageDescription = post.getSeoDescription() ?: ( post.getExcerpt() ?: "" );
+
+        event.setLayout( prc.theme.layout( "Post" ) );
+        event.setView( prc.theme.view( "post" ) );
+    }
+
+    /**
+     * GET /category/:slug
+     *
+     * Local vars avoid the UDF shadowing gotcha (see `tag()` above) by
+     * using `foundCategory` rather than `category`.
+     */
+    function category( event, rc, prc ) {
+        var slug = trim( rc.slug ?: "" );
+        var row  = getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "categories" )
+            .where( "slug", slug )
+            .first();
+        if ( !hasRow( row ) ) {
+            renderNotFound( event, prc );
+            return;
+        }
+
+        var foundCategory = getInstance( "Category" ).find( row.id );
+        var page          = max( 1, int( rc.page ?: 1 ) );
+        var list          = getInstance( "PublicPostService" )
+            .listPublishedByCategory( category = foundCategory, page = page );
+
+        prc.category        = foundCategory;
+        prc.posts           = list.posts;
+        prc.pagination      = buildPagination( baseUrl = "/category/" & slug, list = list );
+        prc.pageTitle       = foundCategory.getName() & " &middot; " & getSetting( "AppName" );
+        prc.pageDescription = foundCategory.getDescription() ?: "";
+        prc.breadcrumbs     = buildCategoryBreadcrumbs( foundCategory );
+
+        event.setLayout( prc.theme.layout( "Archive" ) );
+        event.setView( prc.theme.view( "category" ) );
+    }
+
+    /**
+     * GET /tag/:slug
+     *
+     * Note: local vars are named `foundTag` / `foundAuthor` rather than
+     * `tag` / `author` because BoxLang's scope lookup inside a function
+     * whose name matches the local var ("tag()") resolves to the UDF
+     * itself, not the local, and `tag.getId()` throws
+     * "Error getting method [getId] for class ortus.boxlang.runtime.types.UDF".
+     */
+    function tag( event, rc, prc ) {
+        var slug     = trim( rc.slug ?: "" );
+        var foundTag = getInstance( "Tag" ).where( "slug", slug ).first();
+        if ( isNull( foundTag ) ) {
+            renderNotFound( event, prc );
+            return;
+        }
+
+        var page = max( 1, int( rc.page ?: 1 ) );
+        var list = getInstance( "PublicPostService" ).listPublishedByTag( tag = foundTag, page = page );
+
+        prc.tag             = foundTag;
+        prc.posts           = list.posts;
+        prc.pagination      = buildPagination( baseUrl = "/tag/" & slug, list = list );
+        prc.pageTitle       = "##" & slug & " &middot; " & getSetting( "AppName" );
+        prc.pageDescription = "";
+        prc.breadcrumbs     = [
+            { "label" : "Tags",      "url" : "/tag"         },
+            { "label" : "##" & slug, "url" : "/tag/" & slug }
+        ];
+
+        event.setLayout( prc.theme.layout( "Archive" ) );
+        event.setView( prc.theme.view( "tag" ) );
+    }
+
+    /**
+     * GET /author/:username
+     */
+    function author( event, rc, prc ) {
+        var username    = trim( rc.username ?: "" );
+        var foundAuthor = getInstance( "User" ).where( "username", username ).first();
+        if ( isNull( foundAuthor ) ) {
+            renderNotFound( event, prc );
+            return;
+        }
+
+        var page = max( 1, int( rc.page ?: 1 ) );
+        var list = getInstance( "PublicPostService" ).listPublishedByAuthor( author = foundAuthor, page = page );
+
+        prc.author          = foundAuthor;
+        prc.posts           = list.posts;
+        prc.pagination      = buildPagination( baseUrl = "/author/" & username, list = list );
+        prc.pageTitle       = ( foundAuthor.getDisplayName() ?: username ) & " &middot; " & getSetting( "AppName" );
+        prc.pageDescription = foundAuthor.getBio() ?: "";
+        prc.breadcrumbs     = [
+            { "label" : "Authors", "url" : "/author" },
+            { "label" : ( foundAuthor.getDisplayName() ?: username ), "url" : "/author/" & username }
+        ];
+
+        event.setLayout( prc.theme.layout( "Archive" ) );
+        event.setView( prc.theme.view( "author" ) );
+    }
+
+    /**
+     * GET /archive/:year[/:month]
+     */
+    function archive( event, rc, prc ) {
+        var year  = trim( rc.year ?: "" );
+        var month = trim( rc.month ?: "" );
+        if ( !reFind( "^\d{4}$", year ) ) {
+            renderNotFound( event, prc );
+            return;
+        }
+        if ( len( month ) && !reFind( "^\d{2}$", month ) ) {
+            renderNotFound( event, prc );
+            return;
+        }
+
+        var page = max( 1, int( rc.page ?: 1 ) );
+        var list = getInstance( "PublicPostService" )
+            .listPublishedByDateRange( year = year, month = month, page = page );
+
+        var baseUrl = "/archive/" & year & ( len( month ) ? ( "/" & month ) : "" );
+        var label   = len( month )
+            ? ( monthAsString( int( month ) ) & " " & year )
+            : year;
+
+        prc.archiveYear    = year;
+        prc.archiveMonth   = month;
+        prc.archiveLabel   = label;
+        prc.posts          = list.posts;
+        prc.pagination     = buildPagination( baseUrl = baseUrl, list = list );
+        prc.pageTitle      = "Archive: " & label & " &middot; " & getSetting( "AppName" );
+        prc.pageDescription = "";
+        prc.breadcrumbs    = [
+            { "label" : "Archive", "url" : "/archive/" & year },
+            { "label" : label,     "url" : baseUrl }
+        ];
+
+        event.setLayout( prc.theme.layout( "Archive" ) );
+        event.setView( prc.theme.view( "archive" ) );
+    }
+
+    // --------------------------------------------------------------------
+    // Private helpers
+    // --------------------------------------------------------------------
+
+    /**
+     * Render the theme's 404 view inside the 500 (error) layout.
+     * The 500 layout is the minimum-chrome layout we ship in the
+     * fallback theme — a full Main shell would still render the nav
+     * + footer, which reads more naturally to a visitor than a bare
+     * error card. Handlers can opt to swap the layout if they want.
+     */
+    private void function renderNotFound( required any event, required any prc ) {
+        arguments.event.setHTTPHeader( statusCode = 404, statusText = "Not Found" );
+        arguments.prc.pageTitle = "Not Found &middot; " & getSetting( "AppName" );
+        arguments.event.setLayout( arguments.prc.theme.layout( "Main" ) );
+        arguments.event.setView( arguments.prc.theme.view( "404" ) );
+    }
+
+    /**
+     * Build breadcrumb array for a category path "parent/child/leaf".
+     * Each segment gets its own crumb pointing at the category URL.
+     */
+    private array function buildCategoryBreadcrumbs( required any category ) {
+        var segments = listToArray( arguments.category.getPath(), "/" );
+        var built    = [ { "label" : "Categories", "url" : "/category" } ];
+        var running  = "";
+        for ( var seg in segments ) {
+            running = running.len() ? running & "/" & seg : seg;
+            var found = getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "categories" )
+                .where( "path", running )
+                .first();
+            var label = hasRow( found ) ? found.name : seg;
+            built.append( { "label" : label, "url" : "/category/" & running } );
+        }
+        return built;
+    }
+
+    private boolean function hasRow( required any row ) {
+        if ( isNull( arguments.row ) ) return false;
+        if ( isStruct( arguments.row ) && structIsEmpty( arguments.row ) ) return false;
+        return true;
+    }
+
+}

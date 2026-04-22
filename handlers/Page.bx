@@ -1,0 +1,46 @@
+/**
+ * bx-Blogger — Page handler (Chunk 3.B)
+ *
+ * Catch-all for `GET /{slug}` after all other routes have been tried.
+ * Resolves the slug against `posts` where `post_type = 'page'` and
+ * renders through the theme's `Page` layout + `page` view. Any miss —
+ * slug doesn't exist, page is unpublished, or page is private — ends
+ * in a themed 404.
+ *
+ * `_.slug` reserved-slug guarding happens at the PostService layer
+ * (slug can't be created against the reserved list), so this handler
+ * trusts the incoming slug is safe to look up.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    function show( event, rc, prc ) {
+        var slug = trim( rc.slug ?: "" );
+        if ( !len( slug ) ) {
+            renderNotFound( event, prc );
+            return;
+        }
+
+        var page = getInstance( "PublicPostService" ).findPublishedPageBySlug( slug );
+        if ( isNull( page ) ) {
+            renderNotFound( event, prc );
+            return;
+        }
+
+        prc.page           = page;
+        prc.pageTitle      = page.getTitle() & " &middot; " & getSetting( "AppName" );
+        prc.pageDescription = page.getSeoDescription() ?: ( page.getExcerpt() ?: "" );
+
+        event.setLayout( prc.theme.layout( "Page" ) );
+        event.setView( prc.theme.view( "page" ) );
+    }
+
+    // --------------------------------------------------------------------
+
+    private void function renderNotFound( required any event, required any prc ) {
+        arguments.event.setHTTPHeader( statusCode = 404, statusText = "Not Found" );
+        arguments.prc.pageTitle = "Not Found &middot; " & getSetting( "AppName" );
+        arguments.event.setLayout( arguments.prc.theme.layout( "Main" ) );
+        arguments.event.setView( arguments.prc.theme.view( "404" ) );
+    }
+
+}

@@ -158,11 +158,14 @@ class extends="tests.support.BaseIntegrationSpec" {
             } );
 
             describe( "configureRendererPaths()", function() {
-                it( "points viewsExternalLocation + layoutsExternalLocation at 'themes'", function() {
+                it( "points viewsExternalLocation + layoutsExternalLocation at '/themes'", function() {
+                    // The leading slash matters — ColdBox's Renderer runs
+                    // expandPath() on the external location, which is
+                    // CWD-relative without a rooted prefix.
                     themeSvc.configureRendererPaths();
                     var controller = getController();
-                    expect( controller.getSetting( "viewsExternalLocation" ) ).toBe( "themes" );
-                    expect( controller.getSetting( "layoutsExternalLocation" ) ).toBe( "themes" );
+                    expect( controller.getSetting( "viewsExternalLocation" ) ).toBe( "/themes" );
+                    expect( controller.getSetting( "layoutsExternalLocation" ) ).toBe( "/themes" );
                 } );
             } );
 

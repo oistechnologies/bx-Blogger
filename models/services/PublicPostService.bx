@@ -1,0 +1,265 @@
+/**
+ * bx-Blogger — PublicPostService (Chunk 3.B)
+ *
+ * Read-side queries for the public site. PostService owns the authoring
+ * lifecycle (create / update / publish / trash / revisions); this service
+ * owns list-by-* / find-by-slug queries that power the theme's home,
+ * blog, category, tag, author, archive, search, and page-catch-all
+ * handlers.
+ *
+ * Every query enforces the public-visibility contract:
+ *   status     = 'published'
+ *   visibility = 'public'        (password / private posts never leak)
+ *   deleted_at IS NULL
+ *   published_at <= now()
+ *
+ * That contract is centralized in `baseQuery()` so a future filter
+ * (allow_indexing, per-role preview, etc.) only has to be added once.
+ *
+ * Pagination uses Quick's `.paginate()` which issues a `SELECT COUNT(*)`
+ * + a `SELECT ... LIMIT/OFFSET` and returns a struct of the shape:
+ *   {
+ *     results:   [ Post, Post, ... ],
+ *     pagination: {
+ *       totalRecords, totalPages, page, maxRows, offset
+ *     }
+ *   }
+ *
+ * We rename the keys at the edge so callers see a consistent
+ * `{ posts, total, page, perPage, totalPages }` struct regardless of
+ * whether we later swap the backing call for cbelasticsearch.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox" inject="wirebox";
+    property name="log"     inject="logbox:logger:{this}";
+
+    variables.defaultPerPage = 10;
+    variables.maxPerPage     = 50;
+    variables.maxSearchLen   = 200;
+
+    // --------------------------------------------------------------------
+    // Single-row lookups
+    // --------------------------------------------------------------------
+
+    /**
+     * Fetch a single published post by slug. Returns the Post entity or
+     * null if not found / not public / scheduled for the future / trashed.
+     */
+    any function findPublishedBySlug( required string slug ) {
+        return baseQuery( postType = "post" )
+            .where( "slug", arguments.slug )
+            .first();
+    }
+
+    /**
+     * Fetch a published page by slug. Pages use the same posts table
+     * with `post_type = 'page'`. 3.B ships the flat lookup; nested
+     * pages (/docs/getting-started) are an enhancement for a later
+     * chunk.
+     */
+    any function findPublishedPageBySlug( required string slug ) {
+        return baseQuery( postType = "page" )
+            .where( "slug", arguments.slug )
+            .first();
+    }
+
+    // --------------------------------------------------------------------
+    // Paginated lists
+    // --------------------------------------------------------------------
+
+    /**
+     * Latest published posts, `published_at DESC`.
+     */
+    struct function listPublished( numeric page = 1, numeric perPage ) {
+        return runPaginated(
+            builder = baseQuery( postType = "post" ).orderBy( "published_at", "desc" ),
+            page    = arguments.page,
+            perPage = arguments.perPage
+        );
+    }
+
+    /**
+     * Posts in a given category (optionally including descendants).
+     * Category tree uses a materialized `path` column, so descendants
+     * are `path LIKE 'parent/%'` — one index scan.
+     */
+    struct function listPublishedByCategory(
+        required any     category,
+                 boolean includeDescendants = true,
+                 numeric page    = 1,
+                 numeric perPage
+    ) {
+        var wb          = variables.wirebox;
+        var categoryIds = [ arguments.category.getId() ];
+
+        if ( arguments.includeDescendants ) {
+            var descendantRows = wb.getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "categories" )
+                .select( "id" )
+                .where( "path", "like", arguments.category.getPath() & "/%" )
+                .get();
+            for ( var row in descendantRows ) categoryIds.append( row.id );
+        }
+
+        var builder = baseQuery( postType = "post" )
+            .whereIn(
+                "id",
+                wb.getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "post_categories" )
+                    .select( "post_id" )
+                    .whereIn( "category_id", categoryIds )
+            )
+            .orderBy( "published_at", "desc" );
+
+        return runPaginated( builder = builder, page = arguments.page, perPage = arguments.perPage );
+    }
+
+    /**
+     * Posts with a given tag.
+     */
+    struct function listPublishedByTag(
+        required any     tag,
+                 numeric page    = 1,
+                 numeric perPage
+    ) {
+        var wb = variables.wirebox;
+        var builder = baseQuery( postType = "post" )
+            .whereIn(
+                "id",
+                wb.getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "post_tags" )
+                    .select( "post_id" )
+                    .where( "tag_id", arguments.tag.getId() )
+            )
+            .orderBy( "published_at", "desc" );
+
+        return runPaginated( builder = builder, page = arguments.page, perPage = arguments.perPage );
+    }
+
+    /**
+     * Posts by a given author.
+     */
+    struct function listPublishedByAuthor(
+        required any     author,
+                 numeric page    = 1,
+                 numeric perPage
+    ) {
+        var builder = baseQuery( postType = "post" )
+            .where( "author_id", arguments.author.getId() )
+            .orderBy( "published_at", "desc" );
+
+        return runPaginated( builder = builder, page = arguments.page, perPage = arguments.perPage );
+    }
+
+    /**
+     * Archive query — year-only or year+month. The router's regex
+     * enforces 4-digit year + optional 2-digit month; this method
+     * trusts those formats.
+     */
+    struct function listPublishedByDateRange(
+        required string  year,
+                 string  month   = "",
+                 numeric page    = 1,
+                 numeric perPage
+    ) {
+        var builder = baseQuery( postType = "post" )
+            .whereRaw( "YEAR( published_at ) = ?", [ arguments.year ] );
+        if ( len( arguments.month ) ) {
+            builder.whereRaw( "MONTH( published_at ) = ?", [ arguments.month ] );
+        }
+        builder.orderBy( "published_at", "desc" );
+
+        return runPaginated( builder = builder, page = arguments.page, perPage = arguments.perPage );
+    }
+
+    /**
+     * Search. Phase 3 uses plain LIKE against title + excerpt +
+     * body_markdown. A Phase 7+ swap to MySQL FULLTEXT or
+     * cbelasticsearch drops behind the same signature.
+     */
+    struct function listPublishedMatching(
+        required string  q,
+                 numeric page    = 1,
+                 numeric perPage
+    ) {
+        var needle = lCase( trim( arguments.q ) );
+        if ( !len( needle ) ) {
+            return emptyResult( arguments.page, resolvePerPage( arguments.perPage ) );
+        }
+        if ( len( needle ) > variables.maxSearchLen ) {
+            needle = left( needle, variables.maxSearchLen );
+        }
+        var like = "%" & needle & "%";
+
+        var builder = baseQuery( postType = "post" )
+            .where( function( q ) {
+                q.whereRaw( "LOWER( title ) LIKE ?",          [ like ] )
+                 .orWhereRaw( "LOWER( excerpt ) LIKE ?",       [ like ] )
+                 .orWhereRaw( "LOWER( body_markdown ) LIKE ?", [ like ] );
+            } )
+            .orderBy( "published_at", "desc" );
+
+        return runPaginated( builder = builder, page = arguments.page, perPage = arguments.perPage );
+    }
+
+    // --------------------------------------------------------------------
+    // Private helpers
+    // --------------------------------------------------------------------
+
+    /**
+     * Base Quick builder with the public-visibility contract applied.
+     */
+    private any function baseQuery( string postType = "post" ) {
+        var nowStr = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+        return variables.wirebox.getInstance( "Post" )
+            .where( "post_type", arguments.postType )
+            .where( "status", "published" )
+            .where( "visibility", "public" )
+            .where( "published_at", "<=", nowStr )
+            .whereNull( "deleted_at" );
+    }
+
+    /**
+     * Run Quick's `.paginate()` and translate the response into the
+     * standard `{ posts, total, page, perPage, totalPages }` struct.
+     */
+    private struct function runPaginated(
+        required any     builder,
+        required numeric page,
+                 numeric perPage
+    ) {
+        var effectivePerPage = resolvePerPage( arguments.perPage );
+        var currentPage      = max( 1, int( arguments.page ) );
+
+        var p = arguments.builder.paginate( currentPage, effectivePerPage );
+
+        return {
+            "posts"      : p.results,
+            "total"      : p.pagination.totalRecords,
+            "page"       : p.pagination.page,
+            "perPage"    : p.pagination.maxRows,
+            "totalPages" : max( 1, p.pagination.totalPages )
+        };
+    }
+
+    private numeric function resolvePerPage( numeric perPage ) {
+        var n = isNull( arguments.perPage ) || !isNumeric( arguments.perPage ?: "" )
+            ? variables.defaultPerPage
+            : int( arguments.perPage );
+        if ( n <= 0 ) n = variables.defaultPerPage;
+        if ( n > variables.maxPerPage ) n = variables.maxPerPage;
+        return n;
+    }
+
+    private struct function emptyResult( required numeric page, required numeric perPage ) {
+        return {
+            "posts"      : [],
+            "total"      : 0,
+            "page"       : max( 1, int( arguments.page ) ),
+            "perPage"    : arguments.perPage,
+            "totalPages" : 1
+        };
+    }
+
+}

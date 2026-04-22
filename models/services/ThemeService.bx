@@ -38,6 +38,12 @@ class accessors="true" singleton {
 
     variables.FALLBACK_SLUG = "bx-blogger-fallback";
     variables.THEMES_ROOT   = "themes";
+    // Leading slash is intentional — ColdBox's Renderer.locateLayout /
+    // locateView compose the external location with `expandPath()`, which
+    // is CWD-relative unless the path is rooted. Without the slash, the
+    // CWD during rendering is `/app/coldbox/system/web/` and the lookup
+    // misses the app's `themes/` folder.
+    variables.THEMES_ROOT_EXTERNAL = "/themes";
 
     // --------------------------------------------------------------------
     // Renderer wiring
@@ -50,8 +56,8 @@ class accessors="true" singleton {
      * and on `bxBlogger.postThemeSwitch` after an activate).
      */
     void function configureRendererPaths() {
-        variables.controller.setSetting( name = "viewsExternalLocation",   value = variables.THEMES_ROOT );
-        variables.controller.setSetting( name = "layoutsExternalLocation", value = variables.THEMES_ROOT );
+        variables.controller.setSetting( name = "ViewsExternalLocation",   value = variables.THEMES_ROOT_EXTERNAL );
+        variables.controller.setSetting( name = "LayoutsExternalLocation", value = variables.THEMES_ROOT_EXTERNAL );
     }
 
     // --------------------------------------------------------------------

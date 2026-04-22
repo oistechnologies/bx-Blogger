@@ -1,0 +1,311 @@
+/**
+ * bx-Blogger — PublicPostServiceSpec (Chunk 3.B)
+ *
+ * Covers the read-side queries that power the public site. Every list
+ * method must enforce the published + public + not-trashed + not-future
+ * contract; every finder returns null rather than leaking a
+ * non-public post.
+ *
+ * Fixture strategy:
+ *   - Each describe()/it() inserts its own posts with UUID-suffixed
+ *     slugs to keep specs independent.
+ *   - `afterAll()` deletes every post this spec created (plus pivots
+ *     into post_categories / post_tags / post_revisions).
+ *   - We do NOT touch the dev admin seed or prior specs' data.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        try {
+            var qb = getInstance( "QueryBuilder@qb" );
+            if ( arrayLen( variables.createdIds.posts ?: [] ) ) {
+                qb.newQuery().from( "post_revisions"  ).whereIn( "post_id", variables.createdIds.posts ).delete();
+                qb.newQuery().from( "post_categories" ).whereIn( "post_id", variables.createdIds.posts ).delete();
+                qb.newQuery().from( "post_tags"       ).whereIn( "post_id", variables.createdIds.posts ).delete();
+                qb.newQuery().from( "posts"           ).whereIn( "id", variables.createdIds.posts ).delete();
+            }
+            if ( arrayLen( variables.createdIds.categories ?: [] ) ) {
+                qb.newQuery().from( "post_categories" ).whereIn( "category_id", variables.createdIds.categories ).delete();
+                qb.newQuery().from( "categories"      ).whereIn( "id", variables.createdIds.categories ).delete();
+            }
+            if ( arrayLen( variables.createdIds.tags ?: [] ) ) {
+                qb.newQuery().from( "post_tags" ).whereIn( "tag_id", variables.createdIds.tags ).delete();
+                qb.newQuery().from( "tags"      ).whereIn( "id", variables.createdIds.tags ).delete();
+            }
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "PublicPostServiceSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.createdIds = { "posts" : [], "categories" : [], "tags" : [] };
+        variables.svc        = getInstance( "PublicPostService" );
+        variables.postSvc    = getInstance( "PostService" );
+    }
+
+    function run() {
+        describe( "PublicPostService", function() {
+
+            // ----------------------------------------------------------
+            // findPublishedBySlug
+            // ----------------------------------------------------------
+            describe( "findPublishedBySlug()", function() {
+                it( "returns a post that's published + public + not-trashed + not-future", function() {
+                    var author = createTestUser();
+                    var p      = publishNew( author, "Public post", "public-post" );
+
+                    var found = svc.findPublishedBySlug( p.getSlug() );
+                    expect( isNull( found ) ).toBeFalse();
+                    expect( found.getId() ).toBe( p.getId() );
+                } );
+
+                it( "returns null for a draft", function() {
+                    var author = createTestUser();
+                    var p      = trackPost( postSvc.create( {
+                        authorId: author.getId(), title: "Draft", slug: "draft-" & left( createUUID(), 8 ), bodyMarkdown: "body"
+                    } ) );
+                    expect( isNull( svc.findPublishedBySlug( p.getSlug() ) ) ).toBeTrue();
+                } );
+
+                it( "returns null for a trashed post", function() {
+                    var author = createTestUser();
+                    var p      = publishNew( author, "Trashed", "trashed-" & left( createUUID(), 8 ) );
+                    postSvc.trash( p );
+                    expect( isNull( svc.findPublishedBySlug( p.getSlug() ) ) ).toBeTrue();
+                } );
+
+                it( "returns null for a scheduled-future post", function() {
+                    var author = createTestUser();
+                    var future = dateAdd( "d", 7, now() );
+                    var p      = publishNew( author, "Future", "future-" & left( createUUID(), 8 ), future );
+                    expect( isNull( svc.findPublishedBySlug( p.getSlug() ) ) ).toBeTrue();
+                } );
+
+                it( "returns null for an unknown slug", function() {
+                    expect( isNull( svc.findPublishedBySlug( "never-existed-" & createUUID() ) ) ).toBeTrue();
+                } );
+            } );
+
+            // ----------------------------------------------------------
+            // listPublished
+            // ----------------------------------------------------------
+            describe( "listPublished()", function() {
+                it( "returns at least the posts this spec seeded, newest first", function() {
+                    var author = createTestUser();
+                    var old    = publishNew( author, "Old", "old-" & left( createUUID(), 8 ), dateAdd( "d", -2, now() ) );
+                    var fresh  = publishNew( author, "Fresh", "fresh-" & left( createUUID(), 8 ), now() );
+
+                    var result = svc.listPublished( page = 1, perPage = 50 );
+                    expect( result.total ).toBeGTE( 2 );
+
+                    var ids = result.posts.map( function( p ) { return p.getId(); } );
+                    var iOld   = arrayFind( ids, old.getId() );
+                    var iFresh = arrayFind( ids, fresh.getId() );
+                    expect( iFresh ).toBeGT( 0 );
+                    expect( iOld ).toBeGT( 0 );
+                    expect( iFresh ).toBeLT( iOld, "fresh post should appear before old post" );
+                } );
+
+                it( "paginates — total/totalPages/page honor perPage", function() {
+                    var author = createTestUser();
+                    for ( var i = 1; i <= 4; i++ ) {
+                        publishNew( author, "Page post " & i, "pag-" & i & "-" & left( createUUID(), 8 ) );
+                    }
+                    var page1 = svc.listPublished( page = 1, perPage = 2 );
+                    expect( page1.posts.len() ).toBe( 2 );
+                    expect( page1.page ).toBe( 1 );
+                    expect( page1.perPage ).toBe( 2 );
+                    expect( page1.totalPages ).toBeGTE( 2 );
+                } );
+
+                it( "clamps perPage to maxPerPage", function() {
+                    var result = svc.listPublished( page = 1, perPage = 9999 );
+                    expect( result.perPage ).toBeLTE( 50 );
+                } );
+            } );
+
+            // ----------------------------------------------------------
+            // listPublishedByCategory
+            // ----------------------------------------------------------
+            describe( "listPublishedByCategory()", function() {
+                it( "returns only posts in the given category", function() {
+                    var author = createTestUser();
+                    var cat    = createCategory( "spec-cat-" & left( createUUID(), 8 ) );
+                    var inside = publishNew( author, "Inside", "inside-" & left( createUUID(), 8 ) );
+                    var outside = publishNew( author, "Outside", "outside-" & left( createUUID(), 8 ) );
+                    attachCategory( inside, cat );
+
+                    var result = svc.listPublishedByCategory( category = cat, includeDescendants = false );
+                    var ids = result.posts.map( function( p ) { return p.getId(); } );
+                    expect( ids ).toInclude( inside.getId() );
+                    expect( ids ).notToInclude( outside.getId() );
+                } );
+            } );
+
+            // ----------------------------------------------------------
+            // listPublishedByTag
+            // ----------------------------------------------------------
+            describe( "listPublishedByTag()", function() {
+                it( "returns only posts with the given tag", function() {
+                    var author = createTestUser();
+                    var tag    = createTag( "spec-tag-" & left( createUUID(), 8 ) );
+                    var inside = publishNew( author, "Tagged", "tagged-" & left( createUUID(), 8 ) );
+                    var outside = publishNew( author, "Untagged", "untagged-" & left( createUUID(), 8 ) );
+                    attachTag( inside, tag );
+
+                    var result = svc.listPublishedByTag( tag = tag );
+                    var ids = result.posts.map( function( p ) { return p.getId(); } );
+                    expect( ids ).toInclude( inside.getId() );
+                    expect( ids ).notToInclude( outside.getId() );
+                } );
+            } );
+
+            // ----------------------------------------------------------
+            // listPublishedByAuthor
+            // ----------------------------------------------------------
+            describe( "listPublishedByAuthor()", function() {
+                it( "returns only that author's posts", function() {
+                    var mine    = createTestUser();
+                    var theirs  = createTestUser();
+                    var myPost  = publishNew( mine,   "Mine",   "mine-"   & left( createUUID(), 8 ) );
+                    var notMine = publishNew( theirs, "Theirs", "theirs-" & left( createUUID(), 8 ) );
+
+                    var result = svc.listPublishedByAuthor( author = mine );
+                    var ids = result.posts.map( function( p ) { return p.getId(); } );
+                    expect( ids ).toInclude( myPost.getId() );
+                    expect( ids ).notToInclude( notMine.getId() );
+                } );
+            } );
+
+            // ----------------------------------------------------------
+            // listPublishedByDateRange
+            // ----------------------------------------------------------
+            describe( "listPublishedByDateRange()", function() {
+                it( "filters by year", function() {
+                    var author = createTestUser();
+                    var p = publishNew( author, "Date", "date-" & left( createUUID(), 8 ) );
+
+                    var year = dateFormat( now(), "yyyy" );
+                    var result = svc.listPublishedByDateRange( year = year, perPage = 50 );
+                    var ids = result.posts.map( function( r ) { return r.getId(); } );
+                    expect( ids ).toInclude( p.getId() );
+                } );
+
+                it( "filters by year + month", function() {
+                    var author = createTestUser();
+                    var p = publishNew( author, "YM", "ym-" & left( createUUID(), 8 ) );
+
+                    var year  = dateFormat( now(), "yyyy" );
+                    var month = dateFormat( now(), "mm" );
+                    var result = svc.listPublishedByDateRange( year = year, month = month, perPage = 50 );
+                    var ids = result.posts.map( function( r ) { return r.getId(); } );
+                    expect( ids ).toInclude( p.getId() );
+                } );
+            } );
+
+            // ----------------------------------------------------------
+            // listPublishedMatching (search)
+            // ----------------------------------------------------------
+            describe( "listPublishedMatching()", function() {
+                it( "matches a word in the title", function() {
+                    var author = createTestUser();
+                    var token  = "kaleidoscope" & left( createUUID(), 6 );
+                    var p      = publishNew( author, "A story about " & token & " skies", "search-" & left( createUUID(), 8 ) );
+
+                    var result = svc.listPublishedMatching( q = token );
+                    var ids = result.posts.map( function( r ) { return r.getId(); } );
+                    expect( ids ).toInclude( p.getId() );
+                } );
+
+                it( "returns an empty result for a blank query", function() {
+                    var result = svc.listPublishedMatching( q = "   " );
+                    expect( result.total ).toBe( 0 );
+                } );
+            } );
+
+        } );
+    }
+
+    // --------------------------------------------------------------------
+    // Helpers
+    // --------------------------------------------------------------------
+
+    private any function publishNew(
+        required any    author,
+        required string title,
+        required string slug,
+                 any    publishedAt = now()
+    ) {
+        var post = postSvc.create( {
+            "authorId"    : arguments.author.getId(),
+            "title"       : arguments.title,
+            "slug"        : arguments.slug,
+            "bodyMarkdown": "body text for " & arguments.title,
+            "status"      : "draft"
+        } );
+        trackPost( post );
+
+        // Bypass PostService.publish() so we can set an arbitrary publishedAt
+        // for date-range + "future" tests. qb handles the raw UPDATE cleanly.
+        getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "posts" )
+            .where( "id", post.getId() )
+            .update( {
+                "status"       : "published",
+                "published_at" : dateTimeFormat( arguments.publishedAt, "yyyy-mm-dd HH:nn:ss" )
+            } );
+
+        // Return a freshly-loaded Post so getters reflect the DB state.
+        return getInstance( "Post" ).find( post.getId() );
+    }
+
+    private any function trackPost( required any post ) {
+        variables.createdIds.posts.append( arguments.post.getId() );
+        return arguments.post;
+    }
+
+    private any function createCategory( required string slug ) {
+        var now = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+        getInstance( "QueryBuilder@qb" ).newQuery().from( "categories" ).insert( {
+            "slug"       : arguments.slug,
+            "name"       : arguments.slug,
+            "path"       : arguments.slug,
+            "created_at" : now,
+            "updated_at" : now
+        } );
+        var cat = getInstance( "Category" ).where( "slug", arguments.slug ).first();
+        variables.createdIds.categories.append( cat.getId() );
+        return cat;
+    }
+
+    private void function attachCategory( required any post, required any cat ) {
+        getInstance( "QueryBuilder@qb" ).newQuery().from( "post_categories" ).insert( {
+            "post_id"     : arguments.post.getId(),
+            "category_id" : arguments.cat.getId()
+        } );
+    }
+
+    private any function createTag( required string slug ) {
+        var now = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+        getInstance( "QueryBuilder@qb" ).newQuery().from( "tags" ).insert( {
+            "slug"       : arguments.slug,
+            "name"       : arguments.slug,
+            "created_at" : now,
+            "updated_at" : now
+        } );
+        var tag = getInstance( "Tag" ).where( "slug", arguments.slug ).first();
+        variables.createdIds.tags.append( tag.getId() );
+        return tag;
+    }
+
+    private void function attachTag( required any post, required any tag ) {
+        getInstance( "QueryBuilder@qb" ).newQuery().from( "post_tags" ).insert( {
+            "post_id" : arguments.post.getId(),
+            "tag_id"  : arguments.tag.getId()
+        } );
+    }
+
+}

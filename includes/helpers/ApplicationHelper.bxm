@@ -1,8 +1,40 @@
-<!---
-    ApplicationHelper.bxm — global UDFs available in every handler, layout, and view.
+<bx:script>
+    /**
+     * Build a pagination struct for the theme's pagination partial.
+     * Called from public handlers after a PublicPostService.list* call.
+     *
+     * @baseUrl  The route prefix (e.g., "/blog", "/category/news", "/").
+     *           For the home page pass "/".
+     * @list     The struct returned by PublicPostService.list* methods —
+     *           must carry `page` + `totalPages`.
+     * @extraQs  Extra query-string pairs to preserve between pages
+     *           (e.g., `"q=hello"` for search).
+     *
+     * Returns: { currentPage, totalPages, prevUrl, nextUrl }.
+     * prev/next are empty strings when there is no prior/next page so
+     * the theme partial can render them as disabled.
+     */
+    function buildPagination( required string baseUrl, required struct list, string extraQs = "" ) {
+        var cur      = arguments.list.page;
+        var total    = arguments.list.totalPages;
+        var qsPrefix = len( arguments.extraQs ) ? ( arguments.extraQs & "&" ) : "";
+        var joiner   = arguments.baseUrl contains "?" ? "&" : "?";
 
-    Phase 0: empty. Add cross-cutting helpers here in later phases
-    (e.g., themeAsset(), siteUrl(), escapeHtml()).
+        var prevUrl = "";
+        var nextUrl = "";
 
-    Referenced from app/config/Coldbox.bx as `applicationHelper`.
---->
+        if ( cur > 1 ) {
+            prevUrl = arguments.baseUrl & joiner & qsPrefix & "page=" & ( cur - 1 );
+        }
+        if ( cur < total ) {
+            nextUrl = arguments.baseUrl & joiner & qsPrefix & "page=" & ( cur + 1 );
+        }
+
+        return {
+            "currentPage" : cur,
+            "totalPages"  : total,
+            "prevUrl"     : prevUrl,
+            "nextUrl"     : nextUrl
+        };
+    }
+</bx:script>
