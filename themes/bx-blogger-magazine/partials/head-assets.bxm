@@ -17,6 +17,7 @@
     rel="stylesheet"
     href="#prc.theme.asset( "css/theme.css" )#"
     onerror="this.remove()">
+#prc.theme.syntaxHighlightingStyles()#
 
 <!--
     No-flash dark-mode bootstrap; identical shape to bx-blogger-default

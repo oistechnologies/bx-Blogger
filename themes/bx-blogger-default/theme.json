@@ -15,6 +15,7 @@
         "srcset",
         "related-posts"
     ],
+    "syntaxHighlighting": true,
     "menus": {
         "header": "Header Navigation",
         "footer": "Footer Navigation"

@@ -12,10 +12,7 @@
     rel="stylesheet"
     href="#prc.theme.asset( "css/theme.css" )#"
     onerror="this.remove()">
-<link
-    rel="stylesheet"
-    href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css"
-    onerror="this.remove()">
+#prc.theme.syntaxHighlightingStyles()#
 
 <!--
     No-flash dark-mode bootstrap. Runs before the body paints so a

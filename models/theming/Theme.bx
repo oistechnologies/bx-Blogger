@@ -210,6 +210,53 @@ class accessors="true" {
         variables.menuLookup = arguments.lookup;
     }
 
+    /**
+     * Return the <link> tag for app-level Prism.js syntax-highlighting
+     * CSS, or an empty string when the theme has opted out via its
+     * manifest (`"syntaxHighlighting": false` in theme.json).
+     *
+     * Kept at the app layer so every theme inherits syntax highlighting
+     * for fenced code blocks by default; a theme that ships its own
+     * highlighter (Shiki, Highlight.js, self-bundled Prism with custom
+     * grammars) sets `"syntaxHighlighting": false` in its manifest and
+     * gets zero interference from the app-level tags.
+     *
+     * The color theme is hard-coded to `prism-tomorrow` for now — a
+     * full admin settings panel (theme picker, master on/off, line-
+     * numbers plugin) is tracked in PLAN §Phase UX Post-UX Additions #1
+     * and will ship once the settings-store infrastructure lands
+     * (Phase 7 B23 or a dedicated pre-Phase-7 chunk).
+     */
+    string function syntaxHighlightingStyles() {
+        if ( !syntaxHighlightingEnabled() ) return "";
+        return '<link rel="stylesheet" '
+             & 'href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css" '
+             & 'onerror="this.remove()">';
+    }
+
+    /**
+     * Return the <script> tags for app-level Prism.js + autoloader, or
+     * empty string when the theme has opted out. Call from each theme's
+     * layout just before `</body>`. Same opt-out mechanism as
+     * syntaxHighlightingStyles().
+     */
+    string function syntaxHighlightingScripts() {
+        if ( !syntaxHighlightingEnabled() ) return "";
+        return '<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js" defer></script>'
+             & '<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/plugins/autoloader/prism-autoloader.min.js" defer></script>';
+    }
+
+    /**
+     * True unless the theme's manifest explicitly sets the flag to
+     * false. Absent-or-malformed values → true (opt-out is a deliberate
+     * action; a typo shouldn't silently disable highlighting).
+     */
+    private boolean function syntaxHighlightingEnabled() {
+        if ( !structKeyExists( variables.manifest, "syntaxHighlighting" ) ) return true;
+        var flag = variables.manifest.syntaxHighlighting;
+        return isBoolean( flag ) ? flag : true;
+    }
+
     // --------------------------------------------------------------------
 
     /**

@@ -8,6 +8,7 @@
     "minBxblogerVersion": "0.1.0",
     "bootstrap": "5.3",
     "supports": [ "dark-mode" ],
+    "syntaxHighlighting": true,
     "menus": {
         "header": "Header Navigation",
         "footer": "Footer Navigation"

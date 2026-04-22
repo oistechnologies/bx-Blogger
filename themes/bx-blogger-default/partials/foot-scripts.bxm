@@ -5,13 +5,13 @@
     crossorigin="anonymous"></script>
 
 <!--
-    Prism.js — syntax highlighting loaded on demand. The autoloader
-    pulls the per-language grammar from the same CDN the first time
-    a `<code class="language-xxx">` element is seen in the DOM. No
-    build-time config needed; pairs with the Tomorrow CSS theme.
+    Prism.js — app-level syntax highlighting. Themes inherit unless
+    theme.json sets `"syntaxHighlighting": false`. The method emits
+    the autoloader script, which pulls per-language grammars from the
+    same CDN the first time a `<code class="language-xxx">` element
+    is seen in the DOM.
 -->
-<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js" defer></script>
-<script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/plugins/autoloader/prism-autoloader.min.js" defer></script>
+#prc.theme.syntaxHighlightingScripts()#
 
 <!--
     Compiled theme JS (dark-mode toggle hook + future theme widgets).
