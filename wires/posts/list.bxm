@@ -221,7 +221,7 @@ function trashPost( required postId ) {
 	</div>
 
 	<!--- Pagination --->
-	<bx:if pageMax > 1>
+	<bx:if pageMax gt 1>
 		<nav class="mt-3">
 			<ul class="pagination pagination-sm mb-0">
 				<li class="page-item #( args.page <= 1 ? 'disabled' : '' )#">

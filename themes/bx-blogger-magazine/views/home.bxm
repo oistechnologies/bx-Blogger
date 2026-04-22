@@ -28,7 +28,7 @@
                             #dateFormat( hero.getPublishedAt(), "mmm d, yyyy" )#
                         </time>
                     </bx:if>
-                    <bx:if ( hero.getReadingTime() ?: 0 ) > 0>
+                    <bx:if ( hero.getReadingTime() ?: 0 ) gt 0>
                         &middot; #hero.getReadingTime()# min read
                     </bx:if>
                 </p>
@@ -45,7 +45,7 @@
         </article>
     </section>
 
-    <bx:if prc.posts.len() > 1>
+    <bx:if prc.posts.len() gt 1>
         <section class="row g-4 more-posts mb-4">
             <bx:loop from="2" to="#prc.posts.len()#" index="i">
                 <div class="col-md-6 col-lg-4">

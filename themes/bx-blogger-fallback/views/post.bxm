@@ -12,7 +12,7 @@
                     #dateFormat( prc.post.getPublishedAt(), "mmm d, yyyy" )#
                 </time>
             </bx:if>
-            <bx:if ( prc.post.getReadingTime() ?: 0 ) > 0>
+            <bx:if ( prc.post.getReadingTime() ?: 0 ) gt 0>
                 &middot; #prc.post.getReadingTime()# min read
             </bx:if>
         </p>

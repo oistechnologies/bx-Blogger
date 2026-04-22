@@ -28,7 +28,7 @@
                         #dateFormat( args.post.getPublishedAt(), "mmm d, yyyy" )#
                     </time>
                 </bx:if>
-                <bx:if ( args.post.getReadingTime() ?: 0 ) > 0>
+                <bx:if ( args.post.getReadingTime() ?: 0 ) gt 0>
                     &middot; #args.post.getReadingTime()# min read
                 </bx:if>
             </p>

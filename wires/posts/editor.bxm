@@ -713,7 +713,7 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 						really a sentinel for "render post.bxm unchanged".
 					--->
 					<bx:set templateOptions = availableTemplates()>
-					<bx:if templateOptions.len() > 1>
+					<bx:if templateOptions.len() gt 1>
 						<div class="mb-2">
 							<label for="postTemplate" class="form-label small">Template</label>
 							<select id="postTemplate" class="form-select form-select-sm"
@@ -751,7 +751,7 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 						<button class="btn btn-primary" wire:click="publish">
 							<bx:if len( args.scheduledAt )>Schedule<bx:else>Publish</bx:if>
 						</button>
-						<bx:if ( args.postId ?: 0 ) > 0 && args.status != "trashed">
+						<bx:if ( args.postId ?: 0 ) gt 0 && args.status != "trashed">
 							<button class="btn btn-outline-danger btn-sm"
 							        wire:click="trash"
 							        wire:confirm="Move this post to trash?">Move to trash</button>
@@ -759,7 +759,7 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 					</div>
 
 					<!--- B2 — Share Preview --->
-					<bx:if ( args.postId ?: 0 ) > 0>
+					<bx:if ( args.postId ?: 0 ) gt 0>
 						<hr class="my-3">
 						<bx:if len( args.previewShareUrl )>
 							<label class="form-label small">Preview link (expires #encodeForHTML( args.previewExpires )#)</label>
@@ -778,7 +778,7 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 					</bx:if>
 
 					<!--- B5 — Autosave indicator + client timer --->
-					<bx:if ( args.postId ?: 0 ) > 0 && args.status != "trashed">
+					<bx:if ( args.postId ?: 0 ) gt 0 && args.status != "trashed">
 						<hr class="my-3">
 						<div class="small text-muted" data-autosave-indicator>
 							<bx:if len( args.lastAutosaveAt )>
@@ -805,7 +805,7 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 			<div class="card mb-3">
 				<div class="card-body">
 					<h2 class="h6">Featured image</h2>
-					<bx:if val( args.featuredMediaId ?: 0 ) > 0>
+					<bx:if val( args.featuredMediaId ?: 0 ) gt 0>
 						<bx:script>
 							fm = getInstance( "Media" ).find( args.featuredMediaId );
 						</bx:script>
@@ -978,7 +978,7 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 							Generated images are stored in your media library with the original prompt recorded.
 						</small>
 
-						<bx:if args.imagePreviews.len() > 0>
+						<bx:if args.imagePreviews.len() gt 0>
 							<hr>
 							<p class="small text-muted mb-2">Pick one to save + attach:</p>
 							<div class="row row-cols-2 row-cols-md-4 g-2">
@@ -1004,7 +1004,7 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 						        wire:click="generateImagePreviews"
 						        wire:loading.attr="disabled">
 							<span wire:loading.remove wire:target="generateImagePreviews">
-								<bx:if args.imagePreviews.len() > 0>Regenerate<bx:else>Generate previews</bx:if>
+								<bx:if args.imagePreviews.len() gt 0>Regenerate<bx:else>Generate previews</bx:if>
 							</span>
 							<span wire:loading wire:target="generateImagePreviews">Generating…</span>
 						</button>
@@ -1055,7 +1055,7 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 	</bx:if>
 </div>
 
-<bx:if ( args.postId ?: 0 ) > 0 && args.status != "trashed">
+<bx:if ( args.postId ?: 0 ) gt 0 && args.status != "trashed">
 <script>
 // B5 — autosave ticker. Fires every 30s while the editor page is open;
 // Livewire ignores no-ops (wire:click handlers are idempotent, the
