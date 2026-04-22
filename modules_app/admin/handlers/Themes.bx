@@ -1,0 +1,17 @@
+/**
+ * bx-Blogger — admin:Themes (Chunk 4.A)
+ *
+ * Mounts the themes.manager wire. All discover / activate / remove
+ * logic lives inside the wire against ThemeService; the handler just
+ * sets the page title.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    this.layouts = { "Main.bxm" : "*" };
+
+    function index( event, rc, prc ) {
+        prc.pageTitle = "Themes";
+        event.setView( view = "themes/index" );
+    }
+
+}

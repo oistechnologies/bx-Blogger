@@ -140,6 +140,90 @@ class extends="tests.support.BaseIntegrationSpec" {
                 } );
             } );
 
+            describe( "discover()", function() {
+                it( "registers a newly-dropped theme folder", function() {
+                    var slug = "disc-" & lCase( replace( createUUID(), "-", "", "all" ) );
+                    var dir  = expandPath( "/themes/" & slug );
+                    directoryCreate( dir, true );
+                    variables.createdDirs.append( dir );
+                    fileWrite( dir & "/theme.json",
+                        '{"name":"' & slug & '","slug":"' & slug & '","version":"1.0.0","bootstrap":"5.3"}'
+                    );
+
+                    var summary = themeSvc.discover();
+                    expect( summary.added ).toInclude( slug );
+
+                    // A second scan shouldn't re-add — it should report as updated.
+                    var rescan = themeSvc.discover();
+                    expect( rescan.added   ).notToInclude( slug );
+                    expect( rescan.updated ).toInclude( slug );
+
+                    // Row is materialized
+                    var row = getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "themes" ).where( "slug", slug ).first();
+                    expect( row.slug ).toBe( slug );
+                    variables.createdThemeSlugs.append( slug );
+                } );
+
+                it( "flags a theme whose folder has vanished as missing", function() {
+                    var slug = "gone-" & lCase( replace( createUUID(), "-", "", "all" ) );
+                    // Register a row pointing at a directory that doesn't exist.
+                    getInstance( "QueryBuilder@qb" ).newQuery().from( "themes" ).insert( {
+                        "slug"       : slug,
+                        "name"       : "Gone",
+                        "version"    : "1.0.0",
+                        "directory"  : "themes/" & slug,
+                        "is_active"  : 0,
+                        "is_system"  : 0,
+                        "created_at" : dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" ),
+                        "updated_at" : dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" )
+                    } );
+                    variables.createdThemeSlugs.append( slug );
+
+                    var summary = themeSvc.discover();
+                    expect( summary.missing ).toInclude( slug );
+                } );
+            } );
+
+            describe( "remove()", function() {
+                it( "refuses to remove the fallback theme", function() {
+                    var threw = false;
+                    try { themeSvc.remove( "bx-blogger-fallback" ); }
+                    catch ( bxBlogger.ThemeProtected e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+                it( "refuses to remove the currently-active theme", function() {
+                    // beforeEach reset fallback to active — activate the
+                    // default instead so its row is the one protected.
+                    themeSvc.activate( "bx-blogger-default" );
+                    var threw = false;
+                    try { themeSvc.remove( "bx-blogger-default" ); }
+                    catch ( bxBlogger.ThemeActive e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+                it( "deletes an inactive, non-system row", function() {
+                    var slug = "rm-" & lCase( replace( createUUID(), "-", "", "all" ) );
+                    getInstance( "QueryBuilder@qb" ).newQuery().from( "themes" ).insert( {
+                        "slug"       : slug,
+                        "name"       : "Removable",
+                        "version"    : "1.0.0",
+                        "directory"  : "themes/" & slug,
+                        "is_active"  : 0,
+                        "is_system"  : 0,
+                        "created_at" : dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" ),
+                        "updated_at" : dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" )
+                    } );
+                    variables.createdThemeSlugs.append( slug );
+
+                    themeSvc.remove( slug );
+                    var row = getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "themes" ).where( "slug", slug ).first();
+                    expect( isNull( row ) || ( isStruct( row ) && structIsEmpty( row ) ) ).toBeTrue();
+                } );
+            } );
+
             describe( "Theme.view/layout/partial helpers", function() {
                 it( "return fallback-relative paths for files that exist on disk", function() {
                     var theme = themeSvc.resolveActive();

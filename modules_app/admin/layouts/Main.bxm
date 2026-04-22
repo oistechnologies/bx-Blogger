@@ -56,6 +56,10 @@
 					   href="#event.buildLink( 'admin:Tags.index' )#">Tags</a>
 					<a class="nav-link #( currentEvent.startsWith( 'admin:Media.' ) ? 'active' : '' )#"
 					   href="#event.buildLink( 'admin:Media.index' )#">Media</a>
+					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "themes.manage" )>
+						<a class="nav-link #( currentEvent.startsWith( 'admin:Themes.' ) ? 'active' : '' )#"
+						   href="#event.buildLink( 'admin:Themes.index' )#">Themes</a>
+					</bx:if>
 				</nav>
 			</aside>
 			<main class="col-12 col-md-9 col-lg-10">

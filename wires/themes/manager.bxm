@@ -1,0 +1,242 @@
+<bx:script>
+// @startWire
+/**
+ * themes.manager — list / discover / activate / remove installed themes.
+ *
+ * Scope for Chunk 4.A:
+ *   - List every theme in the `themes` table, with an "Active" badge
+ *     on the is_active row.
+ *   - "Scan folder" button calls ThemeService.discover() to pick up
+ *     newly-dropped theme folders + flag vanished ones.
+ *   - "Activate" button flips is_active via ThemeService.activate(),
+ *     which fires bxBlogger.preThemeSwitch / postThemeSwitch (no-ops
+ *     until Phase 5 wires the page-cache invalidator).
+ *   - "Remove" button hard-deletes a non-active, non-system row.
+ *
+ * Phase 4.D wires options-form rendering; Phase 4.E wires menu
+ * assignment. Both keep this wire as the landing page for all theme
+ * admin, so the sidebar only ever needs one Themes entry.
+ */
+
+property name="themeService" inject="ThemeService";
+property name="cbauth"       inject="AuthenticationService@cbauth";
+
+data = {
+    "flashOk"      : "",
+    "flashError"   : "",
+    "missingSlugs" : [],
+    "confirmRemove" : ""
+};
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function scanFolder() {
+    clearFlashes();
+    if ( !requirePerm( "themes.manage" ) ) return;
+    var summary = themeService.discover();
+    data.missingSlugs = summary.missing;
+
+    var parts = [];
+    if ( summary.added.len() )   parts.append( summary.added.len()   & " new" );
+    if ( summary.updated.len() ) parts.append( summary.updated.len() & " refreshed" );
+    if ( summary.missing.len() ) parts.append( summary.missing.len() & " missing" );
+    data.flashOk = "Folder scan complete" & ( parts.len() ? ": " & parts.toList( ", " ) : "" ) & ".";
+}
+
+function activate( required string slug ) {
+    clearFlashes();
+    if ( !requirePerm( "themes.manage" ) ) return;
+    try {
+        themeService.activate( arguments.slug );
+        data.flashOk = "Theme [" & arguments.slug & "] is now active.";
+    }
+    catch ( any e ) {
+        data.flashError = "Could not activate [" & arguments.slug & "]: " & e.message;
+    }
+}
+
+function requestRemove( required string slug ) {
+    clearFlashes();
+    data.confirmRemove = arguments.slug;
+}
+
+function cancelRemove() {
+    data.confirmRemove = "";
+}
+
+function confirmRemoveTheme( required string slug ) {
+    clearFlashes();
+    if ( !requirePerm( "themes.manage" ) ) return;
+    if ( data.confirmRemove != arguments.slug ) {
+        data.flashError = "Remove confirmation mismatch; cancelled.";
+        return;
+    }
+    try {
+        themeService.remove( arguments.slug );
+        data.flashOk = "Theme [" & arguments.slug & "] removed.";
+    }
+    catch ( any e ) {
+        data.flashError = "Could not remove [" & arguments.slug & "]: " & e.message;
+    }
+    data.confirmRemove = "";
+}
+
+// --------------------------------------------------------------------
+// View-side helpers
+// --------------------------------------------------------------------
+
+/**
+ * Collect every theme row + a small metadata envelope per row so the
+ * template can render activate/remove buttons without re-querying.
+ */
+array function installedThemes() {
+    var rows    = themeService.list();
+    var missing = data.missingSlugs;
+    var out     = [];
+    for ( var row in rows ) {
+        out.append( {
+            "id"          : row.id,
+            "slug"        : row.slug,
+            "name"        : row.name,
+            "version"     : row.version,
+            "author"      : row.author ?: "",
+            "description" : row.description ?: "",
+            "isActive"    : row.is_active ? true : false,
+            "isSystem"    : row.is_system ? true : false,
+            "isMissing"   : arrayContains( missing, row.slug ) ? true : false
+        } );
+    }
+    return out;
+}
+
+// --------------------------------------------------------------------
+// Private
+// --------------------------------------------------------------------
+
+private void function clearFlashes() {
+    data.flashOk    = "";
+    data.flashError = "";
+}
+
+private boolean function requirePerm( required string perm ) {
+    var user = cbauth.getUser();
+    if ( user.hasPermission( arguments.perm ) ) return true;
+    data.flashError = "You don't have permission to manage themes.";
+    return false;
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:script>
+    themes = installedThemes();
+</bx:script>
+
+<div>
+    <bx:if len( args.flashOk )>
+        <div class="alert alert-success alert-dismissible">
+            #encodeForHTML( args.flashOk )#
+            <button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+        </div>
+    </bx:if>
+    <bx:if len( args.flashError )>
+        <div class="alert alert-danger alert-dismissible">
+            #encodeForHTML( args.flashError )#
+            <button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+        </div>
+    </bx:if>
+
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <p class="text-muted mb-0">
+            Installed themes. Drop a theme folder under <code>themes/</code>
+            then click <strong>Scan folder</strong> to register it.
+        </p>
+        <button class="btn btn-outline-secondary" wire:click="scanFolder" wire:loading.attr="disabled">
+            <span wire:loading.remove wire:target="scanFolder">Scan folder</span>
+            <span wire:loading wire:target="scanFolder">Scanning&hellip;</span>
+        </button>
+    </div>
+
+    <bx:if !themes.len()>
+        <div class="alert alert-light border">
+            No themes registered yet. Click <strong>Scan folder</strong> to
+            import anything under <code>themes/</code>.
+        </div>
+    <bx:else>
+        <div class="table-responsive">
+            <table class="table table-hover align-middle">
+                <thead>
+                    <tr>
+                        <th>Theme</th>
+                        <th class="d-none d-md-table-cell">Version</th>
+                        <th class="text-end">Status</th>
+                        <th class="text-end" style="width: 12rem;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <bx:loop array="#themes#" item="t">
+                        <tr class="#( t.isMissing ? 'table-warning' : '' )#">
+                            <td>
+                                <div class="fw-semibold">
+                                    #encodeForHTML( t.name )#
+                                    <bx:if t.isSystem>
+                                        <span class="badge text-bg-light border ms-1" title="Ships in the repo; cannot be removed.">system</span>
+                                    </bx:if>
+                                </div>
+                                <div class="text-muted small">
+                                    <code>#encodeForHTML( t.slug )#</code>
+                                    <bx:if len( t.author )>
+                                        &middot; #encodeForHTML( t.author )#
+                                    </bx:if>
+                                </div>
+                                <bx:if len( t.description )>
+                                    <div class="text-muted small mt-1" style="max-width: 40rem;">
+                                        #encodeForHTML( t.description )#
+                                    </div>
+                                </bx:if>
+                            </td>
+                            <td class="d-none d-md-table-cell">#encodeForHTML( t.version )#</td>
+                            <td class="text-end">
+                                <bx:if t.isActive>
+                                    <span class="badge text-bg-success">Active</span>
+                                <bx:elseif t.isMissing>
+                                    <span class="badge text-bg-warning">Missing on disk</span>
+                                <bx:else>
+                                    <span class="badge text-bg-secondary">Installed</span>
+                                </bx:if>
+                            </td>
+                            <td class="text-end">
+                                <bx:if !t.isActive && !t.isMissing>
+                                    <button class="btn btn-sm btn-primary"
+                                            wire:click="activate('#encodeForHTMLAttribute( t.slug )#')">
+                                        Activate
+                                    </button>
+                                </bx:if>
+                                <bx:if !t.isActive && !t.isSystem>
+                                    <bx:if args.confirmRemove == t.slug>
+                                        <button class="btn btn-sm btn-danger"
+                                                wire:click="confirmRemoveTheme('#encodeForHTMLAttribute( t.slug )#')">
+                                            Confirm
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-secondary"
+                                                wire:click="cancelRemove">
+                                            Cancel
+                                        </button>
+                                    <bx:else>
+                                        <button class="btn btn-sm btn-outline-danger"
+                                                wire:click="requestRemove('#encodeForHTMLAttribute( t.slug )#')">
+                                            Remove
+                                        </button>
+                                    </bx:if>
+                                </bx:if>
+                            </td>
+                        </tr>
+                    </bx:loop>
+                </tbody>
+            </table>
+        </div>
+    </bx:if>
+</div>
+</bx:output>

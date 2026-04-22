@@ -108,6 +108,117 @@ class accessors="true" singleton {
     }
 
     /**
+     * Walk the `themes/` folder, register a row for every valid
+     * `theme.json` we don't already know about, and flag the row for
+     * any theme whose folder has disappeared (kept visible in the
+     * admin UI with a `missing` badge so the admin can choose to
+     * delete it or restore the folder).
+     *
+     * Returns `{ added: [slugs], updated: [slugs], missing: [slugs] }`
+     * so callers (themes.manager wire, the admin "refresh" button) can
+     * surface a summary flash.
+     *
+     * Fallback theme is always preserved.
+     */
+    struct function discover() {
+        var summary = { "added" : [], "updated" : [], "missing" : [] };
+        var now     = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+        var root    = expandPath( "/" & variables.THEMES_ROOT );
+        if ( !directoryExists( root ) ) return summary;
+
+        var diskSlugs   = {};
+        var subfolders  = directoryList( root, false, "name" );
+        for ( var folder in subfolders ) {
+            if ( left( folder, 1 ) == "." ) continue;
+            var dir          = root & "/" & folder;
+            if ( !directoryExists( dir ) ) continue;
+            var manifestPath = dir & "/theme.json";
+            var manifest     = {};
+            var hasManifest  = fileExists( manifestPath );
+
+            // Non-fallback themes must ship a parseable theme.json —
+            // missing or malformed and we skip them silently. The
+            // fallback theme is exempt; its seed migration fills the
+            // row fields so a missing theme.json doesn't erase them.
+            if ( hasManifest ) {
+                try { manifest = jsonDeserialize( fileRead( manifestPath ) ); }
+                catch ( any e ) {
+                    variables.log.warn( "ThemeService.discover: " & folder & "/theme.json failed to parse: " & e.message );
+                    if ( folder != variables.FALLBACK_SLUG ) continue;
+                }
+            }
+            else if ( folder != variables.FALLBACK_SLUG ) {
+                continue;
+            }
+
+            diskSlugs[ folder ] = true;
+
+            var existing = freshQb().from( "themes" ).where( "slug", folder ).first();
+            // Prefer manifest values; fall back to the existing row's
+            // metadata if the manifest doesn't cover a field (so the
+            // fallback-theme seed isn't clobbered on rediscover).
+            var currentName    = hasRow( existing ) ? existing.name                : folder;
+            var currentVersion = hasRow( existing ) ? existing.version             : "1.0.0";
+            var currentAuthor  = hasRow( existing ) ? ( existing.author ?: "" )    : "";
+            var currentDesc    = hasRow( existing ) ? ( existing.description ?: "" ) : "";
+
+            var row = {
+                "slug"          : folder,
+                "name"          : manifest.name        ?: currentName,
+                "version"       : manifest.version     ?: currentVersion,
+                "author"        : manifest.author      ?: currentAuthor,
+                "description"   : manifest.description ?: currentDesc,
+                "manifest_json" : hasManifest ? fileRead( manifestPath ) : "",
+                "is_system"     : folder == variables.FALLBACK_SLUG ? 1 : ( hasRow( existing ) && existing.is_system ? 1 : 0 ),
+                "directory"     : variables.THEMES_ROOT & "/" & folder,
+                "updated_at"    : now
+            };
+            if ( !hasRow( existing ) ) {
+                row[ "is_active" ]  = 0;
+                row[ "created_at" ] = now;
+                freshQb().from( "themes" ).insert( row );
+                summary.added.append( folder );
+            }
+            else {
+                freshQb().from( "themes" ).where( "slug", folder ).update( row );
+                summary.updated.append( folder );
+            }
+        }
+
+        // Mark rows whose disk folder has vanished. We don't auto-delete
+        // — an admin may want to restore the folder instead of losing
+        // per-theme settings (Phase 4.D). Fallback can't go missing; it
+        // ships in the repo.
+        for ( var dbRow in freshQb().from( "themes" ).get() ) {
+            if ( dbRow.slug == variables.FALLBACK_SLUG ) continue;
+            if ( !structKeyExists( diskSlugs, dbRow.slug ) ) {
+                summary.missing.append( dbRow.slug );
+            }
+        }
+
+        return summary;
+    }
+
+    /**
+     * Hard-delete a theme row (and its manifest cache). Refuses the
+     * currently-active theme and the system fallback.
+     *
+     * Phase 4.D will also sweep any `theme_options` rows belonging to
+     * the slug.
+     */
+    function remove( required string slug ) {
+        if ( arguments.slug == variables.FALLBACK_SLUG ) {
+            throw( type = "bxBlogger.ThemeProtected", message = "The fallback theme cannot be removed." );
+        }
+        var row = freshQb().from( "themes" ).where( "slug", arguments.slug ).first();
+        if ( !hasRow( row ) ) return;
+        if ( row.is_active ) {
+            throw( type = "bxBlogger.ThemeActive", message = "Deactivate [" & arguments.slug & "] before removing it." );
+        }
+        freshQb().from( "themes" ).where( "slug", arguments.slug ).delete();
+    }
+
+    /**
      * Look up a single theme by slug. Returns a Theme value object.
      */
     any function get( required string slug ) {
