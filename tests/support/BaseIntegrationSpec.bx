@@ -1,56 +1,248 @@
 /**
  * bx-Blogger — BaseIntegrationSpec
  *
- * Shared scaffolding for Phase 1 integration specs. Every concrete spec
+ * Shared scaffolding for every integration spec. Every concrete spec
  * extends this and inherits:
- *   - `setup()` hook that boots the ColdBox test virtual app
- *   - `createTestUser( overrides )` — inserts a fully verified user (with
- *     optional role attachment) and tracks the id for teardown
- *   - `afterAll()` hook that deletes every test user created in this spec
  *
- * Why a base class rather than a shared fixture loaded per-test: Quick's
- * relation mutations (roles().attach / detach) need an initialized WireBox
- * context, which only exists after setup() has run. The base hides that
- * detail and lets concrete specs stay focused on behavior.
+ *   - `beforeAll()` that boots the ColdBox test virtual app and
+ *     snapshots the max `id` of every table a spec might mutate.
+ *   - `createTestUser( overrides )` — inserts a fully verified user
+ *     (with optional role attachment).
+ *   - `afterAll()` that wipes every row inserted above the pre-spec
+ *     boundary, in FK-safe order. No need for individual specs to
+ *     track ids — if the row landed after beforeAll ran, the base
+ *     cleans it up.
  *
- * Teardown strategy: we track only ids we *created* in this spec run,
- * and DELETE them in afterAll(). This avoids stomping on the dev admin
- * seed (id=1) and keeps parallel spec runs non-interacting. Inserted rows
- * in satellite tables (password_resets, email_verifications, login_audit)
- * cascade via FK or are harmless stragglers; the main spec cleanup only
- * needs the user row for test isolation.
+ * Why boundary-snapshot over per-spec tracking: the original pattern
+ * asked each spec to append ids to a `variables.createdIds` struct
+ * and a per-spec `afterAll()` deleted them. In practice rows leaked
+ * from two places — (a) specs creating rows through paths that
+ * bypassed the tracking helpers, and (b) FK order bugs causing the
+ * per-spec cleanup to silently fail mid-chain. The boundary approach
+ * side-steps both: it doesn't care *how* a row got into the table,
+ * only that its id exceeds the beforeAll watermark, and FK ordering
+ * is handled once, in one place, with `FOREIGN_KEY_CHECKS=0` for the
+ * cleanup block so no spec has to think about it.
+ *
+ * Specs may still maintain their own `variables.createdIds` + local
+ * `afterAll()` for belt-and-suspenders — both are harmless — but
+ * nothing in new code needs them.
  */
 class extends="coldbox.system.testing.BaseTestCase" {
 
     this.appMapping = "/root";
 
+    /**
+     * Tables with an auto-increment `id` column. Cleanup uses
+     * `WHERE id > {boundary}`.
+     */
+    variables.idTables = [
+        "post_revisions",
+        "post_meta",
+        "draft_preview_tokens",
+        "menu_items",
+        "ai_usage",
+        "login_audit",
+        "password_resets",
+        "email_verifications",
+        "posts",
+        "media",
+        "categories",
+        "tags",
+        "menus",
+        "themes",
+        "users"
+    ];
+
+    /**
+     * Composite-key pivot tables — no `id` column. Cleanup uses the
+     * referenced table's boundary to scope the delete.
+     */
+    variables.pivotTables = [
+        { table : "post_tags",       fk : "post_id", ref : "posts" },
+        { table : "post_categories", fk : "post_id", ref : "posts" },
+        { table : "user_roles",      fk : "user_id", ref : "users" }
+    ];
+
     function beforeAll() {
         super.beforeAll();
         setup();
         variables.createdUserIds = [];
+        variables.specBoundary   = snapshotBoundaries();
+        variables.diskBoundary   = snapshotMediaFiles();
     }
 
     function afterAll() {
-        // Delete test users (and cascade their role pivots + satellite rows
-        // via ON DELETE CASCADE / individual cleanup). We wrap in try so a
-        // failed spec's dangling references don't mask the real failure.
-        try {
-            if ( arrayLen( variables.createdUserIds ?: [] ) ) {
-                var qb = getInstance( "QueryBuilder@qb" );
-                // Wipe satellite rows first to avoid FK issues in case a
-                // table isn't declared with ON DELETE CASCADE.
-                qb.newQuery().from( "login_audit"        ).whereIn( "user_id", variables.createdUserIds ).delete();
-                qb.newQuery().from( "password_resets"    ).whereIn( "user_id", variables.createdUserIds ).delete();
-                qb.newQuery().from( "email_verifications" ).whereIn( "user_id", variables.createdUserIds ).delete();
-                qb.newQuery().from( "user_roles"         ).whereIn( "user_id", variables.createdUserIds ).delete();
-                qb.newQuery().from( "users"              ).whereIn( "id", variables.createdUserIds ).delete();
-            }
-        } catch ( any e ) {
-            // Log but don't fail the suite — cleanup is best-effort.
-            writeLog( file = "testbox", text = "BaseIntegrationSpec cleanup failed: " & e.message );
-        }
+        cleanupSpecBoundary();
         super.afterAll();
     }
+
+    /**
+     * Capture the current max `id` per table. In cleanup we delete
+     * anything above these watermarks.
+     */
+    private struct function snapshotBoundaries() {
+        var out = {};
+        for ( var t in variables.idTables ) {
+            out[ t ] = maxId( t );
+        }
+        return out;
+    }
+
+    private numeric function maxId( required string table ) {
+        try {
+            var row = getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( arguments.table )
+                .selectRaw( "COALESCE(MAX(id), 0) AS max_id" )
+                .first();
+            return val( row.max_id ?: 0 );
+        }
+        catch ( any e ) {
+            return 0;
+        }
+    }
+
+    /**
+     * Wipe every row inserted above the beforeAll boundary, in two
+     * passes: pivots first, then primary + dependent id-keyed tables.
+     * `FOREIGN_KEY_CHECKS=0` sidesteps the need to order the twenty-
+     * something tables correctly; it stays off only for the duration
+     * of this block.
+     */
+    private void function cleanupSpecBoundary() {
+        if ( !structKeyExists( variables, "specBoundary" ) ) return;
+        var qb = getInstance( "QueryBuilder@qb" );
+        var b  = variables.specBoundary;
+
+        try {
+            queryExecute( "SET FOREIGN_KEY_CHECKS = 0" );
+
+            // Media files on disk — read paths for test-created rows,
+            // then delete them through the cbfs disk so both the local
+            // file and any S3 blob (once that backend lands) get
+            // cleaned. Has to happen BEFORE we delete the media rows
+            // above the boundary, otherwise we've lost the paths.
+            cleanupMediaFilesAboveBoundary();
+
+            // Pivot / junction tables — scoped by referenced table's
+            // boundary since they lack their own auto-increment id.
+            for ( var p in variables.pivotTables ) {
+                try {
+                    var refBoundary = b[ p.ref ] ?: 0;
+                    qb.newQuery().from( p.table ).where( p.fk, ">", refBoundary ).delete();
+                }
+                catch ( any e ) {
+                    writeLog( file = "testbox", text = "Pivot cleanup " & p.table & " failed: " & e.message );
+                }
+            }
+
+            // theme_options is keyed by (theme_slug, option_key). Any
+            // theme deleted above the themes boundary in this run
+            // leaves orphan option rows; drop those by matching slugs
+            // that no longer exist in `themes`.
+            try {
+                qb.newQuery().from( "theme_options" )
+                    .whereNotIn( "theme_slug", qb.newQuery().from( "themes" ).select( "slug" ) )
+                    .delete();
+            }
+            catch ( any e ) {
+                writeLog( file = "testbox", text = "theme_options cleanup failed: " & e.message );
+            }
+
+            // Id-keyed tables — delete in dependency order so a
+            // lingering reference doesn't trip a constraint even
+            // with checks disabled (safer to be explicit for the
+            // handful of cross-table dependencies we have).
+            var deleteOrder = [
+                "post_revisions",
+                "post_meta",
+                "draft_preview_tokens",
+                "menu_items",
+                "ai_usage",
+                "login_audit",
+                "password_resets",
+                "email_verifications",
+                "posts",
+                "categories",
+                "media",
+                "tags",
+                "menus",
+                "themes",
+                "users"
+            ];
+            for ( var t in deleteOrder ) {
+                deleteAboveBoundary( qb, t, b[ t ] ?: 0 );
+            }
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "BaseIntegrationSpec boundary cleanup failed: " & e.message );
+        }
+        finally {
+            try { queryExecute( "SET FOREIGN_KEY_CHECKS = 1" ); } catch ( any e ) {}
+        }
+    }
+
+    /**
+     * Snapshot the set of file paths under the local media disk. Used
+     * to detect files a spec left behind on disk even when its DB
+     * rows were already cleaned up by a per-spec afterAll().
+     */
+    private array function snapshotMediaFiles() {
+        try {
+            var root = expandPath( "/includes/public/media/" );
+            if ( !directoryExists( root ) ) return [];
+            return directoryList( root, true, "path", "*" );
+        }
+        catch ( any e ) {
+            return [];
+        }
+    }
+
+    /**
+     * Delete any file under the media disk that appeared after the
+     * spec started. Matches purely by path presence — a file that
+     * existed before beforeAll ran is left alone even if a spec
+     * happened to modify it (unlikely for test runs, but safe).
+     */
+    private void function cleanupMediaFilesAboveBoundary() {
+        try {
+            var beforeSet = {};
+            for ( var p in variables.diskBoundary ?: [] ) beforeSet[ p ] = true;
+
+            var currentFiles = snapshotMediaFiles();
+            var removed      = 0;
+            for ( var f in currentFiles ) {
+                if ( structKeyExists( beforeSet, f ) ) continue;
+                try {
+                    fileDelete( f );
+                    removed++;
+                }
+                catch ( any e ) {
+                    writeLog( file = "testbox", text = "fileDelete('" & f & "') failed: " & e.message );
+                }
+            }
+            if ( removed > 0 ) {
+                writeLog( file = "testbox", text = "Spec cleanup removed " & removed & " orphan media file(s) from disk" );
+            }
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "Media file cleanup failed: " & e.message );
+        }
+    }
+
+    private void function deleteAboveBoundary( required any qb, required string table, required numeric boundary ) {
+        try {
+            arguments.qb.newQuery().from( arguments.table ).where( "id", ">", arguments.boundary ).delete();
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "deleteAboveBoundary " & arguments.table & " failed: " & e.message );
+        }
+    }
+
+    // --------------------------------------------------------------------
+    // Fixture helpers (test-user factory; rows land above the boundary
+    // and so get cleaned automatically).
+    // --------------------------------------------------------------------
 
     /**
      * Create a Quick User row backed by a real bcrypt hash. Returns the
