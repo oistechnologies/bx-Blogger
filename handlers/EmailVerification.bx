@@ -1,0 +1,30 @@
+/**
+ * bx-Blogger — EmailVerification handler (Chunk 1.G — A2)
+ *
+ * Single action for Phase 1:
+ *   GET /verify-email/:token → verify() — consume + redirect to login
+ *
+ * No form — the user clicks a link in their email. Success flashes a
+ * message on the login page; failure does the same with the error text.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    property name="emailVerificationService" inject="EmailVerificationService";
+
+    this.layouts = {
+        "Admin.bxm" : "*"
+    };
+
+    function verify( event, rc, prc ) {
+        param name="rc.token" default="";
+
+        var result = emailVerificationService.consume( rc.token );
+        if ( result.ok ) {
+            flash.put( "message", "Email confirmed. You can now sign in." );
+        } else {
+            flash.put( "loginError", result.errors.toList( " " ) );
+        }
+        relocate( "login" );
+    }
+
+}

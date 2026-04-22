@@ -1,0 +1,47 @@
+<bx:output>
+<div class="row justify-content-center mt-5">
+	<div class="col-md-6 col-lg-5">
+		<bx:if flash.exists( "resetError" )>
+			<div class="alert alert-danger">#encodeForHTML( flash.get( "resetError" ) )#</div>
+		</bx:if>
+
+		<div class="card">
+			<div class="card-body p-4">
+				<h1 class="h4 mb-3 text-center">Choose a new password</h1>
+				<p class="text-muted small mb-4">
+					Pick something strong and unique — at least 12 characters, with a letter and a digit.
+				</p>
+
+				<form method="POST" action="#event.buildLink( 'passwordReset.doReset' )#" autocomplete="on">
+					<input type="hidden" name="token" value="#encodeForHTMLAttribute( prc.token )#">
+
+					<div class="mb-3">
+						<label for="password" class="form-label">New password</label>
+						<input type="password"
+						       class="form-control"
+						       id="password"
+						       name="password"
+						       autocomplete="new-password"
+						       required
+						       autofocus
+						       minlength="12">
+					</div>
+
+					<div class="mb-3">
+						<label for="passwordConfirm" class="form-label">Confirm new password</label>
+						<input type="password"
+						       class="form-control"
+						       id="passwordConfirm"
+						       name="passwordConfirm"
+						       autocomplete="new-password"
+						       required
+						       minlength="12">
+					</div>
+
+					<button type="submit" class="btn btn-primary w-100">Set new password</button>
+				</form>
+			</div>
+		</div>
+	</div>
+</div>
+</bx:output>

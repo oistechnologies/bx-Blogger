@@ -222,6 +222,22 @@ class {
 				// Short alias works because autoMapModels=true + unique class names.
 				"userServiceClass" : "UserService"
 			},
+			"cbmailservices" : {
+				// Applied to every outbound mail. SMTP settings flow through
+				// to cfmail's `server/port/username/password` attributes.
+				"defaults" : {
+					"from"     : getSystemSetting( "MAIL_FROM_ADDRESS", "no-reply@bx-blogger.local" ),
+					"server"   : getSystemSetting( "SMTP_HOST", "mailhog" ),
+					"port"     : getSystemSetting( "SMTP_PORT", "1025" ),
+					"username" : getSystemSetting( "SMTP_USERNAME", "" ),
+					"password" : getSystemSetting( "SMTP_PASSWORD", "" ),
+					"useTLS"   : getSystemSetting( "SMTP_ENCRYPTION", "none" ) == "tls",
+					"useSSL"   : getSystemSetting( "SMTP_ENCRYPTION", "none" ) == "ssl"
+				},
+				"mailers" : {
+					"default" : { "class" : "CFMail" }
+				}
+			},
 			"cbsecurity" : {
 				// Delegate authentication state to cbauth
 				"authentication" : {

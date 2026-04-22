@@ -21,6 +21,7 @@
         "coldbox":"^8.0.0",
         "cbauth":"^7.0.0",
         "cbsecurity":"^3.7.0",
+        "cbmailservices":"^2.9.0+3",
         "cbvalidation":"^4.8.0+30",
         "qb":"^13.1.0",
         "quick":"^12.0.12",

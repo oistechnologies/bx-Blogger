@@ -41,9 +41,7 @@
 			</div>
 		</div>
 		<p class="text-center text-muted small mt-3 mb-0">
-			<!--- Phase 1 Chunk 1.G adds Forgot Password — stub for now.
-			      <a href="#event.buildLink( 'security.forgotPassword' )#">Forgot your password?</a>
-			--->
+			<a href="#event.buildLink( 'passwordReset.forgot' )#">Forgot your password?</a>
 		</p>
 	</div>
 </div>

@@ -1,0 +1,139 @@
+/**
+ * bx-Blogger — EmailVerificationService (A2)
+ *
+ * Same token-hash pattern as PasswordResetService, different expiry
+ * (7 days) and different target column (users.email_verified_at).
+ *
+ * The `email` field on the verification row records which email we're
+ * verifying — so when a user changes their email (pending_email flow),
+ * the token is bound to the NEW email, not whatever users.email is at
+ * consumption time. Prevents a race where a user requests verification
+ * of email B while email A is still the row's email value.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox"      inject="wirebox";
+    property name="emailService" inject="EmailService";
+    property name="log"          inject="logbox:logger:{this}";
+
+    variables.tokenLengthBytes = 32;    // → 64-char hex string
+    variables.expiryDays       = 7;
+
+    /**
+     * Issue a verification token for a user's email.
+     *
+     * @user    The User entity
+     * @email   The email to verify (defaults to user.getEmail() — pass the
+     *          pending_email instead when handling an email-change flow)
+     * @ip      Requester's IP (optional)
+     */
+    function request( required any user, string email = "", string ip = "" ) {
+        var targetEmail = len( arguments.email ) ? arguments.email : arguments.user.getEmail();
+        var plainToken  = generateToken();
+        var expiresAt   = dateAdd( "d", variables.expiryDays, now() );
+
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        // Invalidate prior unconsumed tokens for the same user+email
+        qb.from( "email_verifications" )
+          .where( "user_id", arguments.user.getId() )
+          .where( "email", targetEmail )
+          .whereNull( "consumed_at" )
+          .update( { "consumed_at" : now() } );
+
+        qb.newQuery().from( "email_verifications" ).insert( {
+            "user_id"    : arguments.user.getId(),
+            "token_hash" : hashToken( plainToken ),
+            "email"      : targetEmail,
+            "expires_at" : expiresAt,
+            "request_ip" : arguments.ip
+        } );
+
+        variables.emailService.send(
+            to       = targetEmail,
+            subject  = "Confirm your bx-Blogger email address",
+            template = "email-verification",
+            data = {
+                "displayName" : arguments.user.getDisplayName(),
+                "siteName"    : getSystemSetting( "APPNAME", "bx-Blogger" ),
+                "verifyUrl"   : buildVerifyUrl( plainToken ),
+                "expiresIn"   : variables.expiryDays & " days"
+            }
+        );
+
+        log.info( "EmailVerification: issued token user=#arguments.user.getId()# email=#targetEmail#" );
+    }
+
+    /**
+     * Consume a verification token. On success:
+     *   - marks users.email_verified_at = now()
+     *   - if this was verifying a `pending_email`, flips users.email and
+     *     clears pending_email atomically
+     *   - marks the verification row consumed
+     *
+     * Returns { ok: bool, errors: [] }
+     */
+    function consume( required string token ) {
+        var row = findRowByToken( arguments.token );
+        if ( isNull( row ) ) {
+            return { "ok" : false, "errors" : [ "This verification link is invalid or has expired." ] };
+        }
+
+        var User = variables.wirebox.getInstance( "User" );
+        var user = User.find( row.user_id );
+        if ( isNull( user ) ) {
+            return { "ok" : false, "errors" : [ "The account for this verification link no longer exists." ] };
+        }
+
+        // Pending-email flow: if row.email matches user.pending_email, promote it
+        if ( len( user.getPendingEmail() ?: "" ) && user.getPendingEmail() == row.email ) {
+            user.setEmail( row.email );
+            user.setPendingEmail( javaCast( "null", "" ) );
+        }
+
+        user.setEmailVerifiedAt( now() );
+        user.save();
+
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        qb.from( "email_verifications" )
+          .where( "id", row.id )
+          .update( { "consumed_at" : now() } );
+
+        log.info( "EmailVerification: consumed user=#user.getId()# email=#row.email#" );
+        return { "ok" : true, "errors" : [] };
+    }
+
+    // --------------------------------------------------------------------
+    // Helpers — identical to PasswordResetService; extract to a shared
+    // TokenService in Phase 11 if we add a third token type (magic-link
+    // login, invite, etc.)
+    // --------------------------------------------------------------------
+
+    private string function generateToken() {
+        // 64-char lowercase hex (256 bits of entropy). See
+        // PasswordResetService.generateToken() for why we decode + re-encode.
+        var bytes = binaryDecode( generateSecretKey( "AES", variables.tokenLengthBytes * 8 ), "base64" );
+        return lCase( binaryEncode( bytes, "hex" ) );
+    }
+
+    private string function hashToken( required string plainToken ) {
+        return hash( arguments.plainToken, "SHA-256" );
+    }
+
+    private string function buildVerifyUrl( required string plainToken ) {
+        var base = getSystemSetting( "APP_URL", "http://localhost:8080" );
+        return base & "/verify-email/" & arguments.plainToken;
+    }
+
+    private any function findRowByToken( required string plainToken ) {
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        var rows = qb.from( "email_verifications" )
+                     .where( "token_hash", hashToken( arguments.plainToken ) )
+                     .whereNull( "consumed_at" )
+                     .where( "expires_at", ">", now() )
+                     .orderBy( "id", "desc" )
+                     .limit( 1 )
+                     .get();
+        return rows.len() ? rows[ 1 ] : javaCast( "null", "" );
+    }
+
+}

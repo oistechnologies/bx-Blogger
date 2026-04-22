@@ -1,0 +1,12 @@
+<bx:output>Verify your email address
+
+Hi #data.displayName#,
+
+Thanks for signing up for #data.siteName#. Confirm this email address
+belongs to you by opening the link below:
+
+#data.verifyUrl#
+
+This link expires in #data.expiresIn#. If you didn't sign up, you can
+ignore this email safely.
+</bx:output>

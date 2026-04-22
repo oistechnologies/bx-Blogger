@@ -1,0 +1,90 @@
+/**
+ * bx-Blogger — EmailService
+ *
+ * Thin wrapper over cbmailservices' MailService. Loads HTML + optional
+ * plaintext templates from resources/emails/, renders with the passed
+ * data struct, and dispatches through the configured mailer (MailHog in
+ * dev, real SMTP in prod — configured in config/Coldbox.bx
+ * moduleSettings.cbmailservices).
+ *
+ * Centralizing email-sending here lets feature services stay focused on
+ * their domain (PasswordResetService hashes tokens; it doesn't need to
+ * know how cbmailservices' payload struct is shaped). It also gives us
+ * one spot to log every send, plug in test-mode short-circuits, and
+ * later add DKIM / MIME / multipart handling when we ship newsletters.
+ */
+class accessors="true" singleton {
+
+    property name="mailService" inject="MailService@cbmailservices";
+    property name="log"         inject="logbox:logger:{this}";
+
+    /**
+     * Send an email using a template pair from resources/emails/.
+     *
+     * @to        Recipient email (or array of strings for cc/bcc-free bulk)
+     * @subject   Subject line
+     * @template  Template slug — loads resources/emails/{slug}.bxm (HTML)
+     *            and, if present, resources/emails/{slug}.text.bxm (plain).
+     * @data      Struct of variables passed to the template for interpolation
+     * @return    struct { error: boolean, messages: string[] }
+     */
+    function send(
+        required any    to,
+        required string subject,
+        required string template,
+                 struct data = {}
+    ) {
+        var htmlBody = renderTemplate( arguments.template & ".bxm", arguments.data );
+        var textBody = tryRenderTemplate( arguments.template & ".text.bxm", arguments.data );
+
+        var mail = variables.mailService.newMail(
+            to      = isArray( arguments.to ) ? arguments.to.toList() : arguments.to,
+            subject = arguments.subject,
+            type    = "html",
+            body    = htmlBody
+        );
+
+        // Add plain-text alternative if the .text.bxm template existed.
+        if ( len( textBody ) ) {
+            mail.addMailPart( type = "text/plain", body = textBody );
+            mail.addMailPart( type = "text/html",  body = htmlBody );
+        }
+
+        mail.send();
+
+        if ( mail.hasErrors() ) {
+            log.error(
+                "EmailService: send failed to=#arguments.to# subject=[#arguments.subject#] — #mail.getResultMessages().toList( '; ' )#"
+            );
+            return { "error" : true,  "messages" : mail.getResultMessages() };
+        }
+        log.info( "EmailService: sent to=#arguments.to# subject=[#arguments.subject#]" );
+        return { "error" : false, "messages" : [] };
+    }
+
+    /**
+     * Render a template file from resources/emails/ with the provided data.
+     * Throws if the template is missing — use tryRenderTemplate() for
+     * optional template parts.
+     */
+    private string function renderTemplate( required string filename, required struct data ) {
+        var path = "/resources/emails/" & arguments.filename;
+        var fullPath = expandPath( path );
+        if ( !fileExists( fullPath ) ) {
+            throw( type = "bxBlogger.EmailTemplateNotFound", message = "Email template not found: " & fullPath );
+        }
+        // Capture the output of including the template. Template sees
+        // `data` (passed-in struct) in the variables scope via arguments.
+        bx:savecontent variable="local.rendered" {
+            bx:include template = path;
+        }
+        return local.rendered;
+    }
+
+    private string function tryRenderTemplate( required string filename, required struct data ) {
+        var fullPath = expandPath( "/resources/emails/" & arguments.filename );
+        if ( !fileExists( fullPath ) ) return "";
+        return renderTemplate( arguments.filename, arguments.data );
+    }
+
+}

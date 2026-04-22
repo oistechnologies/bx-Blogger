@@ -39,9 +39,32 @@ class {
 		route( "/logout" ).to( "security.logout" );
 
 		/**
-		 * Admin dashboard placeholder. Chunk 1.F installs cbsecurity which
-		 * gates this route; for now it only checks `cbauth.isLoggedIn()`
-		 * inside the handler action itself.
+		 * Password reset (A1 — Chunk 1.G).
+		 *   GET  /forgot-password          → form
+		 *   POST /forgot-password          → request token, always "check inbox"
+		 *   GET  /reset-password/:token    → new-password form (gates on token validity)
+		 *   POST /reset-password           → consume token + set password
+		 */
+		route( "/forgot-password" )
+			.withAction( {
+				"GET"  : "forgot",
+				"POST" : "doForgot"
+			} )
+			.toHandler( "passwordReset" );
+
+		route( "/reset-password/:token" ).to( "passwordReset.reset" );
+		route( "/reset-password"        ).to( "passwordReset.doReset" );  // POST target, no token in URL
+
+		/**
+		 * Email verification (A2 — Chunk 1.G).
+		 *   GET /verify-email/:token → consume token + redirect to /login
+		 */
+		route( "/verify-email/:token" ).to( "emailVerification.verify" );
+
+		/**
+		 * Admin dashboard. cbsecurity firewall (config/Coldbox.bx
+		 * moduleSettings.cbsecurity.firewall) redirects unauthenticated
+		 * requests to /login before the handler runs.
 		 */
 		route( "/admin" ).to( "admin.index" );
 
