@@ -669,14 +669,22 @@ array function availableTemplates() {
 								</bx:if>
 							</span>
 						</label>
+						<!---
+						  wire:ignore — keeps CBWIRE from replacing the DOM
+						  under the EasyMDE instance during wire re-renders.
+						  EasyMDE owns this subtree after init; we sync back to
+						  the `bodyMarkdown` wire prop on CodeMirror change
+						  (see the init script at the bottom of this template).
+						--->
+						<div wire:ignore>
 						<textarea id="postBody"
 						          class="form-control font-monospace"
 						          rows="18"
-						          wire:model.blur="bodyMarkdown"
 						          placeholder="## Hello world
 
 Write in markdown. Headings, lists, **bold**, [links](https://example.com), and fenced code blocks all work.
-"></textarea>
+">#encodeForHTML( args.bodyMarkdown ?: "" )#</textarea>
+						</div>
 					</div>
 
 					<bx:if args.showPreview>
@@ -1054,6 +1062,97 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 		</div>
 	</bx:if>
 </div>
+
+<!---
+  EasyMDE init — binds a markdown editor to #postBody, syncs plain
+  markdown back to the wire's `bodyMarkdown` prop on CodeMirror
+  change, and routes the live preview through the same server-side
+  render pipeline the publish path uses (admin:Markdown.preview →
+  PostService.renderPreview). The module-scoped flag guarantees we
+  only register the livewire hook once per page even if the wire
+  re-renders.
+--->
+<script>
+( function() {
+    if ( window.__bxBloggerEditorHook ) return;
+    window.__bxBloggerEditorHook = true;
+    var WIRE_ID      = "#_getID()#";
+    var PREVIEW_URL  = "#event.buildLink( to = 'admin:Markdown.preview' )#";
+
+    document.addEventListener( "livewire:init", function() {
+        Livewire.hook( "component.init", function( payload ) {
+            var component = payload.component;
+            var cleanup   = payload.cleanup;
+            if ( component.id !== WIRE_ID ) return;
+
+            window._postEditor = component.$wire;
+
+            var ta = document.getElementById( "postBody" );
+            if ( !ta || ta.dataset.easymdeInit ) return;
+            if ( typeof EasyMDE === "undefined" ) {
+                console.warn( "EasyMDE not loaded — markdown editor falling back to textarea." );
+                return;
+            }
+            ta.dataset.easymdeInit = "1";
+
+            var easymde = new EasyMDE( {
+                element      : ta,
+                spellChecker : false,
+                autoDownloadFontAwesome : true,
+                minHeight    : "420px",
+                status       : [ "lines", "words", "cursor" ],
+                placeholder  : ta.getAttribute( "placeholder" ) || "",
+                toolbar      : [
+                    "bold", "italic", "strikethrough", "heading",
+                    "|", "quote", "unordered-list", "ordered-list", "code",
+                    "|", "link", "image", "table", "horizontal-rule",
+                    "|", "preview", "side-by-side", "fullscreen",
+                    "|", "guide"
+                ],
+                previewRender: function( plainText, preview ) {
+                    // EasyMDE expects a synchronous string OR for us to
+                    // write into `preview` asynchronously. We render via
+                    // the server so the preview matches the publish path
+                    // (markdown → sanitized HTML) exactly.
+                    setTimeout( function() {
+                        fetch( PREVIEW_URL, {
+                            method      : "POST",
+                            credentials : "same-origin",
+                            headers     : { "Content-Type" : "text/plain; charset=utf-8" },
+                            body        : plainText
+                        } )
+                        .then( function( r ) { return r.text(); } )
+                        .then( function( html ) { preview.innerHTML = html; } )
+                        .catch( function() { preview.innerHTML = "<em>Preview unavailable.</em>"; } );
+                    }, 60 );
+                    return "Rendering…";
+                }
+            } );
+
+            window._postEditorInstance = easymde;
+
+            // Sync editor → wire with light debounce so every keystroke
+            // doesn't hammer the wire. 300ms matches the autosave cadence
+            // well enough for recovery + keeps the DOM snappy.
+            var syncTimer = null;
+            easymde.codemirror.on( "change", function() {
+                clearTimeout( syncTimer );
+                syncTimer = setTimeout( function() {
+                    // second arg `false` = don't trigger a re-render; the
+                    // value is already where the user sees it.
+                    window._postEditor.set( "bodyMarkdown", easymde.value(), false );
+                }, 300 );
+            } );
+
+            cleanup( function() {
+                try { easymde.toTextArea(); } catch ( e ) {}
+                delete window._postEditor;
+                delete window._postEditorInstance;
+            } );
+        } );
+    } );
+} )();
+</script>
 
 <bx:if ( args.postId ?: 0 ) gt 0 && args.status != "trashed">
 <script>

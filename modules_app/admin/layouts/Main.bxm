@@ -21,6 +21,11 @@
 	      Rendered once per request; subsequent wire includes pick up the
 	      client runtime that's already on the page. --->
 	#wireStyles()#
+	<!--- EasyMDE — markdown editor used on the post editor screen.
+	      Loaded globally in the admin because the footprint is small
+	      (~50KB gz) and keeping it out of the editor wire itself
+	      avoids a race with CBWIRE's DOM diffing on first render. --->
+	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde@2.18.0/dist/easymde.min.css" crossorigin="anonymous">
 </head>
 <body class="d-flex flex-column min-vh-100">
 
@@ -88,6 +93,7 @@
 	</footer>
 
 	#wireScripts()#
+	<script src="https://cdn.jsdelivr.net/npm/easymde@2.18.0/dist/easymde.min.js" crossorigin="anonymous" defer></script>
 
 </body>
 </html>

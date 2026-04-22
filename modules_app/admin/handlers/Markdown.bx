@@ -1,0 +1,51 @@
+/**
+ * bx-Blogger — admin:Markdown (pre-Phase-6)
+ *
+ * Server endpoint for EasyMDE's `previewRender` callback. The admin
+ * post editor wraps a textarea in EasyMDE (loaded from CDN in the
+ * admin layout) and delegates preview rendering back here so what the
+ * author sees in the editor is exactly what the publish pipeline will
+ * emit — markdown → bx-markdown → cbantisamy sanitize.
+ *
+ * Gating: cbsecurity's firewall already requires auth on `^admin.*`,
+ * so reaching this handler means the caller is a signed-in admin.
+ * No additional permission check — this is a read-only preview, not a
+ * write action, and authors can see their own markdown rendering
+ * regardless of publish rights.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    property name="postService" inject="PostService";
+
+    this.layouts = { "" : "*" };
+
+    /**
+     * Accepts the markdown body in the raw request body (text/plain)
+     * or a `md` form field, returns the rendered HTML as text/html.
+     * EasyMDE calls this from its `previewRender` callback on every
+     * preview toggle + periodic re-render.
+     */
+    function preview( event, rc, prc ) {
+        var markdown = "";
+        if ( structKeyExists( rc, "md" ) && len( rc.md ) ) {
+            markdown = rc.md;
+        } else {
+            // Raw request body (EasyMDE POSTs text/plain by default)
+            try {
+                markdown = toString( getHTTPRequestData().content );
+            } catch ( any e ) {
+                markdown = "";
+            }
+        }
+
+        var html = postService.renderPreview( markdown );
+
+        event.renderData(
+            type        = "html",
+            data        = html,
+            contentType = "text/html; charset=utf-8",
+            statusCode  = 200
+        );
+    }
+
+}
