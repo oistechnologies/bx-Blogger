@@ -118,18 +118,25 @@ jobs:
         # bind-mounted by compose so the files land in the runner's
         # workspace without an explicit copy-out.
         #
-        # IMPORTANT: do NOT pass `reporter=` here. When both `reporter`
-        # and `outputFormats` are set, CommandBox uses the passed
-        # reporter for the live run but skips the post-processing step
-        # that actually writes the files — you get an empty
-        # tests/results/ directory. Without `reporter`, CommandBox
-        # defaults to json, then fans the JSON out into every format
-        # listed in outputFormats.
+        # Two non-obvious CommandBox quirks wrapped up here:
+        #
+        # 1. Do NOT pass `reporter=` alongside `outputFormats`. When
+        #    both are set, CommandBox honors the reporter for the live
+        #    stream and silently skips the post-processing step that
+        #    writes the format files. Omitting `reporter` makes it
+        #    default to json and fan out to every format listed.
+        #
+        # 2. `outputFile` is RELATIVE — testbox-cli prepends getCWD()
+        #    to whatever you pass. An absolute `/app/tests/results/...`
+        #    becomes `/app/app/tests/results/...` and fails with
+        #    "No such file or directory" during runReport. The workdir
+        #    inside the container is /app, so `tests/results/...`
+        #    resolves to /app/tests/results/... as expected.
         run: |
           mkdir -p tests/results
           docker compose exec -T app \
             box testbox run \
-              outputFile=/app/tests/results/test-results \
+              outputFile=tests/results/test-results \
               outputFormats=json,antjunit \
               verbose=false
 
