@@ -210,11 +210,32 @@ function trashPost( required postId ) {
 								<small>#dateTimeFormat( row.updated_at, "yyyy-mm-dd HH:nn" )#</small>
 							</td>
 							<td class="text-end">
-								<button class="btn btn-sm btn-outline-danger"
-								        wire:click="trashPost(#row.id#)"
-								        wire:confirm="Move this post to trash?">
-									Trash
-								</button>
+								<div class="btn-group btn-group-sm" role="group" aria-label="Row actions">
+									<a class="btn btn-outline-secondary"
+									   href="#event.buildLink( to = 'admin:Posts.editor', queryString = 'id=' & row.id )#"
+									   title="Edit"
+									   aria-label="Edit post">
+										<i class="bi bi-pencil-square" aria-hidden="true"></i>
+									</a>
+									<bx:if row.status == "published">
+										<a class="btn btn-outline-secondary"
+										   href="#( row.post_type == 'page' ? '/' : '/blog/' )##encodeForHTMLAttribute( row.slug )#"
+										   target="_blank"
+										   rel="noopener"
+										   title="View on site"
+										   aria-label="View post on site (opens in a new tab)">
+											<i class="bi bi-box-arrow-up-right" aria-hidden="true"></i>
+										</a>
+									</bx:if>
+									<button class="btn btn-outline-danger"
+									        type="button"
+									        wire:click="trashPost(#row.id#)"
+									        wire:confirm="Move this post to trash?"
+									        title="Move to trash"
+									        aria-label="Move post to trash">
+										<i class="bi bi-trash" aria-hidden="true"></i>
+									</button>
+								</div>
 							</td>
 						</tr>
 					</bx:loop>

@@ -69,6 +69,10 @@
 	      (~50KB gz) and keeping it out of the editor wire itself
 	      avoids a race with CBWIRE's DOM diffing on first render. --->
 	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde@2.18.0/dist/easymde.min.css" crossorigin="anonymous">
+	<!--- Bootstrap Icons — webfont + CSS classes for icon-only
+	      buttons in tables + toolbars. Admin-only (public themes
+	      stay lean). --->
+	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" crossorigin="anonymous">
 </head>
 <body class="d-flex flex-column min-vh-100">
 
