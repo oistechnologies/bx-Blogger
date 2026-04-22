@@ -246,6 +246,19 @@ class {
 		 * Populated per-module in later phases.
 		 */
 		variables.moduleSettings = {
+			"cbwire" : {
+				// Pre-Phase-6 fix 3 — CBWIRE ships with `autoInjectAssets=true`,
+				// which appends its client runtime + `wire:loading` styles to
+				// every response whether or not a wire rendered. Our admin
+				// layout (modules_app/admin/layouts/Main.bxm) already calls
+				// `#wireStyles()#` and `#wireScripts()#` explicitly per the
+				// CLAUDE.md convention, so auto-inject was producing two
+				// copies of the runtime. Disabling it leaves explicit
+				// placement as the single source of truth and keeps public
+				// pages lean (no Livewire payload until a public wire
+				// actually needs it).
+				"autoInjectAssets" : false
+			},
 			"cbq" : {
 				// The path the custom config file to register connections and worker pools
 				"configPath" : "config.cbq",
