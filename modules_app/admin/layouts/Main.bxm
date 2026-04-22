@@ -144,6 +144,13 @@
 		bx-Blogger · Phase 2
 	</footer>
 
+	<!--- Bootstrap JS bundle — Modal, Dropdown, Tooltip, Collapse. The
+	      admin started CSS-only but now relies on data-bs-toggle hooks
+	      (media-library lightbox, future dropdowns). Bundle variant
+	      includes Popper so tooltips/dropdowns work without a second
+	      script tag. --->
+	<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+	        crossorigin="anonymous" defer></script>
 	#wireScripts()#
 	<script src="https://cdn.jsdelivr.net/npm/easymde@2.18.0/dist/easymde.min.js" crossorigin="anonymous" defer></script>
 
