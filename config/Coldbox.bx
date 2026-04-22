@@ -46,7 +46,12 @@ class {
 			// Error/Exception Handling
 			invalidHTTPMethodHandler : "",
 			exceptionHandler         : "Main.onException",
-			invalidEventHandler      : "",
+			// 3.B — a URL that resolves via conventions to a missing
+			// handler (`/about` with no Handlers/About.bx) falls
+			// through to `Page.show`, which reads the routed URL as
+			// the page slug and surfaces a themed 404 when nothing
+			// matches in `posts WHERE post_type='page'`.
+			invalidEventHandler      : "Page.show",
 			customErrorTemplate      : "",
 			// Application Aspects
 			handlerCaching           : false,

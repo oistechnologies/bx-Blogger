@@ -160,15 +160,22 @@ class {
 		route( "/archive/:year/:month" ).to( "blog.archive" );
 		route( "/archive/:year"        ).to( "blog.archive" );
 
-		// /:slug catch-all → static page lookup. Must stay directly
-		// above the conventions fallback so single-segment URLs don't
-		// collide with legacy `/:handler/:action?` resolution.
-		route( "/:slug" ).to( "page.show" );
-
 		/**
 		 * Conventions-based routing — resolves /:handler/:action
-		 * against handlers/{Handler}.bx. Kept for multi-segment URLs
-		 * that aren't covered above (admin tooling, internal handlers).
+		 * against handlers/{Handler}.bx. Declared BEFORE any page
+		 * catch-all so real handlers (security.login,
+		 * passwordReset.reset, main.health, etc.) match correctly and
+		 * reverse-URL generation (event.buildLink, cbsecurity
+		 * redirects) doesn't land on a page-lookup URL that then
+		 * 404s.
+		 *
+		 * When the routed `:handler` / `:action` doesn't resolve to a
+		 * real handler class + method, ColdBox falls through to the
+		 * `invalidEventHandler` config — set to `page.show` in
+		 * config/Coldbox.bx, which reads the URL segment as the page
+		 * slug and surfaces a themed 404 when the slug isn't found.
+		 * No explicit `/:slug` route required; `/:handler/:action?`
+		 * already handles the single-segment case.
 		 */
 		route( ":handler/:action?" ).end();
 	}

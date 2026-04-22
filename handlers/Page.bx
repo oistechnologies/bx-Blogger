@@ -1,20 +1,28 @@
 /**
  * bx-Blogger — Page handler (Chunk 3.B)
  *
- * Catch-all for `GET /{slug}` after all other routes have been tried.
- * Resolves the slug against `posts` where `post_type = 'page'` and
- * renders through the theme's `Page` layout + `page` view. Any miss —
- * slug doesn't exist, page is unpublished, or page is private — ends
- * in a themed 404.
+ * Acts as both the dedicated page catch-all AND the ColdBox
+ * `invalidEventHandler` — any URL whose routed `:handler/:action?`
+ * doesn't resolve to a real handler class ends up here, giving
+ * pages an implicit `GET /{slug}` lookup that doesn't require an
+ * explicit `/:slug` route (and doesn't trip over real handler
+ * conventions like `/security/login` or `/main/health`).
  *
- * `_.slug` reserved-slug guarding happens at the PostService layer
- * (slug can't be created against the reserved list), so this handler
+ * Slug resolution order:
+ *   1. `rc.slug` set by an explicit route (kept for future use).
+ *   2. The first non-empty segment of `event.getCurrentRoutedURL()`
+ *      — when the user hit `/about` via conventions that routed to
+ *      `about.index` and no About handler exists, this is "about".
+ *
+ * Reserved-slug guarding happens at the PostService layer (slug
+ * can't be created against the reserved list), so this handler
  * trusts the incoming slug is safe to look up.
  */
 class extends="coldbox.system.EventHandler" {
 
     function show( event, rc, prc ) {
         var slug = trim( rc.slug ?: "" );
+        if ( !len( slug ) ) slug = slugFromRoutedUrl( event );
         if ( !len( slug ) ) {
             renderNotFound( event, prc );
             return;
@@ -45,6 +53,22 @@ class extends="coldbox.system.EventHandler" {
         arguments.prc.pageTitle = "Not Found &middot; " & getSetting( "AppName" );
         arguments.event.setLayout( arguments.prc.theme.layout( "Main" ) );
         arguments.event.setView( arguments.prc.theme.view( "404" ) );
+    }
+
+    /**
+     * Turn the routed URL into a page slug. When ColdBox's
+     * conventions fail to match a handler and we land here via
+     * `invalidEventHandler`, the routed URL looks like "about/" or
+     * "help/faq/" — we take the first non-empty segment. Multi-
+     * segment page lookups (docs/getting-started) are a future
+     * enhancement; for now we fall through to 404 when the first
+     * segment doesn't match a published page.
+     */
+    private string function slugFromRoutedUrl( required any event ) {
+        var routed = arguments.event.getCurrentRoutedURL();
+        routed = reReplace( routed, "^/+|/+$", "", "all" );
+        if ( !len( routed ) ) return "";
+        return listFirst( routed, "/" );
     }
 
 }
