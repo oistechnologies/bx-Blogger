@@ -13,7 +13,15 @@
 		},
 		"rewrites":{
 			"enable":true
-		}
+		},
+		"_comment":[
+			"5.C — gzipEnable is set for future-compat, but the Ortus CommandBox",
+			"image's entry point doesn't surface the setting to Runwar in this",
+			"build. Production serves the app behind NGINX (Phase 10 B14); the",
+			"edge does gzip + brotli there. Leaving the flag on so a straight",
+			"`box server start` in another environment picks it up automatically."
+		],
+		"gzipEnable":true
 	},
 	"scripts":{
 		"onServerInitialInstall":"install bx-compat-cfml,bx-esapi,bx-mysql,bx-mail,bx-markdown,bx-ai"

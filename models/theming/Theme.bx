@@ -99,11 +99,70 @@ class accessors="true" {
     }
 
     /**
-     * Versioned public URL for a theme-owned asset.
-     * Example: asset("css/theme.css") → "/themes/bx-blogger-default/assets/css/theme.css?v=1.0.0"
+     * Return the public URL for a theme-owned asset (5.C).
+     *
+     * Lookup order:
+     *   1. Vite manifest at `{directory}/assets/.vite/manifest.json`
+     *      — resolves `"src/theme.js"` / logical asset paths to their
+     *      content-hashed filenames (`theme-a3f91b.js`). When Vite
+     *      rebuilds, the hash changes + the old URL stays forever-
+     *      cacheable.
+     *   2. Fallback: the unhashed path + `?v={themeVersion}` query
+     *      string so a fresh checkout that hasn't run `npm run build`
+     *      yet still resolves to the raw file on disk (though there
+     *      won't be one without the build) or at least doesn't 500.
+     *
+     * The manifest lookup only happens when we know what logical key
+     * to search for — shortcut pairs below cover the two files every
+     * theme emits. Custom assets (images under `/assets/images/...`)
+     * pass through unchanged.
      */
     string function asset( required string path ) {
+        var hashed = hashedAsset( arguments.path );
+        if ( len( hashed ) ) {
+            return "/" & variables.directory & "/assets/" & hashed;
+        }
         return "/" & variables.directory & "/assets/" & arguments.path & "?v=" & variables.version;
+    }
+
+    /**
+     * Read the Vite manifest once per VO instance (cached in
+     * `variables.manifestCache`) and return the hashed filename for a
+     * known logical asset. Unknown logical names return "" so the
+     * caller falls back to the version-query form.
+     */
+    private string function hashedAsset( required string path ) {
+        if ( !structKeyExists( variables, "manifestCache" ) ) {
+            variables.manifestCache = readManifest();
+        }
+        var cache = variables.manifestCache;
+        if ( !structCount( cache ) ) return "";
+
+        // Vite's manifest keys its entries by the source path relative
+        // to the project root — e.g. `themes/bx-blogger-default/src/theme.js`.
+        // Our build-themes.mjs invokes Vite with the project root as
+        // `root`, which keeps the key pattern stable across every
+        // theme we build. CSS sidecars live on the JS entry's `.css`
+        // array.
+        var p      = trim( arguments.path );
+        var entryK = variables.directory & "/src/theme.js";
+        if ( !structKeyExists( cache, entryK ) ) return "";
+        var entry  = cache[ entryK ];
+
+        if ( p == "js/theme.js" ) return entry.file ?: "";
+        if ( p == "css/theme.css" ) {
+            if ( structKeyExists( entry, "css" ) && isArray( entry.css ) && entry.css.len() ) {
+                return entry.css[ 1 ];
+            }
+        }
+        return "";
+    }
+
+    private struct function readManifest() {
+        var path = expandPath( "/" & variables.directory & "/assets/.vite/manifest.json" );
+        if ( !fileExists( path ) ) return {};
+        try       { return jsonDeserialize( fileRead( path ) ); }
+        catch ( any e ) { return {}; }
     }
 
     /**

@@ -241,6 +241,34 @@ class extends="tests.support.BaseIntegrationSpec" {
                     var theme = themeSvc.resolveActive();
                     expect( theme.asset( "css/theme.css" ) ).toBe( "/themes/bx-blogger-fallback/assets/css/theme.css?v=1.0.0" );
                 } );
+
+                it( "asset() resolves js/css to Vite's hashed filename when the theme has a manifest (5.C)", function() {
+                    // Default theme ships a built manifest (docker compose
+                    // run --rm node npm run build). Fallback has no build
+                    // pipeline, which keeps the version-query path above
+                    // alive as the "no manifest" fixture.
+                    themeSvc.activate( "bx-blogger-default" );
+                    var theme = themeSvc.resolveActive();
+
+                    var css = theme.asset( "css/theme.css" );
+                    // Hashed output looks like `/themes/.../css/theme-<hash>.css`
+                    // — no `?v=` query-string fallback when the manifest is
+                    // present.
+                    expect( css ).toMatch( "^/themes/bx-blogger-default/assets/css/theme-[A-Za-z0-9_-]+\.css$" );
+                    expect( css ).notToInclude( "?v=" );
+
+                    var js = theme.asset( "js/theme.js" );
+                    expect( js ).toMatch( "^/themes/bx-blogger-default/assets/js/theme-[A-Za-z0-9_-]+\.js$" );
+                } );
+
+                it( "asset() falls through to the version-query when the logical name isn't in the manifest", function() {
+                    themeSvc.activate( "bx-blogger-default" );
+                    var theme = themeSvc.resolveActive();
+                    // Any path we don't have a manifest entry for (an
+                    // image under /assets/images/... for example) falls
+                    // back to the raw `?v=` form.
+                    expect( theme.asset( "images/hero.jpg" ) ).toEndWith( "/assets/images/hero.jpg?v=1.0.0" );
+                } );
             } );
 
             describe( "configureRendererPaths()", function() {
