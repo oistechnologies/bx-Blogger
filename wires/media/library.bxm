@@ -193,9 +193,15 @@ private function clearFlashes() {
 					<div class="card h-100">
 						<bx:if isImage( row.mime_type )>
 							<img src="#urlFor( row )#"
-							     class="card-img-top"
+							     class="card-img-top media-lightbox-trigger"
 							     alt="#encodeForHTMLAttribute( row.alt_text ?: '' )#"
-							     style="object-fit: cover; aspect-ratio: 16/10;">
+							     title="Click to view full size"
+							     data-bs-toggle="modal"
+							     data-bs-target="##mediaLightbox"
+							     data-full-url="#encodeForHTMLAttribute( urlFor( row ) )#"
+							     data-filename="#encodeForHTMLAttribute( row.original_filename )#"
+							     data-alt="#encodeForHTMLAttribute( row.alt_text ?: '' )#"
+							     style="object-fit: cover; aspect-ratio: 16/10; cursor: zoom-in;">
 						<bx:else>
 							<div class="card-img-top bg-light d-flex align-items-center justify-content-center"
 							     style="aspect-ratio: 16/10;">
@@ -310,5 +316,71 @@ private function clearFlashes() {
 			</div>
 		</bx:if>
 	</bx:if>
+
+	<!---
+		Lightbox modal. Wrapped in wire:ignore so CBWIRE's morph doesn't
+		reset Bootstrap Modal's internal state on each re-render (which
+		would blank the image on any wire:click action while the modal
+		was open). Image + title are populated from the clicked trigger
+		via the `show.bs.modal` event, using `data-*` attributes the
+		grid sets per row. JS below only binds once per page thanks to
+		the `__mediaLightboxInit` flag.
+	--->
+	<div wire:ignore>
+		<div class="modal fade" id="mediaLightbox" tabindex="-1" aria-labelledby="mediaLightboxTitle" aria-hidden="true">
+			<div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+				<div class="modal-content">
+					<div class="modal-header">
+						<h2 class="h6 modal-title mb-0" id="mediaLightboxTitle">Preview</h2>
+						<div class="d-flex gap-2 align-items-center">
+							<a class="btn btn-sm btn-outline-secondary"
+							   id="mediaLightboxOpen"
+							   href="##"
+							   target="_blank"
+							   rel="noopener"
+							   title="Open in a new tab">
+								<i class="bi bi-box-arrow-up-right" aria-hidden="true"></i>
+							</a>
+							<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+						</div>
+					</div>
+					<div class="modal-body text-center p-0" style="background: ##212529;">
+						<img src="" alt="" id="mediaLightboxImg" class="img-fluid" style="max-height: 80vh;">
+					</div>
+					<div class="modal-footer py-2">
+						<small class="text-muted me-auto" id="mediaLightboxAlt"></small>
+					</div>
+				</div>
+			</div>
+		</div>
+		<script>
+			( function() {
+				if ( window.__mediaLightboxInit ) return;
+				window.__mediaLightboxInit = true;
+				document.addEventListener( "show.bs.modal", function( event ) {
+					if ( !event.target || event.target.id !== "mediaLightbox" ) return;
+					var trigger = event.relatedTarget;
+					if ( !trigger ) return;
+					var img   = document.getElementById( "mediaLightboxImg" );
+					var title = document.getElementById( "mediaLightboxTitle" );
+					var alt   = document.getElementById( "mediaLightboxAlt" );
+					var open  = document.getElementById( "mediaLightboxOpen" );
+					var url   = trigger.getAttribute( "data-full-url" ) || "";
+					img.src       = url;
+					img.alt       = trigger.getAttribute( "data-alt" ) || "";
+					title.textContent = trigger.getAttribute( "data-filename" ) || "Preview";
+					alt.textContent   = trigger.getAttribute( "data-alt" ) || "";
+					open.href = url;
+				} );
+				// Clear the image src when the modal closes so the next
+				// open doesn't briefly flash the previous image while
+				// the new one loads.
+				document.addEventListener( "hidden.bs.modal", function( event ) {
+					if ( !event.target || event.target.id !== "mediaLightbox" ) return;
+					document.getElementById( "mediaLightboxImg" ).src = "";
+				} );
+			} )();
+		</script>
+	</div>
 </div>
 </bx:output>
