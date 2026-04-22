@@ -3,11 +3,19 @@
 /**
  * categories.manager — tree view + inline edit.
  *
- * Scope for Chunk 2.E: add, rename, reparent (dropdown), delete. Drag-
- * to-reorder (sortable.js) is deferred — `reorder()` exists on the
- * service, a follow-up chunk wires it to a JS handle. Inline rename
- * uses a per-row "editingId" marker so only one category is in edit
- * mode at a time.
+ * Originally (Chunk 2.E) a flat indented table with every category as
+ * its own row. Pre-Phase-6 UX rebuild: collapsible tree + search.
+ *
+ *   - `expandedIds` (struct) tracks which parents are open. Toggle
+ *     per node; "Expand / Collapse all" buttons hit every non-leaf.
+ *   - `search` (live-debounced) filters by name / slug. When a search
+ *     is active every ancestor of every match auto-expands so the
+ *     matches aren't hidden under a collapsed parent.
+ *   - The listing renders from `visibleCategories()` which flattens
+ *     the tree depth-first, respecting expand state + match set.
+ *
+ * Add + inline edit mechanics are unchanged from 2.E — only the
+ * listing shape is different.
  */
 
 property name="categoryService" inject="CategoryService";
@@ -20,6 +28,8 @@ data = {
     "editName"     : "",
     "editSlug"     : "",
     "editParentId" : "",
+    "search"       : "",
+    "expandedIds"  : {},
     "flashOk"      : "",
     "flashError"   : ""
 };
@@ -40,7 +50,12 @@ function addCategory() {
 
     var attrs = { "name" : name };
     if ( len( data.newParentId ) ) attrs.parentId = data.newParentId;
-    categoryService.create( attrs );
+    var created = categoryService.create( attrs );
+
+    // Auto-expand the new node's parent so the added row is visible.
+    if ( len( data.newParentId ) ) {
+        data.expandedIds[ data.newParentId ] = true;
+    }
 
     data.newName = "";
     data.newParentId = "";
@@ -106,7 +121,37 @@ function deleteCategory( required id ) {
     if ( isNull( cat ) ) return;
     var name = cat.getName();
     categoryService.delete( cat );
+    // Clean up expansion state for the removed node.
+    if ( structKeyExists( data.expandedIds, cat.getId() ) ) {
+        structDelete( data.expandedIds, cat.getId() );
+    }
     data.flashOk = "Deleted '" & name & "' — any children were reparented to its parent.";
+}
+
+function toggleExpand( required id ) {
+    var key = toString( arguments.id );
+    if ( structKeyExists( data.expandedIds, key ) ) {
+        structDelete( data.expandedIds, key );
+    } else {
+        data.expandedIds[ key ] = true;
+    }
+}
+
+function expandAll() {
+    var all = categoryService.listAll();
+    var next = {};
+    for ( var c in all ) {
+        next[ toString( c.getId() ) ] = true;
+    }
+    data.expandedIds = next;
+}
+
+function collapseAll() {
+    data.expandedIds = {};
+}
+
+function clearSearch() {
+    data.search = "";
 }
 
 // --------------------------------------------------------------------
@@ -119,6 +164,93 @@ function allCategories() {
 
 function depthOf( required path ) {
     return listLen( arguments.path, "/" ) - 1;
+}
+
+/**
+ * Flat list of categories to render, in display order, each annotated
+ * with { entity, depth, hasChildren, expanded }. Respects the
+ * expandedIds struct + the active search filter.
+ */
+array function visibleCategories() {
+    var all = categoryService.listAll();
+
+    // Build parentId → children map. Root parentId is "" (empty string).
+    var byParent = {};
+    for ( var c in all ) {
+        var pid = isNull( c.getParentId() ) ? "" : toString( c.getParentId() ?: "" );
+        if ( !structKeyExists( byParent, pid ) ) byParent[ pid ] = [];
+        byParent[ pid ].append( c );
+    }
+
+    // When searching, compute the set of nodes to show: every match +
+    // every ancestor of every match (so the path is navigable).
+    var q = lCase( trim( data.search ?: "" ) );
+    var searching = len( q );
+    var forceShow = {};
+    var forceExpand = {};
+    if ( searching ) {
+        var byId = {};
+        for ( var c in all ) byId[ toString( c.getId() ) ] = c;
+        for ( var c in all ) {
+            if ( find( q, lCase( c.getName() ) ) || find( q, lCase( c.getSlug() ) ) ) {
+                // Mark this node + every ancestor visible.
+                var cursor = c;
+                while ( !isNull( cursor ) ) {
+                    var cid = toString( cursor.getId() );
+                    forceShow[ cid ] = true;
+                    var parentId = cursor.getParentId() ?: "";
+                    if ( !len( parentId ) ) break;
+                    // Expand the parent so the match isn't hidden.
+                    forceExpand[ toString( parentId ) ] = true;
+                    cursor = byId[ toString( parentId ) ] ?: javaCast( "null", "" );
+                }
+            }
+        }
+    }
+
+    var out = [];
+    walk( byParent, "", 0, out, forceShow, forceExpand, searching );
+    return out;
+}
+
+private void function walk(
+    required struct  byParent,
+    required string  parentKey,
+    required numeric depth,
+    required array   out,
+    required struct  forceShow,
+    required struct  forceExpand,
+    required boolean searching
+) {
+    if ( !structKeyExists( arguments.byParent, arguments.parentKey ) ) return;
+    var kids = arguments.byParent[ arguments.parentKey ];
+    for ( var c in kids ) {
+        var cid = toString( c.getId() );
+        if ( arguments.searching && !( structKeyExists( arguments.forceShow, cid ) ) ) continue;
+
+        var hasKids = structKeyExists( arguments.byParent, cid ) && arguments.byParent[ cid ].len();
+        var expanded = structKeyExists( arguments.forceExpand, cid )
+            || structKeyExists( data.expandedIds, cid );
+
+        arguments.out.append( {
+            "entity"      : c,
+            "depth"       : arguments.depth,
+            "hasChildren" : hasKids,
+            "expanded"    : expanded
+        } );
+
+        if ( hasKids && expanded ) {
+            walk(
+                byParent    = arguments.byParent,
+                parentKey   = cid,
+                depth       = arguments.depth + 1,
+                out         = arguments.out,
+                forceShow   = arguments.forceShow,
+                forceExpand = arguments.forceExpand,
+                searching   = arguments.searching
+            );
+        }
+    }
 }
 
 private function clearFlashes() {
@@ -138,6 +270,9 @@ private boolean function requirePerm( required string perm ) {
 <bx:output>
 <bx:script>
     categories = allCategories();
+    visibleRows = visibleCategories();
+    totalCount  = categories.len();
+    visibleCount = visibleRows.len();
 </bx:script>
 
 <div>
@@ -184,68 +319,111 @@ private boolean function requirePerm( required string perm ) {
 		<div class="col-md-8">
 			<div class="card">
 				<div class="card-body">
-					<h2 class="h6 d-flex justify-content-between align-items-center">
-						<span>All categories</span>
-						<small class="text-muted">#categories.len()# total</small>
-					</h2>
-					<bx:if categories.len() == 0>
+					<div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+						<h2 class="h6 mb-0">
+							All categories
+							<bx:if len( args.search ?: "" )>
+								<small class="text-muted fw-normal">
+									(#visibleCount# match<bx:if visibleCount != 1>es</bx:if> of #totalCount#)
+								</small>
+							<bx:else>
+								<small class="text-muted fw-normal">#totalCount# total</small>
+							</bx:if>
+						</h2>
+						<div class="btn-group btn-group-sm" role="group" aria-label="Tree controls">
+							<button type="button" class="btn btn-outline-secondary" wire:click="expandAll">Expand all</button>
+							<button type="button" class="btn btn-outline-secondary" wire:click="collapseAll">Collapse all</button>
+						</div>
+					</div>
+
+					<div class="input-group input-group-sm mb-3">
+						<input type="text"
+						       class="form-control"
+						       placeholder="Filter by name or slug…"
+						       wire:model.live.debounce.250ms="search">
+						<bx:if len( args.search ?: "" )>
+							<button type="button" class="btn btn-outline-secondary"
+							        wire:click="clearSearch">Clear</button>
+						</bx:if>
+					</div>
+
+					<bx:if totalCount == 0>
 						<p class="text-muted small mb-0">No categories yet.</p>
+					<bx:elseif visibleCount == 0>
+						<p class="text-muted small mb-0">No categories match <strong>#encodeForHTML( args.search )#</strong>.</p>
 					<bx:else>
-						<table class="table table-sm table-borderless mb-0">
-							<tbody>
-								<bx:loop array="#categories#" item="c">
-									<bx:script>depth = depthOf( c.getPath() )</bx:script>
-									<tr>
-										<bx:if args.editingId == c.getId()>
-											<td colspan="2">
-												<form wire:submit.prevent="saveEdit" class="row g-2 align-items-end">
-													<div class="col-md-4">
-														<label class="form-label small">Name</label>
-														<input type="text" class="form-control form-control-sm" wire:model="editName">
-													</div>
-													<div class="col-md-3">
-														<label class="form-label small">Slug</label>
-														<input type="text" class="form-control form-control-sm" wire:model="editSlug">
-													</div>
-													<div class="col-md-3">
-														<label class="form-label small">Parent</label>
-														<select class="form-select form-select-sm" wire:model="editParentId">
-															<option value="">— root —</option>
-															<bx:loop array="#categories#" item="opt">
-																<bx:if opt.getId() != c.getId()>
-																	<option value="#opt.getId()#" #( opt.getId() == ( args.editParentId ?: '' ) ? 'selected' : '' )#>
-																		#repeatString( "— ", depthOf( opt.getPath() ) )##encodeForHTML( opt.getName() )#
-																	</option>
-																</bx:if>
-															</bx:loop>
-														</select>
-													</div>
-													<div class="col-md-2 d-flex gap-1">
-														<button type="submit" class="btn btn-sm btn-primary">Save</button>
-														<button type="button" class="btn btn-sm btn-outline-secondary" wire:click="cancelEdit">Cancel</button>
-													</div>
-												</form>
-											</td>
-										<bx:else>
-											<td style="padding-left: #( depth * 1.5 )#rem;">
-												<strong>#encodeForHTML( c.getName() )#</strong>
-												<br>
-												<small class="text-muted">/#encodeForHTML( c.getPath() )#</small>
-											</td>
-											<td class="text-end">
-												<button class="btn btn-sm btn-outline-secondary"
+						<ul class="list-group list-group-flush small">
+							<bx:loop array="#visibleRows#" item="row">
+								<bx:script>
+									c         = row.entity;
+									depth     = row.depth;
+									hasKids   = row.hasChildren;
+									isOpen    = row.expanded;
+									indentRem = 0.25 + ( depth * 1.25 );
+								</bx:script>
+								<li class="list-group-item px-2 py-1" style="padding-left: #( indentRem )#rem !important;">
+									<bx:if args.editingId == c.getId()>
+										<form wire:submit.prevent="saveEdit" class="row g-2 align-items-end">
+											<div class="col-md-4">
+												<label class="form-label small mb-0">Name</label>
+												<input type="text" class="form-control form-control-sm" wire:model="editName">
+											</div>
+											<div class="col-md-3">
+												<label class="form-label small mb-0">Slug</label>
+												<input type="text" class="form-control form-control-sm" wire:model="editSlug">
+											</div>
+											<div class="col-md-3">
+												<label class="form-label small mb-0">Parent</label>
+												<select class="form-select form-select-sm" wire:model="editParentId">
+													<option value="">— root —</option>
+													<bx:loop array="#categories#" item="opt">
+														<bx:if opt.getId() != c.getId()>
+															<option value="#opt.getId()#" #( opt.getId() == ( args.editParentId ?: '' ) ? 'selected' : '' )#>
+																#repeatString( "— ", depthOf( opt.getPath() ) )##encodeForHTML( opt.getName() )#
+															</option>
+														</bx:if>
+													</bx:loop>
+												</select>
+											</div>
+											<div class="col-md-2 d-flex gap-1">
+												<button type="submit" class="btn btn-sm btn-primary">Save</button>
+												<button type="button" class="btn btn-sm btn-outline-secondary" wire:click="cancelEdit">Cancel</button>
+											</div>
+										</form>
+									<bx:else>
+										<div class="d-flex justify-content-between align-items-center gap-2">
+											<div class="d-flex align-items-center gap-1 me-auto text-truncate">
+												<bx:if hasKids>
+													<button type="button"
+													        class="btn btn-link p-0 text-body text-decoration-none"
+													        style="width: 1.25rem;"
+													        wire:click="toggleExpand(#c.getId()#)"
+													        aria-label="#( isOpen ? 'Collapse' : 'Expand' )# #encodeForHTMLAttribute( c.getName() )#"
+													        aria-expanded="#( isOpen ? 'true' : 'false' )#">
+														<bx:if isOpen>&##9662;<bx:else>&##9656;</bx:if>
+													</button>
+												<bx:else>
+													<span style="display:inline-block; width:1.25rem;">&nbsp;</span>
+												</bx:if>
+												<div class="text-truncate">
+													<strong>#encodeForHTML( c.getName() )#</strong>
+													<span class="text-muted ms-1">/#encodeForHTML( c.getPath() )#</span>
+												</div>
+											</div>
+											<div class="btn-group btn-group-sm flex-shrink-0" role="group" aria-label="Row actions">
+												<button class="btn btn-outline-secondary"
 												        wire:click="startEdit(#c.getId()#)">Edit</button>
-												<button class="btn btn-sm btn-outline-danger"
+												<button class="btn btn-outline-danger"
 												        wire:click="deleteCategory(#c.getId()#)"
 												        wire:confirm="Delete this category? Children reparent to its parent.">
 													Delete
 												</button>
-											</td>
-										</bx:if>
-									</tr>
-								</bx:loop>
-							</tbody>
-						</table>
+											</div>
+										</div>
+									</bx:if>
+								</li>
+							</bx:loop>
+						</ul>
 					</bx:if>
 				</div>
 			</div>
