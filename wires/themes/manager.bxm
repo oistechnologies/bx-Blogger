@@ -148,25 +148,30 @@ private boolean function requirePerm( required string perm ) {
         </div>
     </bx:if>
 
-    <div class="d-flex justify-content-between align-items-center mb-3">
-        <p class="text-muted mb-0">
-            Installed themes. Drop a theme folder under <code>themes/</code>
-            then click <strong>Scan folder</strong> to register it.
-        </p>
-        <button class="btn btn-outline-secondary" wire:click="scanFolder" wire:loading.attr="disabled">
-            <span wire:loading.remove wire:target="scanFolder">Scan folder</span>
-            <span wire:loading wire:target="scanFolder">Scanning&hellip;</span>
-        </button>
-    </div>
-
-    <bx:if !themes.len()>
-        <div class="alert alert-light border">
-            No themes registered yet. Click <strong>Scan folder</strong> to
-            import anything under <code>themes/</code>.
+    <div class="card stat-card stat-card-secondary">
+        <div class="card-header card-header-soft card-header-soft-secondary d-flex justify-content-between align-items-center gap-3 flex-wrap">
+            <div class="me-auto">
+                <span class="h6 mb-0 d-block">Installed themes</span>
+                <small class="text-muted fw-normal">
+                    Drop a theme folder under <code>themes/</code>, then scan to register it.
+                </small>
+            </div>
+            <button class="btn btn-outline-secondary btn-sm" wire:click="scanFolder" wire:loading.attr="disabled">
+                <span wire:loading.remove wire:target="scanFolder">Scan folder</span>
+                <span wire:loading wire:target="scanFolder">Scanning&hellip;</span>
+            </button>
         </div>
-    <bx:else>
-        <div class="table-responsive">
-            <table class="table table-hover align-middle">
+
+        <bx:if !themes.len()>
+            <div class="card-body">
+                <p class="text-muted small mb-0">
+                    No themes registered yet. Click <strong>Scan folder</strong> to
+                    import anything under <code>themes/</code>.
+                </p>
+            </div>
+        <bx:else>
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
                 <thead>
                     <tr>
                         <th>Theme</th>
@@ -243,6 +248,7 @@ private boolean function requirePerm( required string perm ) {
                 </tbody>
             </table>
         </div>
-    </bx:if>
+        </bx:if>
+    </div>
 </div>
 </bx:output>
