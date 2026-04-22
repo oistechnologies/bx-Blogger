@@ -51,9 +51,12 @@ data = {
     "previewExpires"  : "",
     // B5 autosave ticker
     "lastAutosaveAt"  : "",
-    // B4 media picker modal state
+    // B4 media picker modal state. `pickerTarget` = "body" inserts a
+    // markdown `![alt](url)` snippet at EasyMDE's cursor; "featured"
+    // sets `featuredMediaId` so the Featured image card updates.
     "showMediaPicker" : false,
     "pickerSearch"    : "",
+    "pickerTarget"    : "body",
     // 2.H AI authoring state
     "showAiModal"     : false,    // Create-from-Idea
     "aiIdea"          : "",
@@ -319,9 +322,21 @@ function autosave() {
 // B4 — Media picker
 // --------------------------------------------------------------------
 
-function openMediaPicker() { data.showMediaPicker = true; data.pickerSearch = ""; }
+function openMediaPicker( string target = "body" ) {
+    data.showMediaPicker = true;
+    data.pickerSearch    = "";
+    data.pickerTarget    = arguments.target;
+}
 function closeMediaPicker() { data.showMediaPicker = false; }
 
+/**
+ * Body-insert path kept for backward compatibility. The new flow
+ * inserts the markdown client-side via EasyMDE's codemirror so the
+ * snippet lands at cursor instead of appended to end, and the wire-
+ * ignore'd EasyMDE DOM picks up the change instantly. This server-
+ * side action remains as a fallback for non-JS contexts + a paper
+ * trail in case we add a "last inserted media" feature later.
+ */
 function insertMedia( required id ) {
     var m = getInstance( "Media" ).find( arguments.id );
     if ( isNull( m ) ) return;
@@ -332,6 +347,16 @@ function insertMedia( required id ) {
 ![" & alt & "](" & url & ")
 ";
     data.bodyMarkdown = ( data.bodyMarkdown ?: "" ) & snippet;
+    closeMediaPicker();
+}
+
+/**
+ * Featured-image path — picker in `featured` mode routes here on
+ * item click. Sets the sidebar's Featured image card; no markdown
+ * snippet.
+ */
+function setAsFeatured( required id ) {
+    data.featuredMediaId = arguments.id;
     closeMediaPicker();
 }
 
@@ -748,10 +773,7 @@ private array function parseTagsText( required string text ) {
 						<label for="postBody" class="form-label d-flex justify-content-between">
 							<span>Body (markdown)</span>
 							<span>
-								<button type="button" class="btn btn-sm btn-link p-0"
-								        wire:click="openMediaPicker">Insert media</button>
 								<bx:if aiEnabled()>
-									·
 									<button type="button" class="btn btn-sm btn-link p-0"
 									        wire:click="openAiModal">Create from idea</button>
 									·
@@ -928,17 +950,30 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 							<img src="#getInstance( 'MediaService' ).urlFor( fm )#"
 							     class="img-fluid rounded mb-2"
 							     alt="#encodeForHTMLAttribute( fm.getAltText() ?: '' )#">
-							<p class="small text-muted mb-2">#encodeForHTML( fm.getOriginalFilename() )#</p>
+							<p class="small text-muted mb-2 text-truncate">#encodeForHTML( fm.getOriginalFilename() )#</p>
 						</bx:if>
-						<button type="button" class="btn btn-sm btn-outline-secondary w-100"
-						        wire:click="$set('featuredMediaId', 0)">Remove featured image</button>
 					<bx:else>
 						<p class="small text-muted mb-2">No featured image yet.</p>
 					</bx:if>
-					<bx:if aiImageEnabled()>
-						<button type="button" class="btn btn-sm btn-outline-primary w-100 mt-2"
-						        wire:click="openImageModal('featured')">Generate featured image</button>
-					</bx:if>
+					<div class="d-grid gap-2">
+						<button type="button" class="btn btn-sm btn-primary"
+						        wire:click="openMediaPicker('featured')">
+							<i class="bi bi-images" aria-hidden="true"></i>
+							<bx:if val( args.featuredMediaId ?: 0 ) gt 0>Replace featured image<bx:else>Select from media library</bx:if>
+						</button>
+						<bx:if aiImageEnabled()>
+							<button type="button" class="btn btn-sm btn-outline-primary"
+							        wire:click="openImageModal('featured')">
+								<i class="bi bi-stars" aria-hidden="true"></i> Generate with AI
+							</button>
+						</bx:if>
+						<bx:if val( args.featuredMediaId ?: 0 ) gt 0>
+							<button type="button" class="btn btn-sm btn-outline-secondary"
+							        wire:click="$set('featuredMediaId', 0)">
+								<i class="bi bi-x-circle" aria-hidden="true"></i> Remove
+							</button>
+						</bx:if>
+					</div>
 				</div>
 			</div>
 
@@ -1193,28 +1228,44 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 
 	<!--- B4 — Media picker modal ---------------------------------- --->
 	<bx:if args.showMediaPicker>
+		<bx:set pickerTitle = args.pickerTarget == "featured" ? "Select featured image" : "Insert media">
 		<div class="modal show d-block" tabindex="-1" style="background:rgba(0,0,0,.35);">
 			<div class="modal-dialog modal-lg">
 				<div class="modal-content">
 					<div class="modal-header">
-						<h5 class="modal-title">Insert media</h5>
-						<button type="button" class="btn-close" wire:click="closeMediaPicker"></button>
+						<h5 class="modal-title mb-0 me-auto">#pickerTitle#</h5>
+						<div class="d-flex gap-2 align-items-center flex-shrink-0">
+							<button type="button" class="btn btn-sm btn-outline-primary"
+							        onclick="document.getElementById( 'bxPickerUpload' ).click();">
+								<i class="bi bi-upload" aria-hidden="true"></i> Upload new
+							</button>
+							<input type="file" id="bxPickerUpload" accept="image/*" style="display:none;"
+							       onchange="window.bxPickerUpload &amp;&amp; window.bxPickerUpload( this );">
+							<button type="button" class="btn-close" wire:click="closeMediaPicker"></button>
+						</div>
 					</div>
 					<div class="modal-body">
 						<input type="text" class="form-control form-control-sm mb-3"
 						       placeholder="Search filename, alt, or title…"
 						       wire:model.live.debounce.400ms="pickerSearch">
-						<bx:script>picks = pickerRows()</bx:script>
+						<div id="bxPickerUploadStatus" class="small mb-2" style="display:none;"></div>
+						<bx:script>picks = pickerRows();</bx:script>
 						<bx:if picks.len() == 0>
-							<p class="text-muted small">No images match. Upload some via the Media library.</p>
+							<p class="text-muted small">No images match. Upload one above, or add some from the <a href="#event.buildLink( 'admin:Media.index' )#">Media library</a>.</p>
 						<bx:else>
 							<div class="row row-cols-3 row-cols-md-4 g-2">
 								<bx:loop array="#picks#" item="p">
 									<div class="col">
 										<button type="button"
 										        class="btn p-0 border w-100 text-start"
-										        wire:click="insertMedia(#p.id#)"
-										        title="Insert into post body">
+										        <bx:if args.pickerTarget == "featured">
+										        wire:click="setAsFeatured(#p.id#)"
+										        <bx:else>
+										        data-picker-insert="1"
+										        data-media-url="#encodeForHTMLAttribute( pickerUrl( p ) )#"
+										        data-media-alt="#encodeForHTMLAttribute( p.alt_text ?: p.original_filename )#"
+										        </bx:if>
+										        title="#args.pickerTarget == 'featured' ? 'Set as featured image' : 'Insert into post body'#">
 											<img src="#pickerUrl( p )#"
 											     alt="#encodeForHTMLAttribute( p.alt_text ?: p.original_filename )#"
 											     class="img-fluid rounded"
@@ -1274,7 +1325,21 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
                 toolbar      : [
                     "bold", "italic", "strikethrough", "heading",
                     "|", "quote", "unordered-list", "ordered-list", "code",
-                    "|", "link", "image", "table", "horizontal-rule",
+                    "|", "link",
+                    {
+                        name      : "insert-media",
+                        title     : "Insert from media library",
+                        className : "bi bi-images",
+                        action    : function() {
+                            // Open our server-side picker in body mode.
+                            // Item-click in the picker is handled via
+                            // `[data-picker-insert]` delegation below.
+                            if ( window._postEditor ) {
+                                window._postEditor.openMediaPicker( "body" );
+                            }
+                        }
+                    },
+                    "table", "horizontal-rule",
                     "|", "preview", "side-by-side", "fullscreen",
                     "|", "guide"
                 ],
@@ -1320,6 +1385,88 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
             } );
         } );
     } );
+
+    // Body-insert from picker: delegation handler for the picker's
+    // body-mode item buttons. Fires `easymde.codemirror.replaceSelection`
+    // so the snippet lands at cursor and the wire-ignore'd EasyMDE DOM
+    // sees the change immediately (no wire round-trip required). Then
+    // calls `closeMediaPicker` on the wire so the modal dismisses.
+    document.addEventListener( "click", function( evt ) {
+        var btn = evt.target.closest( "[data-picker-insert]" );
+        if ( !btn ) return;
+        var url = btn.getAttribute( "data-media-url" ) || "";
+        var alt = btn.getAttribute( "data-media-alt" ) || "";
+        if ( !url ) return;
+        var snippet = "\n\n![" + alt + "](" + url + ")\n\n";
+        try {
+            if ( window._postEditorInstance ) {
+                window._postEditorInstance.codemirror.replaceSelection( snippet );
+            }
+        } catch ( e ) { /* ignore — fall back to server insert */ }
+        if ( window._postEditor ) {
+            window._postEditor.closeMediaPicker();
+        }
+    } );
+
+    // Upload-new flow inside the picker modal. POSTs the selected
+    // file to admin:Media.uploadJson; on success we either insert the
+    // new image at cursor (body-mode picker) or set it as the featured
+    // image (featured-mode picker) — same target logic the click
+    // handler above uses, reflected out of the live wire state.
+    window.bxPickerUpload = function( input ) {
+        if ( !input.files || !input.files.length ) return;
+        var file = input.files[ 0 ];
+        var statusEl = document.getElementById( "bxPickerUploadStatus" );
+        var showStatus = function( text, variant ) {
+            if ( !statusEl ) return;
+            statusEl.textContent   = text;
+            statusEl.style.display = text ? "" : "none";
+            statusEl.className     = "small mb-2 text-" + ( variant || "muted" );
+        };
+        showStatus( "Uploading " + file.name + "…", "muted" );
+
+        var fd = new FormData();
+        fd.append( "file", file );
+        // Re-use the filename as an alt-text fallback so MediaService's
+        // required-alt check on images passes. Authors can edit it from
+        // the media library afterwards.
+        fd.append( "altText", file.name.replace( /\.[^.]+$/, "" ) );
+
+        fetch( "/admin/media/uploadJson", {
+            method      : "POST",
+            body        : fd,
+            credentials : "same-origin"
+        } )
+        .then( function( r ) { return r.json().then( function( j ) { return { status: r.status, body: j }; } ); } )
+        .then( function( res ) {
+            if ( !res.body || !res.body.ok ) {
+                showStatus( "Upload failed: " + ( res.body && res.body.error ? res.body.error : "unknown error" ), "danger" );
+                return;
+            }
+            showStatus( "Uploaded. Inserting…", "success" );
+            // Consume via the current picker target without re-querying
+            // the server — we have the url + alt in hand.
+            var target = ( window._postEditor && window._postEditor.pickerTarget ) || "body";
+            if ( target === "featured" ) {
+                window._postEditor.set( "featuredMediaId", res.body.id, false );
+                window._postEditor.closeMediaPicker();
+            } else {
+                var snippet = "\n\n![" + ( res.body.altText || res.body.originalFilename ) + "](" + res.body.url + ")\n\n";
+                try {
+                    if ( window._postEditorInstance ) {
+                        window._postEditorInstance.codemirror.replaceSelection( snippet );
+                    }
+                } catch ( e ) {}
+                window._postEditor.closeMediaPicker();
+            }
+            // Reset the file input so the same file can be re-picked
+            // if the author immediately undoes + re-uploads.
+            input.value = "";
+        } )
+        .catch( function( err ) {
+            showStatus( "Upload failed: " + ( err && err.message ? err.message : "network error" ), "danger" );
+        } );
+    };
 } )();
 </script>
 

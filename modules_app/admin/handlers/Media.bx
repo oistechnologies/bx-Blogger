@@ -93,4 +93,65 @@ class extends="coldbox.system.EventHandler" {
         relocate( event = "admin:Media.index" );
     }
 
+    /**
+     * POST /admin/media/uploadJson — same multipart pipeline as
+     * upload(), but responds with JSON instead of a redirect. Used
+     * by the in-editor media picker so the author can add a new
+     * upload without leaving the post editor. Returns:
+     *
+     *   on success  { ok: true, id, url, originalFilename, altText }
+     *   on failure  { ok: false, error: "..." } (HTTP 400 or 413)
+     */
+    function uploadJson( event, rc, prc ) {
+        param name="rc.altText" default="";
+        param name="rc.title"   default="";
+        param name="rc.caption" default="";
+
+        var user = cbauth.getUser();
+        if ( !user.hasPermission( "media.upload" ) ) {
+            return event.renderData( type = "json", statusCode = 403, data = { "ok" : false, "error" : "You don't have permission to upload media." } );
+        }
+
+        if ( !structKeyExists( form, "file" ) || !len( form.file ?: "" ) ) {
+            return event.renderData( type = "json", statusCode = 400, data = { "ok" : false, "error" : "No file selected." } );
+        }
+
+        try {
+            var result = fileUpload(
+                destination  = getTempDirectory(),
+                fileField    = "file",
+                nameConflict = "makeunique"
+            );
+            var tmpFile = result.serverDirectory & "/" & result.serverFile;
+            var media = mediaService.upload(
+                tmpPath          = tmpFile,
+                originalFilename = result.clientFile,
+                mimeType         = result.contentType & "/" & result.contentSubType,
+                sizeBytes        = result.fileSize,
+                uploaderId       = user.getId(),
+                altText          = rc.altText,
+                title            = rc.title,
+                caption          = rc.caption
+            );
+            try { fileDelete( tmpFile ); } catch ( any e ) {}
+
+            return event.renderData( type = "json", data = {
+                "ok"               : true,
+                "id"               : media.getId(),
+                "url"              : mediaService.urlFor( media ),
+                "originalFilename" : media.getOriginalFilename(),
+                "altText"          : media.getAltText() ?: ""
+            } );
+        }
+        catch ( bxBlogger.MediaAltRequired e ) {
+            return event.renderData( type = "json", statusCode = 400, data = { "ok" : false, "error" : e.message } );
+        }
+        catch ( bxBlogger.MediaTooLarge e ) {
+            return event.renderData( type = "json", statusCode = 413, data = { "ok" : false, "error" : e.message } );
+        }
+        catch ( any e ) {
+            return event.renderData( type = "json", statusCode = 500, data = { "ok" : false, "error" : "Upload failed: " & e.message } );
+        }
+    }
+
 }
