@@ -1,0 +1,95 @@
+/**
+ * bx-Blogger — Application Bootstrap (flat layout)
+ *
+ * This file sits at the project root and serves as the web-server's
+ * Application class. ColdBox's Bootstrap is instantiated and handed the
+ * request in onRequestStart.
+ *
+ * Flat layout means everything the app needs — config/, handlers/, views/,
+ * layouts/, modules_app/, plus ColdBox itself at coldbox/ — lives at this
+ * same root. No /app vs /public split, no BoxLang mapping gymnastics.
+ */
+class {
+
+	/**
+	 * Application Properties
+	 */
+	this.name                 = getSystemSetting( "APPNAME", "bx-Blogger" ) & "_" & hash( getCurrentTemplatePath() );
+	this.sessionManagement    = true;
+	this.sessionTimeout       = createTimespan( 0, 1, 0, 0 );
+	this.setClientCookies     = true;
+	this.setDomainCookies     = true;
+	this.timezone             = "UTC";
+	this.whiteSpaceManagement = "smart";
+
+	/**
+	 * ColdBox Bootstrap Settings
+	 *
+	 * In the flat layout, COLDBOX_APP_ROOT_PATH is simply the directory of
+	 * THIS file — no BoxLang-mapping indirection, no /app vs /public split.
+	 */
+	COLDBOX_APP_ROOT_PATH = getDirectoryFromPath( getCurrentTemplatePath() );
+	COLDBOX_APP_MAPPING   = "";
+	COLDBOX_CONFIG_FILE   = "";
+	COLDBOX_APP_KEY       = "";
+	COLDBOX_FAIL_FAST     = true;
+
+	/**
+	 * Default datasource (configured in runtime/boxlang.json datasources.coldbox)
+	 */
+	this.datasource = "coldbox";
+
+	/**
+	 * Fires when the application starts — bootstraps ColdBox.
+	 */
+	public boolean function onApplicationStart() {
+		bx:setting requestTimeout="300";
+		application.cbBootstrap = new coldbox.system.Bootstrap(
+			COLDBOX_CONFIG_FILE,
+			COLDBOX_APP_ROOT_PATH,
+			COLDBOX_APP_KEY,
+			COLDBOX_APP_MAPPING,
+			COLDBOX_FAIL_FAST
+		);
+		application.cbBootstrap.loadColdbox();
+		return true;
+	}
+
+	/**
+	 * Fires when the application ends.
+	 */
+	public void function onApplicationEnd( struct appScope ) {
+		arguments.appScope.cbBootstrap.onApplicationEnd( arguments.appScope );
+	}
+
+	/**
+	 * Delegate request processing to ColdBox.
+	 */
+	public boolean function onRequestStart( string targetPage ) output=true {
+		return application.cbBootstrap.onRequestStart( arguments.targetPage );
+	}
+
+	/**
+	 * Session start hook.
+	 */
+	public void function onSessionStart() {
+		if ( !isNull( application.cbBootstrap ) ) {
+			application.cbBootstrap.onSessionStart();
+		}
+	}
+
+	/**
+	 * Session end hook.
+	 */
+	public void function onSessionEnd( struct sessionScope, struct appScope ) {
+		arguments.appScope.cbBootstrap.onSessionEnd( argumentCollection = arguments );
+	}
+
+	/**
+	 * Missing-template handler — delegates to ColdBox's onMissingTemplate flow.
+	 */
+	public boolean function onMissingTemplate( template ) {
+		return application.cbBootstrap.onMissingTemplate( argumentCollection = arguments );
+	}
+
+}

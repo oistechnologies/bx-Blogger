@@ -1,5 +1,5 @@
 # =============================================================================
-# bx-Blogger — Development Compose Stack
+# bx-Blogger — Development Compose Stack (flat layout)
 #
 # All development commands run via this compose file. Never invoke `box` /
 # `commandbox` / `testbox` directly on the host — see CLAUDE.md for the
@@ -19,22 +19,21 @@ services:
   app:
     build:
       context: .
-      dockerfile: resources/docker/Dockerfile
+      dockerfile: docker/Dockerfile
     image: bx-blogger-app:dev
     container_name: bx-blogger-app
-    platform: linux/amd64                # PROBE 2: force amd64 — rule out Apple Silicon arm64 quirks
     env_file: .env
     ports:
       - "8080:8080"
     volumes:
-      # Bind-mounted source for hot-reload during dev
-      - ./app:/app/app
-      - ./public:/app/public
-      - ./resources:/app/resources
-      - ./runtime:/app/runtime
-      - ./tests:/app/tests
-      - ./box.json:/app/box.json
-      - ./server.json:/app/server.json
+      # Bind-mount the whole project for hot-reload. The Ortus image's
+      # ${APP_DIR} is typically /app, so we bind to /app.
+      - ./:/app
+      # Exclude directories that shouldn't be shared from host (caches
+      # generated during build). Using anonymous volumes to shadow them.
+      - /app/coldbox
+      - /app/testbox
+      - /app/modules
     depends_on:
       mysql:
         condition: service_healthy
@@ -49,16 +48,16 @@ services:
   worker:
     build:
       context: .
-      dockerfile: resources/docker/Dockerfile
+      dockerfile: docker/Dockerfile
     image: bx-blogger-app:dev
     container_name: bx-blogger-worker
     env_file: .env
     command: [ "box", "cbq:work", "--tries=3" ]
     volumes:
-      - ./app:/app/app
-      - ./resources:/app/resources
-      - ./runtime:/app/runtime
-      - ./box.json:/app/box.json
+      - ./:/app
+      - /app/coldbox
+      - /app/testbox
+      - /app/modules
       - backup-data:/var/backups/bx-blogger
     depends_on:
       app:
@@ -66,8 +65,7 @@ services:
     restart: unless-stopped
     networks:
       - bx-blogger
-    # Disabled by default — cbq tables don't exist until Phase 1 migrations
-    # ship. Enable after Phase 6 with:
+    # Disabled by default until cbq ships (Phase 6). Enable with:
     #   COMPOSE_PROFILES=worker docker compose up -d
     profiles:
       - worker
@@ -85,8 +83,6 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
-      # `mysqladmin ping` returns success whenever the server responds,
-      # regardless of auth — which is exactly the signal we want.
       test: [ "CMD", "mysqladmin", "ping", "-h", "localhost" ]
       interval: 5s
       timeout: 3s
@@ -104,7 +100,7 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     ports:
-      - "9000:9000"   # S3 API — app and SDKs speak to this
+      - "9000:9000"   # S3 API
       - "9001:9001"   # Admin console — DEV ONLY (prod must not expose; see R35)
     volumes:
       - minio-data:/data
@@ -122,16 +118,16 @@ services:
     image: mailhog/mailhog:latest
     container_name: bx-blogger-mailhog
     ports:
-      - "1025:1025"   # SMTP — app sends here; MailHog captures
-      - "8025:8025"   # Web UI — human inspects at http://localhost:8025
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI at http://localhost:8025
     restart: unless-stopped
     networks:
       - bx-blogger
 
 volumes:
-  mysql-data:      # MySQL 8 data directory — persistent across restarts
-  minio-data:      # MinIO object storage — persistent; seeds Phase 2 media
-  backup-data:     # BackupDatabaseJob dump destination — persistent (worker)
+  mysql-data:
+  minio-data:
+  backup-data:
 
 networks:
   bx-blogger:

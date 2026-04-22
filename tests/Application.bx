@@ -1,12 +1,9 @@
 /**
- * bx-Blogger — Test Suite Application Bootstrap
+ * bx-Blogger — Test Suite Application Bootstrap (flat layout)
  *
  * Spins a ColdBox Virtual Application for every test request, pointing at the
- * same /app code tree the real app uses. Short timeouts + page-pool clearing
+ * project root where the real app lives. Short timeouts + page-pool clearing
  * ensure test freshness.
- *
- * Mappings for /app, /modules, /coldbox, etc. are declared in
- * runtime/boxlang.json and inherited here.
  */
 class {
 
@@ -16,8 +13,8 @@ class {
 	this.sessionTimeout     = createTimespan( 0, 0, 15, 0 );
 	this.applicationTimeout = createTimespan( 0, 0, 15, 0 );
 
-	// Tests-tree mapping (app mappings come from runtime/boxlang.json)
-	_testsRoot          = getDirectoryFromPath( getCurrentTemplatePath() );
+	// Tests-tree mapping
+	_testsRoot = getDirectoryFromPath( getCurrentTemplatePath() );
 	this.mappings[ "/tests" ] = _testsRoot;
 
 	/**
@@ -28,10 +25,8 @@ class {
 		bx:setting requestTimeout="9999";
 		pagePoolClear();
 
-		request.coldBoxVirtualApp = new coldbox.system.testing.VirtualApp(
-			appMapping = "/app",
-			webMapping = "/public"
-		);
+		// In flat layout, the app root IS the project root — tests/ sits one level down.
+		request.coldBoxVirtualApp = new coldbox.system.testing.VirtualApp( appMapping = "/root" );
 
 		// Boot the virtual app only for runner + specs requests
 		if ( getBaseTemplatePath().replace( expandPath( "/tests" ), "" ).reFindNoCase( "(runner|specs)" ) ) {

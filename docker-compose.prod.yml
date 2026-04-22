@@ -1,24 +1,11 @@
 # =============================================================================
-# bx-Blogger — Production Compose Stack (self-contained)
+# bx-Blogger — Production Compose Stack (flat layout, self-contained)
 #
 # Run with:
 #   docker compose -f docker-compose.prod.yml up -d
 #
-# This file is NOT an override of docker-compose.yml — it is a complete,
-# self-contained stack for production. Operators clone the repo, populate
-# a prod .env from their secrets manager, and run the command above.
-#
-# Services:
-#   app      — prebuilt image from GHCR, tagged per release
-#   worker   — same image, runs cbq job worker
-#   mysql    — MySQL 8.4, persistent on named volume bx-blogger-mysql-prod
-#   nginx    — reverse proxy, terminates TLS, proxies to app:8080
-#
-# NOT included (operator-driven choices):
-#   - MinIO service (default assumes AWS S3 + CloudFront; see
-#     OPS-AWS-S3-SETUP.md. To self-host MinIO in prod, see
-#     OPS-SELF-HOSTED-MINIO-PROD.md)
-#   - MailHog (prod uses real SMTP via .env)
+# Standalone prod stack — not an override. Operators clone the repo,
+# populate a prod .env from their secrets manager, and run the above command.
 #
 # See DEV-NOTES/PLAN.md §17 for the full operator-choices matrix.
 # =============================================================================
@@ -29,11 +16,7 @@ services:
     container_name: bx-blogger-app
     env_file: .env
     environment:
-      BOXLANG_ENV: production
       ENVIRONMENT: production
-      BOXLANG_DEBUG: "false"
-    # No port mapping — NGINX below proxies port 443 → app:8080 on the
-    # internal network.
     depends_on:
       mysql:
         condition: service_healthy
@@ -46,11 +29,10 @@ services:
     container_name: bx-blogger-worker
     env_file: .env
     environment:
-      BOXLANG_ENV: production
       ENVIRONMENT: production
     command: [ "box", "cbq:work", "--tries=3" ]
     volumes:
-      - backup-data:/var/backups/bx-blogger     # BackupDatabaseJob dumps persist here
+      - backup-data:/var/backups/bx-blogger
     depends_on:
       app:
         condition: service_started
@@ -59,10 +41,8 @@ services:
       - bx-blogger
 
   mysql:
-    # Containerized MySQL is the default per PLAN §17 Round-10. Operators
-    # using external managed MySQL (RDS, DO Managed DB, PlanetScale, etc.)
-    # should delete this entire service block and set DB_HOST in prod .env
-    # to the managed endpoint.
+    # Containerized by default. Delete this block and set DB_HOST in prod .env
+    # to use external managed MySQL.
     image: mysql:8.4
     container_name: bx-blogger-mysql
     environment:
@@ -72,7 +52,6 @@ services:
       MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
     volumes:
       - mysql-data:/var/lib/mysql
-    # No host port mapping — MySQL not reachable from outside the compose network
     healthcheck:
       test: [ "CMD", "mysqladmin", "ping", "-h", "localhost" ]
       interval: 10s
@@ -87,9 +66,9 @@ services:
     image: nginx:1.27-alpine
     container_name: bx-blogger-nginx
     volumes:
-      - ./resources/docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./resources/docker/nginx/conf.d:/etc/nginx/conf.d:ro
-      - ./resources/docker/nginx/tls:/etc/nginx/tls:ro
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./docker/nginx/tls:/etc/nginx/tls:ro
     ports:
       - "80:80"
       - "443:443"
@@ -103,19 +82,8 @@ services:
 volumes:
   mysql-data:
     name: bx-blogger-mysql-prod
-    # Recommended bind-mount alternative for explicit host-disk control:
-    #   driver_opts:
-    #     type: none
-    #     o: bind
-    #     device: /mnt/mysql-disk
   backup-data:
     name: bx-blogger-backups-prod
-    # Recommended: bind-mount to a SEPARATE disk from mysql-data for physical
-    # isolation (so a disk failure doesn't lose live data AND backups).
-    #   driver_opts:
-    #     type: none
-    #     o: bind
-    #     device: /mnt/backup-disk
 
 networks:
   bx-blogger:

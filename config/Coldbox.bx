@@ -35,9 +35,9 @@ class {
 			sessionEndHandler        : "",
 			missingTemplateHandler   : "",
 			// Extension Points
-			applicationHelper        : "/app/helpers/ApplicationHelper.bxm",
+			applicationHelper        : "includes/helpers/ApplicationHelper.bxm",
 			viewsHelper              : "",
-			modulesExternalLocation  : [ "/modules" ],
+			modulesExternalLocation  : [],
 			viewsExternalLocation    : "",
 			layoutsExternalLocation  : "",
 			handlersExternalLocation : "",
@@ -92,7 +92,7 @@ class {
 			appenders : { coldboxTracer : { class : "coldbox.system.logging.appenders.ConsoleAppender" } },
 			filelog    : {
 				class      : "coldbox.system.logging.appenders.RollingFileAppender",
-				properties : { filename : "app", filePath : "/app/logs" }
+				properties : { filename : "app", filePath : expandPath( "logs" ) }
 			},
 			// Root Logger
 			root      : { levelmax : "INFO", appenders : "*" },

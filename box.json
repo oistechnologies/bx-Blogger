@@ -45,41 +45,19 @@
         "commandbox-cfformat":"*",
         "cbdebugger":"^4.4.0+6"
     },
-    "installPathConventions":{
-        "modules":"lib/modules"
-    },
     "installPaths":{
-        "coldbox":"lib/coldbox/",
-        "testbox":"lib/testbox/",
-        "route-visualizer":"lib/modules/route-visualizer/",
-        "cbauth":"lib/modules/cbauth/",
-        "cbvalidation":"lib/modules/cbvalidation/",
-        "qb":"lib/modules/qb/",
-        "quick":"lib/modules/quick/",
-        "cfmigrations":"lib/modules/cfmigrations/",
-        "cbfs":"lib/modules/cbfs/",
-        "cbwire":"lib/modules/cbwire/",
-        "cbdebugger":"lib/modules/cbdebugger/",
-        "cbcsrf":"lib/modules/cbcsrf/",
-        "cbantisamy":"lib/modules/cbantisamy/",
-        "cbpaginator":"lib/modules/cbpaginator/",
-        "cbi18n":"lib/modules/cbi18n/",
-        "cbfeeds":"lib/modules/cbfeeds/",
-        "cbmessagebox":"lib/modules/cbmessagebox/",
-        "mementifier":"lib/modules/mementifier/",
-        "cbjavaloader":"lib/modules/cbjavaloader/",
-        "hyper":"lib/modules/hyper/",
-        "cbstorages":"lib/modules/cbstorages/",
-        "BCrypt":"lib/modules/BCrypt/"
+        "coldbox":"coldbox/",
+        "testbox":"testbox/"
     },
     "scripts":{
-        "format":"cfformat run app/,tests/specs/,*.bx --overwrite --verbose",
-        "format:check":"cfformat check app/,tests/specs/,*.bx ./.cfformat.json --verbose",
-        "format:watch":"cfformat watch path='app/,tests/specs/,*.bx' settingsPath='.cfformat.json'",
-        "docker:build":"!docker build --no-cache -t my-coldbox-app -f ./docker/Dockerfile ./",
-        "docker:run":"!docker run -it -p 8080:8080 my-coldbox-app",
-        "docker:bash":"!docker run -it my-coldbox-app /bin/bash",
-        "docker:stack":"!docker compose -f docker/docker-compose.yaml ${1}"
+        "format":"cfformat run config/,handlers/,interceptors/,models/,modules_app/,tests/specs/,*.bx ./.cfformat.json --overwrite",
+        "format:check":"cfformat check config/,handlers/,interceptors/,models/,modules_app/,tests/specs/,*.bx ./.cfformat.json",
+        "format:watch":"cfformat watch path='config/,handlers/,interceptors/,models/,modules_app/,tests/specs/,*.bx' settingsPath='.cfformat.json'",
+        "docker:build":"!docker compose build",
+        "docker:up":"!docker compose up -d",
+        "docker:down":"!docker compose down",
+        "docker:logs":"!docker compose logs -f app",
+        "docker:bash":"!docker compose exec app bash"
     },
     "testbox":{
         "runner":"/tests/runner.bxm"
