@@ -50,7 +50,51 @@ class extends="coldbox.system.EventHandler" {
 	 */
 
 	function onAppInit( event, rc, prc ) {
-		// Phase 0: no-op. Phase 1+ wires cbauth, TrustedProxyInterceptor, etc.
+		// Phase 1 — self-heal admin seed. If the users table is empty,
+		// create a super_admin from env-var credentials. Runs once per
+		// fresh `docker compose up -v`; idempotent on subsequent boots
+		// because the count() > 0 branch short-circuits.
+		seedInitialAdminIfMissing();
+	}
+
+	/**
+	 * Create the dev super_admin user on first boot.
+	 *
+	 * Moved out of the migrations layer because BCrypt + WireBox are not
+	 * reliably available in the cfmigrations CLI context. At onAppInit
+	 * time the full framework is loaded, so BCrypt, Quick entities, and
+	 * UserService all just work.
+	 */
+	private function seedInitialAdminIfMissing() {
+		var User = getInstance( "User" );
+		if ( User.count() > 0 ) return;
+
+		var env       = server.system.environment ?: {};
+		var email     = env.keyExists( "ADMIN_EMAIL" ) && len( env.ADMIN_EMAIL )
+			? env.ADMIN_EMAIL
+			: "admin@bx-blogger.local";
+		var password  = env.keyExists( "ADMIN_PASSWORD" ) && len( env.ADMIN_PASSWORD )
+			? env.ADMIN_PASSWORD
+			: "ChangeMe-Admin-4242!";
+
+		var pwService = getInstance( "PasswordService" );
+		var Role      = getInstance( "Role" );
+
+		var superAdmin = Role.where( "slug", "super_admin" ).first();
+		if ( isNull( superAdmin ) ) return;  // roles not seeded yet — safety
+
+		var user = User.create( {
+			"email":                email,
+			"password_hash":        pwService.hash( password ),
+			"display_name":         "Site Admin",
+			"username":             "admin",
+			"is_active":            1,
+			"two_factor_enabled":   0,
+			"email_verified_at":    now(),
+			"password_changed_at":  now(),
+			"must_change_password": 0
+		} );
+		user.roles().attach( superAdmin.getId() );
 	}
 
 	function onRequestStart( event, rc, prc ) {

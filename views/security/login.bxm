@@ -1,0 +1,50 @@
+<bx:script>
+    // Template-level code uses `variables` scope — `var` would require a function.
+    prc.pageTitle = "Sign In";
+    prefillEmail  = flash.exists( "loginEmail" ) ? flash.get( "loginEmail" ) : "";
+    returnTo      = prc.returnTo ?: "/admin";
+</bx:script>
+<bx:output>
+<div class="row justify-content-center mt-5">
+	<div class="col-md-6 col-lg-5">
+		<div class="card">
+			<div class="card-body p-4">
+				<h1 class="h4 mb-4 text-center">Sign in to bx-Blogger</h1>
+
+				<form method="POST" action="#event.buildLink( 'login' )#" autocomplete="on">
+					<input type="hidden" name="returnTo" value="#encodeForHTMLAttribute( returnTo )#">
+
+					<div class="mb-3">
+						<label for="email" class="form-label">Email</label>
+						<input type="email"
+						       class="form-control"
+						       id="email"
+						       name="email"
+						       autocomplete="email"
+						       required
+						       autofocus
+						       value="#encodeForHTMLAttribute( prefillEmail )#">
+					</div>
+
+					<div class="mb-3">
+						<label for="password" class="form-label">Password</label>
+						<input type="password"
+						       class="form-control"
+						       id="password"
+						       name="password"
+						       autocomplete="current-password"
+						       required>
+					</div>
+
+					<button type="submit" class="btn btn-primary w-100">Sign in</button>
+				</form>
+			</div>
+		</div>
+		<p class="text-center text-muted small mt-3 mb-0">
+			<!--- Phase 1 Chunk 1.G adds Forgot Password — stub for now.
+			      <a href="#event.buildLink( 'security.forgotPassword' )#">Forgot your password?</a>
+			--->
+		</p>
+	</div>
+</div>
+</bx:output>

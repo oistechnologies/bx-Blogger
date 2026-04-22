@@ -24,8 +24,30 @@ class {
 		route( "/__health" ).to( "main.health" );
 
 		/**
+		 * Authentication routes (Chunk 1.E):
+		 *   GET  /login   → show form
+		 *   POST /login   → validate + cbauth.login
+		 *   GET  /logout  → cbauth.logout + redirect home
+		 */
+		route( "/login" )
+			.withAction( {
+				"GET"  : "login",
+				"POST" : "doLogin"
+			} )
+			.toHandler( "security" );
+
+		route( "/logout" ).to( "security.logout" );
+
+		/**
+		 * Admin dashboard placeholder. Chunk 1.F installs cbsecurity which
+		 * gates this route; for now it only checks `cbauth.isLoggedIn()`
+		 * inside the handler action itself.
+		 */
+		route( "/admin" ).to( "admin.index" );
+
+		/**
 		 * Conventions-based routing — resolves /:handler/:action against
-		 * app/handlers/{Handler}.bx. Phase 0's only handler is Main.bx.
+		 * handlers/{Handler}.bx.
 		 */
 		route( ":handler/:action?" ).end();
 	}

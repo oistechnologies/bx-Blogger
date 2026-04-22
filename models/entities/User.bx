@@ -70,11 +70,13 @@ class extends="quick.models.BaseEntity" accessors="true" {
     /**
      * Is the account verified + active + not soft-deleted?
      * Gates login attempts in Phase 1 Chunk 1.E.
+     *
+     * Defensive against Quick returning "" vs null for unset timestamps.
      */
     function canLogin() {
-        return getIsActive()
-            && !isNull( getEmailVerifiedAt() )
-            && isNull( getDeletedAt() );
+        var verifiedAt = getEmailVerifiedAt() ?: "";
+        var deletedAt  = getDeletedAt() ?: "";
+        return ( getIsActive() ?: 0 ) && len( verifiedAt ) && !len( deletedAt );
     }
 
     /**

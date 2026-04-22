@@ -1,0 +1,104 @@
+/**
+ * bx-Blogger — Security handler (Chunk 1.E)
+ *
+ * Owns the authentication user-facing routes:
+ *   GET  /login   → login()     (show form)
+ *   POST /login   → doLogin()   (validate + cbauth login + audit + redirect)
+ *   GET  /logout  → logout()    (cbauth logout + flash message + redirect home)
+ *
+ * Uses the admin layout so the login form looks consistent with later
+ * admin UI. Phase 3 public themes never touch this — /login is admin-UX-adjacent.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    property name="cbauth"      inject="AuthenticationService@cbauth";
+    property name="userService" inject="UserService";
+
+    this.layouts = {
+        "Admin.bxm" : "*"
+    };
+
+    /**
+     * GET /login — render form. Redirect to /admin if already signed in.
+     */
+    function login( event, rc, prc ) {
+        if ( cbauth.isLoggedIn() ) {
+            relocate( "admin" );
+            return;
+        }
+        prc.returnTo = rc.returnTo ?: "/admin";
+        event.setView( view = "security/login", layout = "Admin" );
+    }
+
+    /**
+     * POST /login — validate + authenticate + audit + redirect.
+     */
+    function doLogin( event, rc, prc ) {
+        param name="rc.email"    default="";
+        param name="rc.password" default="";
+        param name="rc.returnTo" default="/admin";
+
+        var email     = trim( rc.email );
+        var password  = rc.password;
+        var ip        = event.getHTTPHeader( "X-Forwarded-For", cgi.remote_addr ?: "" );
+        var userAgent = cgi.http_user_agent ?: "";
+
+        // Basic form validation before hitting the DB
+        if ( !len( email ) || !len( password ) ) {
+            flash.put( "loginError", "Email and password are required." );
+            relocate( "security.login" );
+            return;
+        }
+
+        // Resolve user first — we want tailored failure reasons for the audit
+        // log (even though the response to the user is always generic).
+        var user = userService.retrieveUserByUsername( email );
+        if ( isNull( user ) ) {
+            userService.recordFailedLogin( email = email, ip = ip, userAgent = userAgent, reason = "user_not_found" );
+            return rejectLogin( argumentCollection = arguments );
+        }
+        if ( !user.canLogin() ) {
+            var reason = isNull( user.getEmailVerifiedAt() )
+                ? "email_not_verified"
+                : ( user.getIsActive() ? "user_deleted" : "user_inactive" );
+            userService.recordFailedLogin( email = email, ip = ip, userAgent = userAgent, reason = reason );
+            return rejectLogin( argumentCollection = arguments );
+        }
+        if ( !userService.isValidCredentials( email, password ) ) {
+            userService.recordFailedLogin( email = email, ip = ip, userAgent = userAgent, reason = "bad_password" );
+            return rejectLogin( argumentCollection = arguments );
+        }
+
+        // All good — establish the cbauth session
+        cbauth.login( user );
+        userService.recordSuccessfulLogin( user = user, ip = ip, userAgent = userAgent );
+
+        // Safe redirect: only allow same-origin relative paths for returnTo
+        var dest = ( left( rc.returnTo, 1 ) == "/" && find( "//", rc.returnTo ) == 0 )
+            ? rc.returnTo
+            : "/admin";
+        relocate( dest );
+    }
+
+    /**
+     * GET /logout — terminate session and go home.
+     */
+    function logout( event, rc, prc ) {
+        if ( cbauth.isLoggedIn() ) {
+            cbauth.logout();
+            flash.put( "message", "You have been signed out." );
+        }
+        relocate( "" );  // redirect to home
+    }
+
+    /**
+     * Shared failure path — generic error message regardless of the actual
+     * failure reason (no user enumeration). Real reason lives in login_audit.
+     */
+    private function rejectLogin( event, rc, prc ) {
+        flash.put( "loginError", "Those credentials didn't match. Please try again." );
+        flash.put( "loginEmail", rc.email );   // prefill email only — never password
+        relocate( "security.login" );
+    }
+
+}

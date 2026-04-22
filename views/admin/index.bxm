@@ -1,0 +1,37 @@
+<bx:output>
+<div class="row">
+	<div class="col-12">
+		<h1 class="h3 mb-4">Welcome back, #encodeForHTML( prc.user.getDisplayName() )#</h1>
+
+		<div class="card">
+			<div class="card-body">
+				<p class="mb-2"><strong>Admin dashboard — Phase 1 placeholder.</strong></p>
+				<p class="text-muted mb-0">
+					This page confirms your session is active. Phase 2 replaces this
+					with real dashboard widgets (recent posts, pending reviews,
+					notifications, media-library quickview, CBWire-driven interactivity).
+				</p>
+			</div>
+		</div>
+
+		<dl class="row mt-4 small text-muted">
+			<dt class="col-sm-3">Signed in as</dt>
+			<dd class="col-sm-9">#encodeForHTML( prc.user.getEmail() )#</dd>
+			<dt class="col-sm-3">Last login</dt>
+			<dd class="col-sm-9">
+				<bx:if !isNull( prc.user.getLastLoginAt() )>
+					#dateTimeFormat( prc.user.getLastLoginAt(), "yyyy-mm-dd HH:nn:ss" )# UTC
+				<bx:else>
+					this is your first session
+				</bx:if>
+			</dd>
+			<dt class="col-sm-3">Roles</dt>
+			<dd class="col-sm-9">
+				<bx:loop array="#prc.user.getRoles()#" item="role">
+					<span class="badge bg-secondary me-1">#encodeForHTML( role.getName() )#</span>
+				</bx:loop>
+			</dd>
+		</dl>
+	</div>
+</div>
+</bx:output>

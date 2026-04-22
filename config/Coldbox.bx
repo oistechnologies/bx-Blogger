@@ -215,6 +215,12 @@ class {
 				"registerWorkers" : getSystemSetting( "CBQ_REGISTER_WORKERS", true ),
 				// The interval to poll for changes to the worker pool scaling.  Defaults to 0 which turns off the scheduled scaling feature.
 				"scaleInterval" : 0
+			},
+			"cbauth" : {
+				// Points cbauth at our UserService which implements
+				// isValidCredentials / retrieveUserByUsername / retrieveUserById.
+				// Short alias works because autoMapModels=true + unique class names.
+				"userServiceClass" : "UserService"
 			}
 		};
 

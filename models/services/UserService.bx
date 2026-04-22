@@ -1,0 +1,121 @@
+/**
+ * bx-Blogger — UserService
+ *
+ * Implements cbauth's IAuthenticationService contract so the module can
+ * drive login/logout flows against our Quick User entity. Also owns
+ * login-audit writes (success + failure) so the Security handler doesn't
+ * need to know the audit-table shape.
+ *
+ * cbauth contract methods:
+ *   isValidCredentials( username, password ) : boolean
+ *   retrieveUserByUsername( username )        : User or null
+ *   retrieveUserById( id )                    : User or null
+ *
+ * Additional methods specific to bx-Blogger:
+ *   recordSuccessfulLogin( user, ip, userAgent )
+ *   recordFailedLogin( email, ip, userAgent, reason )
+ *   touchLastLogin( user, ip )
+ */
+class accessors="true" singleton {
+
+    property name="wirebox"         inject="wirebox";
+    property name="passwordService" inject="PasswordService";
+
+    /**
+     * cbauth: does the email + plaintext-password combo authenticate?
+     * Also records the audit row (success OR failure) so the handler
+     * doesn't have to do a second call.
+     */
+    function isValidCredentials( required string username, required string password ) {
+        var user = retrieveUserByUsername( arguments.username );
+        if ( isNull( user ) ) return false;
+        if ( !user.canLogin() ) return false;  // is_active + email_verified + !deleted
+        return variables.passwordService.verify( arguments.password, user.getPasswordHash() );
+    }
+
+    /**
+     * cbauth: look up a User by the login identifier (email, for us).
+     * Returns null if not found or soft-deleted.
+     */
+    function retrieveUserByUsername( required string username ) {
+        var User = variables.wirebox.getInstance( "User" );
+        return User.where( "email", arguments.username )
+                   .whereNull( "deleted_at" )
+                   .first();
+    }
+
+    /**
+     * cbauth: look up a User by primary key (called when restoring a session).
+     */
+    function retrieveUserById( required any id ) {
+        var User = variables.wirebox.getInstance( "User" );
+        return User.where( "id", arguments.id )
+                   .whereNull( "deleted_at" )
+                   .first();
+    }
+
+    /**
+     * Record a successful login in the login_audit table and bump the
+     * user's last_login_at / last_login_ip columns.
+     */
+    function recordSuccessfulLogin(
+        required any    user,
+        required string ip,
+                 string userAgent = ""
+    ) {
+        writeAudit( {
+            email:         arguments.user.getEmail(),
+            user_id:       arguments.user.getId(),
+            ip:            arguments.ip,
+            user_agent:    left( arguments.userAgent, 512 ),
+            success:       1,
+            failure_reason: javaCast( "null", "" )
+        } );
+        touchLastLogin( arguments.user, arguments.ip );
+    }
+
+    /**
+     * Record a failed login. `email` is the string the user typed (may
+     * not match any real account). `reason` is one of:
+     *   "bad_password", "user_inactive", "user_not_found",
+     *   "email_not_verified", "rate_limited"
+     */
+    function recordFailedLogin(
+        required string email,
+        required string ip,
+                 string userAgent = "",
+                 string reason    = "bad_password"
+    ) {
+        // Resolve user_id if we can (for stats; null if email unknown)
+        var user   = retrieveUserByUsername( arguments.email );
+        var userId = isNull( user ) ? javaCast( "null", "" ) : user.getId();
+
+        writeAudit( {
+            email:          arguments.email,
+            user_id:        userId,
+            ip:             arguments.ip,
+            user_agent:     left( arguments.userAgent, 512 ),
+            success:        0,
+            failure_reason: arguments.reason
+        } );
+    }
+
+    /**
+     * Update a user's last-login timestamps. Called from recordSuccessfulLogin.
+     */
+    function touchLastLogin( required any user, required string ip ) {
+        arguments.user.setLastLoginAt( now() );
+        arguments.user.setLastLoginIp( arguments.ip );
+        arguments.user.save();
+    }
+
+    /**
+     * Internal — inserts a row into login_audit using qb (not Quick, since
+     * there's no entity class for audit rows — append-only log style).
+     */
+    private function writeAudit( required struct row ) {
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        qb.from( "login_audit" ).insert( arguments.row );
+    }
+
+}
