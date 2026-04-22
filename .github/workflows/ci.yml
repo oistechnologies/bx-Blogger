@@ -47,12 +47,114 @@ jobs:
         # Validates the full Dockerfile end-to-end on every push — if any
         # ForgeBox module fails to resolve on BoxLang, or if warmup-server.sh
         # can't compile our classes, CI catches it before the next deploy.
-        # This is R15 (Phase-0 acceptance gate) automated.
+        # This is R15 (Phase-0 acceptance gate) automated. The GHA cache
+        # also primes the `tests` job so TestBox starts from a hot layer
+        # instead of re-downloading every module.
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile
           push: false
-          tags: bx-blogger-app:ci
+          tags: bx-blogger-app:dev     # same tag docker-compose.yml expects
+          load: true                   # keep the image in the runner's local daemon
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  tests:
+    name: TestBox Integration Suite
+    runs-on: ubuntu-latest
+    needs: docker-build               # reuse the image that docker-build just produced/cached
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Seed .env from .env.example
+        # docker-compose.yml reads DB_PASSWORD / ADMIN_* / SMTP_HOST etc.
+        # from .env. The example file ships working dev defaults; CI never
+        # touches real secrets — the whole stack runs inside this
+        # ephemeral workflow.
+        run: cp .env.example .env
+
+      - name: Rebuild app image using the GHA cache
+        # docker-build already warmed the cache; this step is effectively
+        # a no-op on a cache hit. Without it, `docker compose up` would
+        # rebuild without the GHA cache and take ~4 minutes on every run
+        # since the GHA cache is scoped per job.
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          tags: bx-blogger-app:dev
+          load: true
+          cache-from: type=gha
+
+      - name: Start compose stack
+        run: |
+          docker compose up -d
+          echo "Waiting for app to become healthy…"
+          # /__health is the dev healthcheck (Main.bx). BoxLang cold starts
+          # plus module activation can take a bit — we allow up to 2 min.
+          for i in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/__health || echo "000")
+            if [ "$code" = "200" ]; then
+              echo "✓ app healthy after ${i}×2s"
+              break
+            fi
+            sleep 2
+          done
+          docker compose ps
+
+      - name: Run migrations
+        run: docker compose exec -T app box migrate up
+
+      - name: Run TestBox suite
+        # JUnit XML (antjunit format) is consumed by the publish step;
+        # JSON is kept as a human-readable dump. `tests/results/` is
+        # bind-mounted by compose so the files land in the runner's
+        # workspace without an explicit copy-out.
+        #
+        # IMPORTANT: do NOT pass `reporter=` here. When both `reporter`
+        # and `outputFormats` are set, CommandBox uses the passed
+        # reporter for the live run but skips the post-processing step
+        # that actually writes the files — you get an empty
+        # tests/results/ directory. Without `reporter`, CommandBox
+        # defaults to json, then fans the JSON out into every format
+        # listed in outputFormats.
+        run: |
+          mkdir -p tests/results
+          docker compose exec -T app \
+            box testbox run \
+              outputFile=/app/tests/results/test-results \
+              outputFormats=json,antjunit \
+              verbose=false
+
+      - name: Publish test results
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: tests/results/**/*.xml
+          check_name: "TestBox (BoxLang)"
+
+      - name: Upload test-results artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testbox-results
+          path: tests/results/**/*
+
+      - name: Dump app logs on failure
+        if: failure()
+        run: |
+          echo "=== app logs (last 300 lines) ==="
+          docker compose logs app --no-log-prefix | tail -300 || true
+          echo "=== mysql logs (last 50 lines) ==="
+          docker compose logs mysql --no-log-prefix | tail -50 || true
+
+      - name: Tear down compose stack
+        if: always()
+        run: docker compose down --volumes --remove-orphans
