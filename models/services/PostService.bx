@@ -33,8 +33,9 @@
  */
 class accessors="true" singleton {
 
-    property name="wirebox" inject="wirebox";
-    property name="log"     inject="logbox:logger:{this}";
+    property name="wirebox"   inject="wirebox";
+    property name="antisamy"  inject="AntiSamy@cbantisamy";
+    property name="log"       inject="logbox:logger:{this}";
 
     variables.readingWordsPerMinute = 225;   // newsroom-average reading pace
     variables.maxSlugLength         = 200;   // matches posts.slug VARCHAR
@@ -337,15 +338,30 @@ class accessors="true" singleton {
     }
 
     /**
-     * Compiled body. Placeholder — Chunk 2.D wires bx-markdown +
-     * cbantisamy here. For now we strip zero-width chars and wrap the
-     * content so the body_html column is non-empty on insert.
+     * Compile markdown → sanitized HTML.
+     *
+     * The `markdown()` BIF is provided by the bx-markdown runtime module
+     * (registered via server.json's `onServerInitialInstall`). Every
+     * rendering is piped through cbantisamy's `clean()` before it can
+     * reach a template — the policy strips `<script>`, event handlers,
+     * and untrusted URLs. `posts.html.unsafe` (PLAN §10) is a future
+     * escape hatch for editors who need raw HTML widgets; the policy
+     * swap lives here when that permission is wired in Phase 11.
      */
-    private string function compileBody( required string markdown ) {
+    string function compileBody( required string markdown ) {
         if ( !len( trim( arguments.markdown ) ) ) return "";
-        // TODO (2.D): replace with getInstance("bx-markdown").compile(...)
-        //             piped through getInstance("AntiSamy@cbantisamy").htmlSanitizer(...).
-        return arguments.markdown;
+        var rawHtml = markdown( arguments.markdown );
+        return variables.antisamy.clean( rawHtml );
+    }
+
+    /**
+     * Public entry point for the editor's live-preview button. Thin
+     * alias around compileBody — exposes the same markdown→sanitize
+     * pipeline the save path uses, so authors see exactly what the
+     * public site will render.
+     */
+    string function renderPreview( required string markdown ) {
+        return compileBody( arguments.markdown );
     }
 
     /**

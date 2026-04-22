@@ -1,0 +1,50 @@
+/**
+ * bx-Blogger — admin:Posts (Chunk 2.D)
+ *
+ * Thin handler that mounts the CBWIRE editor + list components. All
+ * interaction (filters, pagination, bulk actions, editor save/publish/
+ * trash) happens inside the wires; the handler's only job is to bind a
+ * layout + seed the prc with the post id that the editor wire should
+ * open.
+ *
+ * Routes (under /admin, per modules_app/admin/config/Router.bx):
+ *   GET /admin/posts            → index()   (the list view — name is
+ *                                             the ColdBox default-action
+ *                                             convention so /admin/posts
+ *                                             without a trailing action
+ *                                             segment resolves)
+ *   GET /admin/posts/editor     → editor()  (new post)
+ *   GET /admin/posts/editor/:id → editor()  (existing)
+ *
+ * cbsecurity's `^admin.*` firewall gates every action; permission
+ * checks for each mutation live inside the wire's action methods so
+ * the UI can render a read-only view when the user lacks the right.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    property name="cbauth" inject="AuthenticationService@cbauth";
+
+    this.layouts = {
+        "Main.bxm" : "*"
+    };
+
+    /**
+     * GET /admin/posts — paginated post browser.
+     */
+    function index( event, rc, prc ) {
+        prc.pageTitle = "Posts";
+        event.setView( view = "posts/list" );
+    }
+
+    /**
+     * GET /admin/posts/editor[/:id] — open the editor for a new draft
+     * (when :id is absent) or for the specified post. The wire does
+     * its own existence check; the handler only seeds `prc.postId`.
+     */
+    function editor( event, rc, prc ) {
+        prc.postId    = rc.id ?: 0;
+        prc.pageTitle = prc.postId > 0 ? "Edit post" : "New post";
+        event.setView( view = "posts/editor" );
+    }
+
+}

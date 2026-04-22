@@ -1,0 +1,389 @@
+<bx:script>
+// @startWire
+/**
+ * posts.editor — title/slug/excerpt/body editor + sidebar controls.
+ *
+ * Seeded with `postId` via wire() params. When `postId > 0` the wire
+ * loads the existing post; otherwise it starts a new draft.
+ *
+ * Actions:
+ *   save()    — writes through PostService.update (draft stays draft)
+ *   publish() — save, then PostService.publish
+ *   trash()   — soft-move to trashed status
+ *   preview() — compiles markdown → html for the preview pane
+ *   regenerateSlug() — re-derives the slug from the current title
+ *
+ * Permissions are enforced per-action: contributors can save drafts
+ * they own + Submit for Review (A7 — lands Chunk 2.G); editors + admins
+ * can publish anyone's content. A user lacking a permission sees a
+ * flash error rather than a hidden control — keeps the UI predictable
+ * while Phase 3 theme work lays down field-level conditionals.
+ */
+
+property name="postService" inject="PostService";
+property name="cbauth"      inject="AuthenticationService@cbauth";
+
+data = {
+    "postId"         : 0,
+    "title"          : "",
+    "slug"           : "",
+    "excerpt"        : "",
+    "bodyMarkdown"   : "",
+    "bodyPreview"    : "",
+    "status"         : "draft",
+    "postType"       : "post",
+    "visibility"     : "public",
+    "seoTitle"       : "",
+    "seoDescription" : "",
+    "allowIndexing"  : true,
+    "scheduledAt"    : "",
+    "showPreview"    : false,
+    "flashOk"        : "",
+    "flashError"     : "",
+    "validationErrors" : []
+};
+
+/**
+ * Mount hook — runs once on first render. Seeds `data` from the
+ * database when we're opening an existing post.
+ */
+function onMount() {
+    if ( ( data.postId ?: 0 ) > 0 ) {
+        loadFromDb( data.postId );
+    }
+}
+
+private function loadFromDb( required id ) {
+    var post = getInstance( "Post" ).find( id );
+    if ( isNull( post ) ) {
+        data.flashError = "Post ##" & id & " not found.";
+        data.postId = 0;
+        return;
+    }
+    data.postId         = post.getId();
+    data.title          = post.getTitle() ?: "";
+    data.slug           = post.getSlug() ?: "";
+    data.excerpt        = post.getExcerpt() ?: "";
+    data.bodyMarkdown   = post.getBodyMarkdown() ?: "";
+    data.status         = post.getStatus() ?: "draft";
+    data.postType       = post.getPostType() ?: "post";
+    data.visibility     = post.getVisibility() ?: "public";
+    data.seoTitle       = post.getSeoTitle() ?: "";
+    data.seoDescription = post.getSeoDescription() ?: "";
+    data.allowIndexing  = !!( post.getAllowIndexing() ?: 1 );
+    data.scheduledAt    = len( post.getScheduledAt() ?: "" )
+        ? dateTimeFormat( post.getScheduledAt(), "yyyy-mm-dd'T'HH:nn" )
+        : "";
+}
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function save() {
+    clearFlashes();
+    if ( !canSave() ) {
+        data.flashError = "You don't have permission to save this post.";
+        return;
+    }
+    var errors = validate();
+    if ( errors.len() ) {
+        data.validationErrors = errors;
+        return;
+    }
+
+    var attrs = collectAttrs();
+    var editorId = cbauth.getUser().getId();
+
+    if ( ( data.postId ?: 0 ) == 0 ) {
+        attrs.authorId = editorId;
+        var post = postService.create( attrs );
+        data.postId = post.getId();
+        data.flashOk = "Draft created.";
+    } else {
+        var post = getInstance( "Post" ).find( data.postId );
+        postService.update(
+            post          = post,
+            attrs         = attrs,
+            editorId      = editorId,
+            changeSummary = "manual"
+        );
+        data.flashOk = "Saved.";
+    }
+    // Reload to reflect normalised slug, bumped version, etc.
+    loadFromDb( data.postId );
+}
+
+function publish() {
+    clearFlashes();
+    if ( !canPublish() ) {
+        data.flashError = "You don't have permission to publish this post.";
+        return;
+    }
+    save();   // persist current form state first
+    if ( len( data.flashError ) || data.validationErrors.len() ) return;
+
+    var post = getInstance( "Post" ).find( data.postId );
+    if ( len( data.scheduledAt ) && dateCompare( data.scheduledAt, now() ) == 1 ) {
+        postService.schedule( post, data.scheduledAt );
+        data.flashOk = "Scheduled for " & dateTimeFormat( data.scheduledAt, "yyyy-mm-dd HH:nn" ) & ".";
+    } else {
+        postService.publish( post );
+        data.flashOk = "Published.";
+    }
+    loadFromDb( data.postId );
+}
+
+function trash() {
+    clearFlashes();
+    if ( ( data.postId ?: 0 ) == 0 ) return;
+
+    var post = getInstance( "Post" ).find( data.postId );
+    var user = cbauth.getUser();
+    var isMine = post.getAuthorId() == user.getId();
+    var ok = isMine
+        ? user.hasPermission( "posts.delete.own" )
+        : user.hasPermission( "posts.delete.others" );
+    if ( !ok ) {
+        data.flashError = "You don't have permission to trash this post.";
+        return;
+    }
+    postService.trash( post );
+    data.flashOk = "Moved to trash.";
+    data.status = "trashed";
+}
+
+function preview() {
+    data.bodyPreview = postService.renderPreview( data.bodyMarkdown ?: "" );
+    data.showPreview = true;
+}
+
+function hidePreview() {
+    data.showPreview = false;
+}
+
+function regenerateSlug() {
+    if ( !len( trim( data.title ) ) ) return;
+    data.slug = postService.slugify( data.title );
+}
+
+// --------------------------------------------------------------------
+// Helpers
+// --------------------------------------------------------------------
+
+private struct function collectAttrs() {
+    return {
+        "title"          : trim( data.title ),
+        "slug"           : len( trim( data.slug ) ) ? data.slug : postService.slugify( data.title ),
+        "excerpt"        : data.excerpt,
+        "bodyMarkdown"   : data.bodyMarkdown,
+        "postType"       : data.postType,
+        "visibility"     : data.visibility,
+        "seoTitle"       : data.seoTitle,
+        "seoDescription" : data.seoDescription,
+        "allowIndexing"  : data.allowIndexing ? 1 : 0
+    };
+}
+
+private array function validate() {
+    var errors = [];
+    if ( !len( trim( data.title ) ) )        errors.append( "Title is required." );
+    if ( !len( trim( data.bodyMarkdown ) ) ) errors.append( "Body is required." );
+    if ( len( data.title ) > 300 )           errors.append( "Title cannot exceed 300 characters." );
+    return errors;
+}
+
+private boolean function canSave() {
+    var user = cbauth.getUser();
+    if ( ( data.postId ?: 0 ) == 0 ) return user.hasPermission( "posts.create" );
+    var post = getInstance( "Post" ).find( data.postId );
+    if ( isNull( post ) ) return false;
+    return post.getAuthorId() == user.getId()
+        ? user.hasPermission( "posts.edit.own" )
+        : user.hasPermission( "posts.edit.others" );
+}
+
+private boolean function canPublish() {
+    var user = cbauth.getUser();
+    if ( ( data.postId ?: 0 ) == 0 ) return user.hasPermission( "posts.publish.own" );
+    var post = getInstance( "Post" ).find( data.postId );
+    if ( isNull( post ) ) return false;
+    return post.getAuthorId() == user.getId()
+        ? user.hasPermission( "posts.publish.own" )
+        : user.hasPermission( "posts.publish.others" );
+}
+
+private function clearFlashes() {
+    data.flashOk = "";
+    data.flashError = "";
+    data.validationErrors = [];
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<div>
+	<bx:if len( args.flashOk )>
+		<div class="alert alert-success alert-dismissible">
+			#encodeForHTML( args.flashOk )#
+			<button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+		</div>
+	</bx:if>
+	<bx:if len( args.flashError )>
+		<div class="alert alert-danger alert-dismissible">
+			#encodeForHTML( args.flashError )#
+			<button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+		</div>
+	</bx:if>
+	<bx:if args.validationErrors.len()>
+		<div class="alert alert-warning">
+			<strong>Fix these before saving:</strong>
+			<ul class="mb-0">
+				<bx:loop array="#args.validationErrors#" item="err">
+					<li>#encodeForHTML( err )#</li>
+				</bx:loop>
+			</ul>
+		</div>
+	</bx:if>
+
+	<div class="row g-3">
+		<!--- Main editor column --->
+		<div class="col-lg-8">
+			<div class="card">
+				<div class="card-body">
+					<div class="mb-3">
+						<label for="postTitle" class="form-label">Title</label>
+						<input type="text"
+						       id="postTitle"
+						       class="form-control form-control-lg"
+						       wire:model.blur="title"
+						       placeholder="Your post title"
+						       maxlength="300">
+					</div>
+					<div class="mb-3">
+						<label for="postSlug" class="form-label d-flex justify-content-between">
+							<span>Slug</span>
+							<button type="button" class="btn btn-sm btn-link p-0"
+							        wire:click="regenerateSlug">regenerate from title</button>
+						</label>
+						<input type="text"
+						       id="postSlug"
+						       class="form-control"
+						       wire:model.blur="slug">
+						<small class="text-muted">Public URL: <code>/#args.slug#</code></small>
+					</div>
+					<div class="mb-3">
+						<label for="postExcerpt" class="form-label">Excerpt</label>
+						<textarea id="postExcerpt"
+						          class="form-control"
+						          rows="2"
+						          maxlength="500"
+						          wire:model.blur="excerpt"
+						          placeholder="Short summary shown on archive pages and OG cards"></textarea>
+					</div>
+					<div class="mb-3">
+						<label for="postBody" class="form-label d-flex justify-content-between">
+							<span>Body (markdown)</span>
+							<span>
+								<button type="button" class="btn btn-sm btn-link p-0"
+								        wire:click="preview">Preview</button>
+								<bx:if args.showPreview>
+									·
+									<button type="button" class="btn btn-sm btn-link p-0"
+									        wire:click="hidePreview">Hide preview</button>
+								</bx:if>
+							</span>
+						</label>
+						<textarea id="postBody"
+						          class="form-control font-monospace"
+						          rows="18"
+						          wire:model.blur="bodyMarkdown"
+						          placeholder="## Hello world
+
+Write in markdown. Headings, lists, **bold**, [links](https://example.com), and fenced code blocks all work.
+"></textarea>
+					</div>
+
+					<bx:if args.showPreview>
+						<div class="mt-3 p-3 border rounded bg-light">
+							<div class="small text-muted mb-2">Preview</div>
+							<div class="post-preview">#args.bodyPreview#</div>
+						</div>
+					</bx:if>
+				</div>
+			</div>
+		</div>
+
+		<!--- Sidebar --->
+		<div class="col-lg-4">
+			<div class="card mb-3">
+				<div class="card-body">
+					<h2 class="h6">Status</h2>
+					<p class="small mb-2">
+						Current: <span class="badge bg-secondary text-uppercase">#encodeForHTML( args.status )#</span>
+					</p>
+					<div class="mb-2">
+						<label for="postVisibility" class="form-label small">Visibility</label>
+						<select id="postVisibility" class="form-select form-select-sm" wire:model.live="visibility">
+							<option value="public">Public</option>
+							<option value="private">Private</option>
+							<option value="password">Password-protected</option>
+						</select>
+					</div>
+					<div class="mb-3">
+						<label for="postSchedule" class="form-label small">Publish at (leave blank for now)</label>
+						<input type="datetime-local"
+						       id="postSchedule"
+						       class="form-control form-control-sm"
+						       wire:model.blur="scheduledAt">
+					</div>
+					<div class="d-grid gap-2">
+						<button class="btn btn-outline-primary" wire:click="save">Save draft</button>
+						<button class="btn btn-primary" wire:click="publish">
+							<bx:if len( args.scheduledAt )>Schedule<bx:else>Publish</bx:if>
+						</button>
+						<bx:if ( args.postId ?: 0 ) > 0 && args.status != "trashed">
+							<button class="btn btn-outline-danger btn-sm"
+							        wire:click="trash"
+							        wire:confirm="Move this post to trash?">Move to trash</button>
+						</bx:if>
+					</div>
+				</div>
+			</div>
+
+			<div class="card mb-3">
+				<div class="card-body">
+					<h2 class="h6">Post type</h2>
+					<select class="form-select form-select-sm" wire:model.live="postType">
+						<option value="post">Post</option>
+						<option value="page">Page</option>
+					</select>
+				</div>
+			</div>
+
+			<div class="card">
+				<div class="card-body">
+					<h2 class="h6">SEO</h2>
+					<div class="mb-2">
+						<label for="postSeoTitle" class="form-label small">SEO title</label>
+						<input type="text" id="postSeoTitle" class="form-control form-control-sm"
+						       wire:model.blur="seoTitle" maxlength="255">
+					</div>
+					<div class="mb-2">
+						<label for="postSeoDescription" class="form-label small">SEO description</label>
+						<textarea id="postSeoDescription" class="form-control form-control-sm" rows="2"
+						          maxlength="320" wire:model.blur="seoDescription"></textarea>
+					</div>
+					<div class="form-check">
+						<input class="form-check-input" type="checkbox" id="postAllowIndexing"
+						       wire:model.live="allowIndexing">
+						<label class="form-check-label small" for="postAllowIndexing">
+							Allow search indexing
+						</label>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+</bx:output>

@@ -41,8 +41,11 @@
 		<div class="row">
 			<aside class="col-12 col-md-3 col-lg-2 admin-sidebar mb-4">
 				<nav class="nav flex-column">
-					<a class="nav-link active" href="#event.buildLink( 'admin' )#">Dashboard</a>
-					<a class="nav-link disabled"  aria-disabled="true">Posts <small class="text-muted">(2.D)</small></a>
+					<bx:set currentEvent = event.getCurrentEvent()>
+					<a class="nav-link #( currentEvent == 'admin:Dashboard.index' ? 'active' : '' )#"
+					   href="#event.buildLink( 'admin' )#">Dashboard</a>
+					<a class="nav-link #( currentEvent.startsWith( 'admin:Posts.' ) ? 'active' : '' )#"
+					   href="#event.buildLink( 'admin:Posts.index' )#">Posts</a>
 					<a class="nav-link disabled"  aria-disabled="true">Categories <small class="text-muted">(2.E)</small></a>
 					<a class="nav-link disabled"  aria-disabled="true">Tags <small class="text-muted">(2.E)</small></a>
 					<a class="nav-link disabled"  aria-disabled="true">Media <small class="text-muted">(2.F)</small></a>

@@ -1,0 +1,240 @@
+<bx:script>
+// @startWire
+/**
+ * posts.list — paginated post browser.
+ *
+ * Filters: status ("" = all) + postType ("" = all) + free-text search
+ * over title/slug. Actions: trash / restore (single-row). Pagination
+ * is server-side — 20 rows per page, wire:click updates `page` and
+ * re-renders.
+ *
+ * cbauth + permission checks happen at action time so a contributor
+ * browsing the same page as an editor sees the "Trash" button but
+ * gets a flash error if they try to trash a post they don't own.
+ * Phase 2.G will hide the button per-row based on ownership; for
+ * 2.D the service-layer check + user-facing error is enough.
+ */
+
+property name="postService" inject="PostService";
+property name="cbauth"      inject="AuthenticationService@cbauth";
+
+data = {
+    "search"     : "",
+    "statusFilter"   : "",      // "" = all
+    "postTypeFilter" : "post",  // default to hiding pages in the posts list
+    "page"       : 1,
+    "perPage"    : 20,
+    "flashOk"    : "",
+    "flashError" : ""
+};
+
+/**
+ * Rebuild the current page of rows + the total count for pagination.
+ * Called at first render and every time a filter / page changes.
+ */
+function getRowsAndCount() {
+    var qb = getInstance( "QueryBuilder@qb" ).newQuery()
+        .from( "posts" )
+        .whereNull( "deleted_at" )
+        .where( "status", "!=", "trashed" );
+
+    if ( len( data.postTypeFilter ) ) {
+        qb.where( "post_type", data.postTypeFilter );
+    }
+    if ( len( data.statusFilter ) ) {
+        qb.where( "status", data.statusFilter );
+    }
+    if ( len( trim( data.search ) ) ) {
+        var q = "%" & trim( data.search ) & "%";
+        qb.where( function( w ) {
+            w.where( "title", "like", q ).orWhere( "slug", "like", q );
+        } );
+    }
+
+    var total = qb.count();
+
+    var rows = qb.newQuery()
+        .from( "posts" )
+        .whereNull( "deleted_at" )
+        .where( "status", "!=", "trashed" );
+
+    if ( len( data.postTypeFilter ) ) rows.where( "post_type", data.postTypeFilter );
+    if ( len( data.statusFilter ) )   rows.where( "status",    data.statusFilter );
+    if ( len( trim( data.search ) ) ) {
+        var q = "%" & trim( data.search ) & "%";
+        rows.where( function( w ) {
+            w.where( "title", "like", q ).orWhere( "slug", "like", q );
+        } );
+    }
+
+    var offset = ( data.page - 1 ) * data.perPage;
+    if ( offset < 0 ) offset = 0;
+
+    rows = rows
+        .select( [ "id", "title", "slug", "post_type", "status", "author_id", "updated_at", "published_at" ] )
+        .orderBy( "updated_at", "desc" )
+        .limit( data.perPage )
+        .offset( offset )
+        .get();
+
+    return { "rows" : rows, "total" : total };
+}
+
+/**
+ * Action: apply the search/filter form. Always resets pagination to 1.
+ */
+function applyFilters() {
+    data.page = 1;
+}
+
+function gotoPage( required pageNumber ) {
+    if ( pageNumber < 1 ) pageNumber = 1;
+    data.page = pageNumber;
+}
+
+/**
+ * Action: trash a post. Checks `posts.delete.own` / `posts.delete.others`
+ * before dispatching to PostService.
+ */
+function trashPost( required postId ) {
+    var user = cbauth.getUser();
+    var post = getInstance( "Post" ).find( postId );
+    if ( isNull( post ) ) {
+        data.flashError = "That post no longer exists.";
+        return;
+    }
+
+    var isMine = post.getAuthorId() == user.getId();
+    var canDelete = isMine
+        ? user.hasPermission( "posts.delete.own" )
+        : user.hasPermission( "posts.delete.others" );
+    if ( !canDelete ) {
+        data.flashError = "You don't have permission to trash this post.";
+        return;
+    }
+
+    postService.trash( post );
+    data.flashOk = "Post moved to trash.";
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:script>
+    rc      = getRowsAndCount();
+    rows    = rc.rows;
+    total   = rc.total;
+    pageMax = ceiling( total / args.perPage );
+    if ( pageMax < 1 ) pageMax = 1;
+</bx:script>
+
+<div>
+	<bx:if len( args.flashOk )>
+		<div class="alert alert-success alert-dismissible">
+			#encodeForHTML( args.flashOk )#
+			<button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+		</div>
+	</bx:if>
+	<bx:if len( args.flashError )>
+		<div class="alert alert-danger alert-dismissible">
+			#encodeForHTML( args.flashError )#
+			<button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+		</div>
+	</bx:if>
+
+	<!--- Filter / search bar --->
+	<form class="row g-2 mb-3" wire:submit.prevent="applyFilters">
+		<div class="col-md-5">
+			<input type="text"
+			       class="form-control"
+			       placeholder="Search title or slug…"
+			       wire:model="search"
+			       wire:keydown.enter="applyFilters">
+		</div>
+		<div class="col-md-3">
+			<select class="form-select" wire:model.live="statusFilter">
+				<option value="">All statuses</option>
+				<option value="draft">Draft</option>
+				<option value="pending_review">Pending review</option>
+				<option value="scheduled">Scheduled</option>
+				<option value="published">Published</option>
+				<option value="archived">Archived</option>
+			</select>
+		</div>
+		<div class="col-md-3">
+			<select class="form-select" wire:model.live="postTypeFilter">
+				<option value="post">Posts</option>
+				<option value="page">Pages</option>
+				<option value="">Both</option>
+			</select>
+		</div>
+		<div class="col-md-1">
+			<button class="btn btn-outline-secondary w-100" type="submit">Go</button>
+		</div>
+	</form>
+
+	<div class="card">
+		<bx:if rows.len() == 0>
+			<div class="card-body text-center text-muted py-5">
+				No posts match those filters.
+			</div>
+		<bx:else>
+			<table class="table table-hover mb-0">
+				<thead class="table-light">
+					<tr>
+						<th>Title</th>
+						<th>Status</th>
+						<th>Type</th>
+						<th>Updated</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody>
+					<bx:loop array="#rows#" item="row">
+						<tr>
+							<td>
+								<a href="#event.buildLink( to = 'admin:Posts.editor', queryString = 'id=' & row.id )#">
+									#encodeForHTML( row.title )#
+								</a>
+								<br>
+								<small class="text-muted">/#encodeForHTML( row.slug )#</small>
+							</td>
+							<td>
+								<span class="badge bg-secondary text-uppercase">#encodeForHTML( row.status )#</span>
+							</td>
+							<td>#encodeForHTML( row.post_type )#</td>
+							<td>
+								<small>#dateTimeFormat( row.updated_at, "yyyy-mm-dd HH:nn" )#</small>
+							</td>
+							<td class="text-end">
+								<button class="btn btn-sm btn-outline-danger"
+								        wire:click="trashPost(#row.id#)"
+								        wire:confirm="Move this post to trash?">
+									Trash
+								</button>
+							</td>
+						</tr>
+					</bx:loop>
+				</tbody>
+			</table>
+		</bx:if>
+	</div>
+
+	<!--- Pagination --->
+	<bx:if pageMax > 1>
+		<nav class="mt-3">
+			<ul class="pagination pagination-sm mb-0">
+				<li class="page-item #( args.page <= 1 ? 'disabled' : '' )#">
+					<button class="page-link" wire:click="gotoPage(#args.page - 1#)">Prev</button>
+				</li>
+				<li class="page-item">
+					<span class="page-link">Page #args.page# of #pageMax# · #total# total</span>
+				</li>
+				<li class="page-item #( args.page >= pageMax ? 'disabled' : '' )#">
+					<button class="page-link" wire:click="gotoPage(#args.page + 1#)">Next</button>
+				</li>
+			</ul>
+		</nav>
+	</bx:if>
+</div>
+</bx:output>

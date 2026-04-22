@@ -171,6 +171,9 @@ Hard-won lessons from Chunks 1.E → 1.I. Read these before adding new handlers,
 - **Template interpolation uses BoxLang syntax, not Livewire's mustache.** Write `<bx:output>#args.count#</bx:output>` (or `#variables.count#`), not `{{ count }}`. `{{ }}` renders as literal text. Data properties are exposed in `variables`, `variables.data`, and `variables.args` in the encapsulated render context.
 - **CBWIRE compiles single-file components into a `modules/cbwire/views/tmp/` cache.** When you edit a wire's structure and nothing picks up, delete the matching tmp file(s) (`docker compose exec app rm -f /app/modules/cbwire/views/tmp/hello.*`). `fwreinit` alone doesn't invalidate this cache.
 - **Every layout that renders a wire must call `#wireStyles()#` in `<head>` and `#wireScripts()#` before `</body>`.** Without these, the client runtime isn't loaded and `wire:click` / reactive updates silently no-op.
+- **Wires always live in the app-root `wires/` folder** — even for components only used by an HMVC module. CBWire's `wire("name")` resolves against WireBox instance path `wires.name`; putting files under `modules_app/{module}/wires/` gives `Instance not found: 'wires.posts.list'`. Module-scoped component lookup is a Phase 11 problem, not Phase 2.
+- **`<bx:/bx:if>` is not how you close a BX tag.** Use `</bx:if>`. BoxLang's parser emits `token recognition error at: '/'` which doesn't obviously point at the typo.
+- **Module handler default action is `index`**, not whatever you name it. ColdBox's conventions route `:handler/:action?` resolves a bare `/admin/posts` to `admin:Posts.index`. Name the list-view action `index()`, not `list()`, or register an explicit route.
 
 ### Testing
 
