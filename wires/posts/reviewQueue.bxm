@@ -107,7 +107,7 @@ private function clearFlashes() {
 								<br><small class="text-muted">/#encodeForHTML( row.slug )#</small>
 							</td>
 							<td>#encodeForHTML( row.author ?: "—" )#</td>
-							<td><small>#dateTimeFormat( row.updated_at, "yyyy-mm-dd HH:nn" )#</small></td>
+							<td><small>#fmtDateTimeShort( row.updated_at )#</small></td>
 							<td class="text-end">
 								<a class="btn btn-sm btn-outline-secondary"
 								   href="#event.buildLink( to = 'admin:Posts.editor', queryString = 'id=' & row.id )#">Open</a>

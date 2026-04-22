@@ -198,7 +198,7 @@ function publish() {
     var post = getInstance( "Post" ).find( data.postId );
     if ( len( data.scheduledAt ) && dateCompare( data.scheduledAt, now() ) == 1 ) {
         postService.schedule( post, data.scheduledAt );
-        data.flashOk = "Scheduled for " & dateTimeFormat( data.scheduledAt, "yyyy-mm-dd HH:nn" ) & ".";
+        data.flashOk = "Scheduled for " & fmtDateTimeLong( data.scheduledAt ) & ".";
     } else {
         postService.publish( post );
         data.flashOk = "Published.";
@@ -280,7 +280,7 @@ function sharePreview() {
     var post   = getInstance( "Post" ).find( data.postId );
     var result = draftPreviewService.share( post, user.getId() );
     data.previewShareUrl = result.url;
-    data.previewExpires  = dateTimeFormat( result.expiresAt, "yyyy-mm-dd HH:nn" );
+    data.previewExpires  = fmtDateTimeLong( result.expiresAt );
 }
 
 function dismissShareLink() {
@@ -312,7 +312,7 @@ function autosave() {
         bodyMarkdown = data.bodyMarkdown ?: "",
         title        = data.title ?: ""
     );
-    data.lastAutosaveAt = dateTimeFormat( now(), "HH:nn:ss" );
+    data.lastAutosaveAt = dateTimeFormat( now(), "h:nn:ss tt" );
 }
 
 // --------------------------------------------------------------------

@@ -207,7 +207,7 @@ function trashPost( required postId ) {
 							</td>
 							<td>#encodeForHTML( row.post_type )#</td>
 							<td>
-								<small>#dateTimeFormat( row.updated_at, "yyyy-mm-dd HH:nn" )#</small>
+								<small>#fmtDateTimeShort( row.updated_at )#</small>
 							</td>
 							<td class="text-end">
 								<div class="btn-group btn-group-sm" role="group" aria-label="Row actions">

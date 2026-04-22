@@ -39,7 +39,7 @@
                     <dt>Last login</dt>
                     <dd>
                         <bx:if !isNull( prc.user.getLastLoginAt() )>
-                            #dateTimeFormat( prc.user.getLastLoginAt(), "yyyy-mm-dd HH:nn:ss" )# UTC
+                            #fmtDateTimeLong( prc.user.getLastLoginAt() )#
                         <bx:else>
                             this is your first session
                         </bx:if>
@@ -154,7 +154,7 @@
                                         </a>
                                     </td>
                                     <td><span class="badge bg-#statusColor( p.status )# text-uppercase">#encodeForHTML( p.status )#</span></td>
-                                    <td class="text-end text-muted small">#dateTimeFormat( p.updated_at, "mmm d, HH:nn" )#</td>
+                                    <td class="text-end text-muted small">#fmtDateTimeShort( p.updated_at )#</td>
                                 </tr>
                             </bx:loop>
                         </tbody>
@@ -184,7 +184,7 @@
                                     <tr>
                                         <td>#encodeForHTML( l.email )#</td>
                                         <td><code class="small">#encodeForHTML( l.ip )#</code></td>
-                                        <td class="text-end text-muted small">#dateTimeFormat( l.created_at, "yyyy-mm-dd HH:nn" )#</td>
+                                        <td class="text-end text-muted small">#fmtDateTimeShort( l.created_at )#</td>
                                     </tr>
                                 </bx:loop>
                             </tbody>

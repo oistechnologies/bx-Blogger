@@ -1,5 +1,34 @@
 <bx:script>
     /**
+     * Long-form date-time display used across the admin chrome.
+     * Produces e.g. "Jan. 22, 2026 3:34 PM". Empty string for null
+     * or non-date input so callers don't need to guard.
+     *
+     * Mask breakdown:
+     *   mmm   — 3-letter month (Jan, Feb, etc.)
+     *   .     — literal period after month
+     *   d     — day, no leading zero
+     *   yyyy  — 4-digit year
+     *   h:nn  — 12-hour time (`nn` disambiguates minutes from months
+     *           in CFML/BoxLang masks)
+     *   tt    — AM/PM
+     */
+    function fmtDateTimeLong( required any dt ) {
+        if ( isNull( arguments.dt ) || !isDate( arguments.dt ) ) return "";
+        return dateTimeFormat( arguments.dt, "mmm. d, yyyy h:nn tt" );
+    }
+
+    /**
+     * Short-form date-time display used in tight table cells.
+     * Produces e.g. "2026-01-22 3:34 PM". Same null-safety contract
+     * as fmtDateTimeLong.
+     */
+    function fmtDateTimeShort( required any dt ) {
+        if ( isNull( arguments.dt ) || !isDate( arguments.dt ) ) return "";
+        return dateTimeFormat( arguments.dt, "yyyy-mm-dd h:nn tt" );
+    }
+
+    /**
      * Build a pagination struct for the theme's pagination partial.
      * Called from public handlers after a PublicPostService.list* call.
      *
