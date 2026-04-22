@@ -197,6 +197,43 @@ class extends="tests.support.BaseIntegrationSpec" {
                 } );
             } );
 
+            describe( "responsiveImage() (B10)", function() {
+                it( "degrades to src-only when thumbnails_json is empty", function() {
+                    var media = uploadFixture();
+                    var desc  = mediaService.responsiveImage( media );
+
+                    expect( desc.src ).toInclude( media.getPath() );
+                    expect( desc.srcset ).toBe( "" );
+                    expect( desc.sizes ).toBe( "" );
+                    expect( desc.alt ).toBe( "fixture" );
+                } );
+
+                it( "builds a srcset from the media's thumbnails_json + width pair", function() {
+                    var media = uploadFixture();
+
+                    // Simulate what Phase 6's GenerateThumbnailsJob will
+                    // eventually write.
+                    getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "media" )
+                        .where( "id", media.getId() )
+                        .update( {
+                            "thumbnails_json" : '{"small":{"path":"thumbs/small.jpg","width":480,"height":240},"medium":{"path":"thumbs/medium.jpg","width":1024,"height":512}}',
+                            "width"           : 2048,
+                            "height"          : 1024
+                        } );
+
+                    var reloaded = getInstance( "Media" ).find( media.getId() );
+                    var desc = mediaService.responsiveImage( reloaded, "(max-width: 600px) 100vw, 50vw" );
+
+                    expect( desc.srcset ).toInclude( "480w" );
+                    expect( desc.srcset ).toInclude( "1024w" );
+                    expect( desc.srcset ).toInclude( "2048w" );
+                    expect( desc.sizes ).toBe( "(max-width: 600px) 100vw, 50vw" );
+                    expect( desc.width ).toBe( 2048 );
+                    expect( desc.height ).toBe( 1024 );
+                } );
+            } );
+
         } );
     }
 

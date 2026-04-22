@@ -25,6 +25,8 @@
     <div class="post-body">
         #( prc.post.getBodyHtml() ?: "" )#
     </div>
+
+    #view( view = "bx-blogger-fallback/partials/related-posts" )#
 <bx:else>
     <p class="text-muted">Post unavailable.</p>
 </bx:if>

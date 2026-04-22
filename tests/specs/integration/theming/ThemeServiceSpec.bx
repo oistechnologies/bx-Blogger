@@ -26,10 +26,12 @@ class extends="tests.support.BaseIntegrationSpec" {
             if ( arrayLen( variables.createdThemeSlugs ?: [] ) ) {
                 qb.newQuery().from( "themes" ).whereIn( "slug", variables.createdThemeSlugs ).delete();
             }
-            // Leave `bx-blogger-fallback` as the single active theme so
-            // subsequent specs and dev-seed runs find the app in a clean state.
+            // Restore the post-migration active state: `bx-blogger-default`
+            // is the out-of-the-box theme (per the 3.C seed migration);
+            // leaving fallback active here would show dev hits the wrong
+            // theme on the next page load.
             qb.newQuery().from( "themes" ).update( { "is_active" : 0 } );
-            qb.newQuery().from( "themes" ).where( "slug", "bx-blogger-fallback" ).update( { "is_active" : 1 } );
+            qb.newQuery().from( "themes" ).where( "slug", "bx-blogger-default" ).update( { "is_active" : 1 } );
 
             // Clean up any synthetic test-theme directories we created
             // under /tmp.

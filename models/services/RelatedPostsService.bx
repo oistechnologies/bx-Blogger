@@ -1,0 +1,177 @@
+/**
+ * bx-Blogger — RelatedPostsService (B3 — Chunk 3.D)
+ *
+ * Given a published post, return up to `limit` other published posts
+ * ranked by how much they overlap editorially:
+ *
+ *   1. Shared-tag count      DESC
+ *   2. Shared-category count DESC
+ *   3. `published_at`        DESC  (most recent wins ties)
+ *
+ * The composite score is computed in a single SQL statement that LEFT
+ * JOINs the post_tags + post_categories pivots against the source
+ * post's tag / category sets and counts the matching rows per
+ * candidate. No post means no related posts — the service short-circuits.
+ *
+ * Caching:
+ *   - Keyed by `relatedPosts:{id}:{limit}` in the default CacheBox
+ *     cache (30-min idle, 2-hour absolute default — see CacheBox.bx).
+ *   - Cache is busted when the source post is re-saved, re-published,
+ *     or has its tags/categories mutated (Phase 5 `cacheInvalidate`
+ *     hook will own the explicit bust; until then the 2-hour TTL
+ *     catches stale content).
+ *
+ * Interception point:
+ *   - Fires `bxBlogger.relatedPostsFor` with
+ *     `{ post, limit, related (array of posts) }` so a third-party
+ *     module can rewrite the result (different ranking, ML-backed
+ *     recommendations, etc.). The returned `data.related` is what
+ *     the service actually emits.
+ *
+ * Visibility contract: same as PublicPostService — only published,
+ * public, non-future, non-trashed posts are ever eligible. The source
+ * post itself is always filtered out (`WHERE id != ?`).
+ */
+class accessors="true" singleton {
+
+    property name="wirebox"            inject="wirebox";
+    property name="cache"              inject="cachebox:default";
+    property name="interceptorService" inject="coldbox:InterceptorService";
+    property name="log"                inject="logbox:logger:{this}";
+
+    variables.defaultLimit   = 5;
+    variables.cacheTimeout   = 60;   // minutes (1h)
+    variables.cacheIdle      = 30;   // minutes
+
+    /**
+     * Return up to `limit` related posts for the given Post entity.
+     *
+     * @post   A Quick Post entity (must have getId()).
+     * @limit  Max rows to return. Clamped to [1,20].
+     *
+     * @return Array of Quick Post entities (may be empty).
+     */
+    array function forPost( required any post, numeric limit ) {
+        var capped = resolveLimit( arguments.limit );
+        var postId = arguments.post.getId();
+        var key    = "relatedPosts:" & postId & ":" & capped;
+
+        var cached = variables.cache.get( key );
+        if ( !isNull( cached ) && isArray( cached ) ) {
+            return materialize( cached );
+        }
+
+        var ids = queryIdsByOverlap( postId, capped );
+
+        // Let modules rewrite the list. Structs in CFML/BoxLang are
+        // pass-by-reference, so an interceptor can splice / replace
+        // `data.related` and the mutation is visible to us here.
+        var related = materialize( ids );
+        var data    = {
+            "post"    : arguments.post,
+            "limit"   : capped,
+            "related" : related
+        };
+        variables.interceptorService.announce(
+            state = "bxBlogger.relatedPostsFor",
+            data  = data
+        );
+        related = data.related;
+
+        // Store the id array rather than full entities so cache entries
+        // stay cheap and don't pin Quick's relation state in memory.
+        var idsFromEntities = related.map( function( p ) { return p.getId(); } );
+        variables.cache.set( key, idsFromEntities, variables.cacheTimeout, variables.cacheIdle );
+
+        return related;
+    }
+
+    /**
+     * Invalidate the cache for a given post — called by PostService on
+     * save / publish / category or tag mutation. Handles both the
+     * default-limit and explicit-limit variants via a key-snippet match.
+     */
+    function invalidateFor( required any post ) {
+        var prefix = "relatedPosts:" & arguments.post.getId() & ":";
+        variables.cache.clearByKeySnippet( keySnippet = prefix, regex = false );
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    private numeric function resolveLimit( numeric limit ) {
+        var n = isNull( arguments.limit ) || !isNumeric( arguments.limit ?: "" )
+            ? variables.defaultLimit
+            : int( arguments.limit );
+        if ( n <= 0 ) n = variables.defaultLimit;
+        if ( n > 20 ) n = 20;
+        return n;
+    }
+
+    /**
+     * Single-SQL query that ranks candidates by shared-tag count,
+     * then shared-category count, then recency. Returns an array of
+     * post ids (integers) in the final order.
+     */
+    private array function queryIdsByOverlap( required numeric postId, required numeric limit ) {
+        var nowStr = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+
+        // Subselects pull the source post's tag + category ids once.
+        var sql = "
+            SELECT
+                p.id AS id,
+                (
+                    SELECT COUNT(*) FROM post_tags pt
+                    WHERE pt.post_id = p.id
+                      AND pt.tag_id IN ( SELECT tag_id FROM post_tags WHERE post_id = ? )
+                ) AS shared_tags,
+                (
+                    SELECT COUNT(*) FROM post_categories pc
+                    WHERE pc.post_id = p.id
+                      AND pc.category_id IN ( SELECT category_id FROM post_categories WHERE post_id = ? )
+                ) AS shared_categories
+            FROM posts p
+            WHERE  p.id          != ?
+              AND  p.post_type   =  'post'
+              AND  p.status      =  'published'
+              AND  p.visibility  =  'public'
+              AND  p.deleted_at  IS NULL
+              AND  p.published_at <= ?
+            HAVING shared_tags + shared_categories > 0
+            ORDER BY shared_tags DESC, shared_categories DESC, p.published_at DESC
+            LIMIT  ?
+        ";
+
+        var rows = queryExecute(
+            sql,
+            [ arguments.postId, arguments.postId, arguments.postId, nowStr, arguments.limit ],
+            { "returntype" : "array" }
+        );
+
+        return rows.map( function( r ) { return r.id; } );
+    }
+
+    /**
+     * Rehydrate an array of post ids into Quick Post entities, preserving
+     * order. Missing rows are silently dropped (e.g. a post deleted
+     * between cache write + read).
+     */
+    private array function materialize( required array ids ) {
+        if ( !arguments.ids.len() ) return [];
+        var posts = variables.wirebox.getInstance( "Post" )
+            .whereIn( "id", arguments.ids )
+            .get();
+
+        // Build a lookup table so we can reorder to match the input.
+        var byId = {};
+        for ( var p in posts ) byId[ p.getId() ] = p;
+
+        var ordered = [];
+        for ( var id in arguments.ids ) {
+            if ( structKeyExists( byId, id ) ) ordered.append( byId[ id ] );
+        }
+        return ordered;
+    }
+
+}

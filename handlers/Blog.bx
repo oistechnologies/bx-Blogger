@@ -53,6 +53,10 @@ class extends="coldbox.system.EventHandler" {
         prc.pageTitle  = post.getTitle() & " &middot; " & getSetting( "AppName" );
         prc.pageDescription = post.getSeoDescription() ?: ( post.getExcerpt() ?: "" );
 
+        // B3 — related posts panel. Up to 5 overlap-ranked posts,
+        // cached by RelatedPostsService for 1h.
+        prc.relatedPosts = getInstance( "RelatedPostsService" ).forPost( post, 5 );
+
         event.setLayout( prc.theme.layout( "Post" ) );
         event.setView( prc.theme.view( "post" ) );
     }

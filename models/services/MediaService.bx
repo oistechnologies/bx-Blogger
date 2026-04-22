@@ -319,4 +319,70 @@ class accessors="true" singleton {
         return variables.maxUploadBytes;
     }
 
+    /**
+     * Build a responsive-image descriptor for a given media row
+     * (B10 — Chunk 3.D).
+     *
+     * The returned struct is handed straight to `responsive-image.bxm`
+     * partials / post-card.bxm and contains everything a template
+     * needs to emit `<img src=... srcset=... sizes=... alt=...>`:
+     *
+     *   {
+     *     src:     original full-size URL,
+     *     srcset:  space-separated "<url> <width>w" pairs (may be empty),
+     *     sizes:   responsive `sizes` hint (may be empty),
+     *     alt:     media.alt_text,
+     *     width:   numeric or 0
+     *     height:  numeric or 0
+     *   }
+     *
+     * Behavior when thumbnails haven't been generated yet (Phase 6's
+     * GenerateThumbnailsJob): the media's `thumbnails_json` is null,
+     * so this helper returns the original URL with an empty `srcset`
+     * — browsers treat a missing srcset as "use src". That keeps the
+     * pipeline safe to use today even though the real responsive
+     * candidates only light up once Phase 6 ships.
+     *
+     * @media  The Media entity.
+     * @sizes  Responsive `sizes` attribute hint. Defaults to
+     *         `"(max-width: 768px) 100vw, 50vw"` — sensible for card
+     *         layouts. Pass `""` to suppress it.
+     */
+    struct function responsiveImage(
+        required any    media,
+                 string sizes = "(max-width: 768px) 100vw, 50vw"
+    ) {
+        var full   = urlFor( arguments.media );
+        var thumbs = arguments.media.getThumbnails();   // entity helper returns {} when unset
+        var parts  = [];
+
+        if ( isStruct( thumbs ) && !structIsEmpty( thumbs ) ) {
+            var disk = variables.cbfs.get( variables.diskName );
+            // Iterate keys explicitly — `for (var x in struct)` behaves
+            // inconsistently in BoxLang between key-mode and value-mode
+            // depending on the struct shape; structKeyArray is stable.
+            for ( var name in structKeyArray( thumbs ) ) {
+                var t = thumbs[ name ];
+                if ( !isStruct( t ) ) continue;
+                var thumbPath  = t.path  ?: "";
+                var thumbWidth = t.width ?: 0;
+                if ( !len( thumbPath ) || !isNumeric( thumbWidth ) || thumbWidth <= 0 ) continue;
+                parts.append( disk.url( thumbPath ) & " " & int( thumbWidth ) & "w" );
+            }
+            // Also include the original at its width, if known, so the
+            // largest candidate is available for hi-DPI viewports.
+            var originalWidth = arguments.media.getWidth() ?: 0;
+            if ( originalWidth > 0 ) parts.append( full & " " & originalWidth & "w" );
+        }
+
+        return {
+            "src"    : full,
+            "srcset" : parts.toList( ", " ),
+            "sizes"  : parts.len() ? arguments.sizes : "",
+            "alt"    : arguments.media.getAltText() ?: "",
+            "width"  : arguments.media.getWidth() ?: 0,
+            "height" : arguments.media.getHeight() ?: 0
+        };
+    }
+
 }

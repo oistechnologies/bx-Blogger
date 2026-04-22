@@ -1,0 +1,24 @@
+<bx:output>
+<bx:if ( prc.relatedPosts ?: [] ).len()>
+    <aside class="related-posts mt-5 pt-4 border-top">
+        <h2 class="h5 text-uppercase text-muted mb-3">Related posts</h2>
+        <ul class="list-unstyled">
+            <bx:loop array="#prc.relatedPosts#" item="related">
+                <li class="mb-2">
+                    <a href="/blog/#encodeForHTMLAttribute( related.getSlug() )#">
+                        #encodeForHTML( related.getTitle() )#
+                    </a>
+                    <bx:if !isNull( related.getPublishedAt() )>
+                        <small class="text-muted">
+                            &middot;
+                            <time datetime="#dateTimeFormat( related.getPublishedAt(), 'yyyy-mm-dd' )#">
+                                #dateFormat( related.getPublishedAt(), "mmm d, yyyy" )#
+                            </time>
+                        </small>
+                    </bx:if>
+                </li>
+            </bx:loop>
+        </ul>
+    </aside>
+</bx:if>
+</bx:output>

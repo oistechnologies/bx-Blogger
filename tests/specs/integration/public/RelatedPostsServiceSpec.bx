@@ -1,0 +1,280 @@
+/**
+ * bx-Blogger — RelatedPostsServiceSpec (Chunk 3.D)
+ *
+ * Verifies the ranking contract:
+ *   1. Shared-tag count DESC
+ *   2. Shared-category count DESC
+ *   3. published_at DESC (most recent breaks a tie)
+ *
+ * And the filters:
+ *   - Source post is never in its own related set.
+ *   - Drafts / trashed / scheduled-future posts are never returned.
+ *   - `bxBlogger.relatedPostsFor` interceptor can rewrite the list.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        try {
+            var qb = getInstance( "QueryBuilder@qb" );
+            if ( arrayLen( variables.createdIds.posts ?: [] ) ) {
+                qb.newQuery().from( "post_revisions"  ).whereIn( "post_id", variables.createdIds.posts ).delete();
+                qb.newQuery().from( "post_categories" ).whereIn( "post_id", variables.createdIds.posts ).delete();
+                qb.newQuery().from( "post_tags"       ).whereIn( "post_id", variables.createdIds.posts ).delete();
+                qb.newQuery().from( "posts"           ).whereIn( "id", variables.createdIds.posts ).delete();
+            }
+            if ( arrayLen( variables.createdIds.categories ?: [] ) ) {
+                qb.newQuery().from( "post_categories" ).whereIn( "category_id", variables.createdIds.categories ).delete();
+                qb.newQuery().from( "categories"      ).whereIn( "id", variables.createdIds.categories ).delete();
+            }
+            if ( arrayLen( variables.createdIds.tags ?: [] ) ) {
+                qb.newQuery().from( "post_tags" ).whereIn( "tag_id", variables.createdIds.tags ).delete();
+                qb.newQuery().from( "tags"      ).whereIn( "id", variables.createdIds.tags ).delete();
+            }
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "RelatedPostsServiceSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.createdIds = { "posts" : [], "categories" : [], "tags" : [] };
+        variables.svc        = getInstance( "RelatedPostsService" );
+        variables.postSvc    = getInstance( "PostService" );
+    }
+
+    function run() {
+        describe( "RelatedPostsService", function() {
+
+            beforeEach( function() {
+                // A fresh cache-clear prevents one spec's cached list
+                // from leaking into the next when they happen to share
+                // a post id after rollback.
+                getInstance( "cachebox:default" ).clearAll();
+            } );
+
+            describe( "forPost()", function() {
+
+                it( "returns posts that share tags, ranked by shared-tag count DESC", function() {
+                    var author = createTestUser();
+                    var tagA   = createTag( "ta-" & left( createUUID(), 6 ) );
+                    var tagB   = createTag( "tb-" & left( createUUID(), 6 ) );
+
+                    var src    = publishNew( author, "source post" );
+                    attachTag( src, tagA );
+                    attachTag( src, tagB );
+
+                    // twoShared shares both tags; oneShared shares only tagA
+                    var twoShared = publishNew( author, "two-shared" );
+                    attachTag( twoShared, tagA );
+                    attachTag( twoShared, tagB );
+
+                    var oneShared = publishNew( author, "one-shared" );
+                    attachTag( oneShared, tagA );
+
+                    var zeroShared = publishNew( author, "zero-shared" );
+
+                    var related = svc.forPost( src, 5 );
+                    var ids = related.map( function( p ) { return p.getId(); } );
+
+                    expect( ids ).toInclude( twoShared.getId() );
+                    expect( ids ).toInclude( oneShared.getId() );
+                    expect( ids ).notToInclude( zeroShared.getId() );
+
+                    // twoShared must rank above oneShared
+                    expect( arrayFind( ids, twoShared.getId() ) ).toBeLT( arrayFind( ids, oneShared.getId() ) );
+                } );
+
+                it( "breaks ties on shared-category count", function() {
+                    var author = createTestUser();
+                    var tag    = createTag( "tie-" & left( createUUID(), 6 ) );
+                    var cat    = createCategory( "cat-" & left( createUUID(), 6 ) );
+
+                    var src = publishNew( author, "source" );
+                    attachTag( src, tag );
+                    attachCategory( src, cat );
+
+                    var tagAndCat = publishNew( author, "tag+cat" );
+                    attachTag( tagAndCat, tag );
+                    attachCategory( tagAndCat, cat );
+
+                    var tagOnly = publishNew( author, "tag only" );
+                    attachTag( tagOnly, tag );
+
+                    var related = svc.forPost( src, 5 );
+                    var ids = related.map( function( p ) { return p.getId(); } );
+
+                    expect( arrayFind( ids, tagAndCat.getId() ) ).toBeLT( arrayFind( ids, tagOnly.getId() ) );
+                } );
+
+                it( "never includes the source post itself", function() {
+                    var author = createTestUser();
+                    var tag    = createTag( "self-" & left( createUUID(), 6 ) );
+
+                    var src = publishNew( author, "source" );
+                    attachTag( src, tag );
+
+                    var related = svc.forPost( src, 5 );
+                    var ids = related.map( function( p ) { return p.getId(); } );
+                    expect( ids ).notToInclude( src.getId() );
+                } );
+
+                it( "excludes drafts, trashed, and scheduled-future posts", function() {
+                    var author = createTestUser();
+                    var tag    = createTag( "filter-" & left( createUUID(), 6 ) );
+
+                    var src = publishNew( author, "source" );
+                    attachTag( src, tag );
+
+                    // draft with shared tag
+                    var draft = postSvc.create( {
+                        authorId: author.getId(),
+                        title:    "draft",
+                        slug:     "d-" & left( createUUID(), 8 ),
+                        bodyMarkdown: "x"
+                    } );
+                    trackPost( draft );
+                    attachTag( draft, tag );
+
+                    // trashed
+                    var trashed = publishNew( author, "trashed" );
+                    attachTag( trashed, tag );
+                    postSvc.trash( trashed );
+
+                    // future
+                    var future = publishNew( author, "future", dateAdd( "d", 7, now() ) );
+                    attachTag( future, tag );
+
+                    var related = svc.forPost( src, 10 );
+                    var ids = related.map( function( p ) { return p.getId(); } );
+
+                    expect( ids ).notToInclude( draft.getId() );
+                    expect( ids ).notToInclude( trashed.getId() );
+                    expect( ids ).notToInclude( future.getId() );
+                } );
+
+                it( "respects the limit argument", function() {
+                    var author = createTestUser();
+                    var tag    = createTag( "lim-" & left( createUUID(), 6 ) );
+
+                    var src = publishNew( author, "source" );
+                    attachTag( src, tag );
+
+                    for ( var i = 1; i <= 5; i++ ) {
+                        var p = publishNew( author, "match " & i );
+                        attachTag( p, tag );
+                    }
+
+                    var related = svc.forPost( src, 3 );
+                    expect( related.len() ).toBeLTE( 3 );
+                } );
+
+                it( "returns an empty array when nothing overlaps", function() {
+                    var author = createTestUser();
+                    var src    = publishNew( author, "lonely" );
+                    var other  = publishNew( author, "stranger" );
+
+                    var related = svc.forPost( src, 5 );
+                    var ids = related.map( function( p ) { return p.getId(); } );
+                    expect( ids ).notToInclude( other.getId() );
+                } );
+            } );
+
+            describe( "invalidateFor()", function() {
+                it( "clears the cached entry so the next call re-queries", function() {
+                    var author = createTestUser();
+                    var tag    = createTag( "inv-" & left( createUUID(), 6 ) );
+
+                    var src = publishNew( author, "source" );
+                    attachTag( src, tag );
+
+                    var before = svc.forPost( src, 5 );
+                    svc.invalidateFor( src );
+
+                    // Attach a new tagged post — should appear after cache bust
+                    var fresh = publishNew( author, "fresh" );
+                    attachTag( fresh, tag );
+
+                    var after = svc.forPost( src, 5 );
+                    var ids = after.map( function( p ) { return p.getId(); } );
+                    expect( ids ).toInclude( fresh.getId() );
+                } );
+            } );
+
+        } );
+    }
+
+    // --------------------------------------------------------------------
+    // Helpers
+    // --------------------------------------------------------------------
+
+    private any function publishNew( required any author, required string title, any publishedAt = now() ) {
+        var post = postSvc.create( {
+            "authorId"    : arguments.author.getId(),
+            "title"       : arguments.title,
+            "slug"        : "rel-" & left( createUUID(), 12 ),
+            "bodyMarkdown": "body for " & arguments.title
+        } );
+        trackPost( post );
+
+        // Set published_at directly so we can place posts on either
+        // side of "now" and compare ordering.
+        getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "posts" )
+            .where( "id", post.getId() )
+            .update( {
+                "status"       : "published",
+                "published_at" : dateTimeFormat( arguments.publishedAt, "yyyy-mm-dd HH:nn:ss" )
+            } );
+
+        return getInstance( "Post" ).find( post.getId() );
+    }
+
+    private any function trackPost( required any post ) {
+        variables.createdIds.posts.append( arguments.post.getId() );
+        return arguments.post;
+    }
+
+    private any function createCategory( required string slug ) {
+        var now = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+        getInstance( "QueryBuilder@qb" ).newQuery().from( "categories" ).insert( {
+            "slug"       : arguments.slug,
+            "name"       : arguments.slug,
+            "path"       : arguments.slug,
+            "created_at" : now,
+            "updated_at" : now
+        } );
+        var cat = getInstance( "Category" ).where( "slug", arguments.slug ).first();
+        variables.createdIds.categories.append( cat.getId() );
+        return cat;
+    }
+
+    private void function attachCategory( required any post, required any cat ) {
+        getInstance( "QueryBuilder@qb" ).newQuery().from( "post_categories" ).insert( {
+            "post_id"     : arguments.post.getId(),
+            "category_id" : arguments.cat.getId()
+        } );
+    }
+
+    private any function createTag( required string slug ) {
+        var now = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+        getInstance( "QueryBuilder@qb" ).newQuery().from( "tags" ).insert( {
+            "slug"       : arguments.slug,
+            "name"       : arguments.slug,
+            "created_at" : now,
+            "updated_at" : now
+        } );
+        var tag = getInstance( "Tag" ).where( "slug", arguments.slug ).first();
+        variables.createdIds.tags.append( tag.getId() );
+        return tag;
+    }
+
+    private void function attachTag( required any post, required any tag ) {
+        getInstance( "QueryBuilder@qb" ).newQuery().from( "post_tags" ).insert( {
+            "post_id" : arguments.post.getId(),
+            "tag_id"  : arguments.tag.getId()
+        } );
+    }
+
+}

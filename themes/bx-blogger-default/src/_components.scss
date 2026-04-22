@@ -65,11 +65,34 @@
     .site-footer code {
         font-size: 0.8em;
     }
+
+    // Theme toggle button — small circle with a sun/moon glyph.
+    // Sized so it aligns with nav links without looking like a form input.
+    .theme-toggle {
+        width: 2rem;
+        height: 2rem;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+        font-size: 1rem;
+        border-radius: 50%;
+    }
+
+    // Related-posts panel
+    .related-posts .related-card {
+        transition: transform 120ms ease-out;
+    }
+    .related-posts .related-card:hover {
+        transform: translateY(-1px);
+    }
 }
 
 // Dark-mode tweaks — Bootstrap 5.3 ships `data-bs-theme="dark"` support
 // out of the box; any overrides should go here. Phase 3.D wires up a
 // persistent toggle.
-[data-bs-theme="dark"] .site-default .post-card {
+[data-bs-theme="dark"] .site-default .post-card,
+[data-bs-theme="dark"] .site-default .related-card {
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
 }
