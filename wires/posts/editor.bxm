@@ -806,9 +806,17 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 		<div class="col-lg-4">
 			<div class="card stat-card stat-card-info mb-3">
 				<div class="card-header card-header-soft card-header-soft-info">
-					<span class="h6 mb-0">Status</span>
+					<span class="h6 mb-0">Publish settings</span>
 				</div>
 				<div class="card-body">
+					<div class="mb-2">
+						<label for="postType" class="form-label small">Type</label>
+						<select id="postType" class="form-select form-select-sm" wire:model.live="postType">
+							<option value="post">Post</option>
+							<option value="page">Page</option>
+						</select>
+					</div>
+					<hr class="my-3">
 					<p class="small mb-2">
 						Current: <span class="badge bg-secondary text-uppercase">#encodeForHTML( args.status )#</span>
 					</p>
@@ -903,18 +911,6 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 							</bx:if>
 						</div>
 					</bx:if>
-				</div>
-			</div>
-
-			<div class="card stat-card stat-card-secondary mb-3">
-				<div class="card-header card-header-soft card-header-soft-secondary">
-					<span class="h6 mb-0">Post type</span>
-				</div>
-				<div class="card-body">
-					<select class="form-select form-select-sm" wire:model.live="postType">
-						<option value="post">Post</option>
-						<option value="page">Page</option>
-					</select>
 				</div>
 			</div>
 
