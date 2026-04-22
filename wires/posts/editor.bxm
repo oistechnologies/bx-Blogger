@@ -20,8 +20,9 @@
  * while Phase 3 theme work lays down field-level conditionals.
  */
 
-property name="postService" inject="PostService";
-property name="cbauth"      inject="AuthenticationService@cbauth";
+property name="postService"         inject="PostService";
+property name="draftPreviewService"  inject="DraftPreviewService";
+property name="cbauth"               inject="AuthenticationService@cbauth";
 
 data = {
     "postId"         : 0,
@@ -40,14 +41,30 @@ data = {
     "showPreview"    : false,
     "flashOk"        : "",
     "flashError"     : "",
-    "validationErrors" : []
+    "validationErrors" : [],
+    // B2 draft-preview share state
+    "previewShareUrl" : "",
+    "previewExpires"  : "",
+    // B5 autosave ticker
+    "lastAutosaveAt"  : "",
+    // B4 media picker modal state
+    "showMediaPicker" : false,
+    "pickerSearch"    : ""
 };
 
 /**
- * Mount hook — runs once on first render. Seeds `data` from the
- * database when we're opening an existing post.
+ * Mount hook — runs once on first render. CBWIRE calls it as
+ * `onMount(event, rc, prc, params)`; when `onMount` is defined the
+ * framework SKIPS auto-copying wire() params into `data`, so we
+ * pull postId out of the params struct ourselves. Without this the
+ * editor mounts with data.postId=0 and the Share-Preview /
+ * Autosave / Trash sidebar buttons (all guarded on `postId > 0`)
+ * stay hidden even for existing posts.
  */
-function onMount() {
+function onMount( event, rc, prc, params ) {
+    if ( structKeyExists( arguments.params, "postId" ) ) {
+        data.postId = arguments.params.postId;
+    }
     if ( ( data.postId ?: 0 ) > 0 ) {
         loadFromDb( data.postId );
     }
@@ -165,6 +182,122 @@ function hidePreview() {
 function regenerateSlug() {
     if ( !len( trim( data.title ) ) ) return;
     data.slug = postService.slugify( data.title );
+}
+
+// --------------------------------------------------------------------
+// A7 — Submit for Review
+// --------------------------------------------------------------------
+
+function submitForReview() {
+    clearFlashes();
+    var user = cbauth.getUser();
+    if ( !user.hasPermission( "posts.submit_for_review" ) ) {
+        data.flashError = "You don't have permission to submit posts for review.";
+        return;
+    }
+
+    // Persist current buffer state first so reviewers see the right draft
+    save();
+    if ( len( data.flashError ) || data.validationErrors.len() ) return;
+
+    var post = getInstance( "Post" ).find( data.postId );
+    postService.submitForReview( post, user.getId() );
+    data.flashOk = "Submitted for editor review. You'll be notified when it's published or needs changes.";
+    loadFromDb( data.postId );
+}
+
+// --------------------------------------------------------------------
+// B2 — Share Preview
+// --------------------------------------------------------------------
+
+function sharePreview() {
+    clearFlashes();
+    if ( ( data.postId ?: 0 ) == 0 ) {
+        data.flashError = "Save the post first — preview links attach to saved drafts.";
+        return;
+    }
+    var user = cbauth.getUser();
+    if ( !user.hasPermission( "posts.preview.share" ) ) {
+        data.flashError = "You don't have permission to share preview links.";
+        return;
+    }
+
+    var post   = getInstance( "Post" ).find( data.postId );
+    var result = draftPreviewService.share( post, user.getId() );
+    data.previewShareUrl = result.url;
+    data.previewExpires  = dateTimeFormat( result.expiresAt, "yyyy-mm-dd HH:nn" );
+}
+
+function dismissShareLink() {
+    data.previewShareUrl = "";
+    data.previewExpires  = "";
+}
+
+// --------------------------------------------------------------------
+// B5 — Autosave
+// --------------------------------------------------------------------
+
+/**
+ * Wire-triggered autosave. The template's JS timer posts to this
+ * action every 30s; it silently no-ops when we don't have a saved
+ * post yet (no postId → nothing to attach a revision to), and
+ * swallows ownership failures rather than flashing, since autosave
+ * is a background action.
+ */
+function autosave() {
+    if ( ( data.postId ?: 0 ) == 0 ) return;
+    var user = cbauth.getUser();
+    var post = getInstance( "Post" ).find( data.postId );
+    if ( isNull( post ) ) return;
+    if ( !canSave() ) return;
+
+    postService.autosave(
+        post         = post,
+        editorId     = user.getId(),
+        bodyMarkdown = data.bodyMarkdown ?: "",
+        title        = data.title ?: ""
+    );
+    data.lastAutosaveAt = dateTimeFormat( now(), "HH:nn:ss" );
+}
+
+// --------------------------------------------------------------------
+// B4 — Media picker
+// --------------------------------------------------------------------
+
+function openMediaPicker() { data.showMediaPicker = true; data.pickerSearch = ""; }
+function closeMediaPicker() { data.showMediaPicker = false; }
+
+function insertMedia( required id ) {
+    var m = getInstance( "Media" ).find( arguments.id );
+    if ( isNull( m ) ) return;
+    var url    = getInstance( "MediaService" ).urlFor( m );
+    var alt    = m.getAltText() ?: m.getOriginalFilename();
+    var snippet = "
+
+![" & alt & "](" & url & ")
+";
+    data.bodyMarkdown = ( data.bodyMarkdown ?: "" ) & snippet;
+    closeMediaPicker();
+}
+
+function pickerRows() {
+    var qb = getInstance( "QueryBuilder@qb" ).newQuery()
+        .from( "media" )
+        .whereNull( "deleted_at" )
+        .where( "mime_type", "like", "image/%" );
+    if ( len( trim( data.pickerSearch ) ) ) {
+        var q = "%" & trim( data.pickerSearch ) & "%";
+        qb.where( function( w ) {
+            w.where( "original_filename", "like", q )
+             .orWhere( "alt_text", "like", q )
+             .orWhere( "title",    "like", q );
+        } );
+    }
+    return qb.orderBy( "created_at", "desc" ).limit( 12 ).get();
+}
+
+function pickerUrl( required any row ) {
+    return getInstance( "DiskService@cbfs" ).get( "media" ).url( arguments.row.path );
 }
 
 // --------------------------------------------------------------------
@@ -286,6 +419,9 @@ private function clearFlashes() {
 							<span>Body (markdown)</span>
 							<span>
 								<button type="button" class="btn btn-sm btn-link p-0"
+								        wire:click="openMediaPicker">Insert media</button>
+								·
+								<button type="button" class="btn btn-sm btn-link p-0"
 								        wire:click="preview">Preview</button>
 								<bx:if args.showPreview>
 									·
@@ -339,6 +475,18 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 					</div>
 					<div class="d-grid gap-2">
 						<button class="btn btn-outline-primary" wire:click="save">Save draft</button>
+						<!---
+							A7 — Submit for Review shows up for contributors
+							who lack publish rights. For authors + editors the
+							regular Publish button is the primary path; this
+							button still works for them (it's a valid state
+							transition) but we de-emphasize it.
+						--->
+						<button class="btn btn-outline-secondary btn-sm"
+						        wire:click="submitForReview"
+						        title="Flag as ready for an editor to review and publish">
+							Submit for review
+						</button>
 						<button class="btn btn-primary" wire:click="publish">
 							<bx:if len( args.scheduledAt )>Schedule<bx:else>Publish</bx:if>
 						</button>
@@ -348,6 +496,37 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 							        wire:confirm="Move this post to trash?">Move to trash</button>
 						</bx:if>
 					</div>
+
+					<!--- B2 — Share Preview --->
+					<bx:if ( args.postId ?: 0 ) > 0>
+						<hr class="my-3">
+						<bx:if len( args.previewShareUrl )>
+							<label class="form-label small">Preview link (expires #encodeForHTML( args.previewExpires )#)</label>
+							<div class="input-group input-group-sm mb-1">
+								<input type="text" class="form-control" readonly value="#encodeForHTMLAttribute( args.previewShareUrl )#">
+								<button type="button" class="btn btn-outline-secondary"
+								        onclick="navigator.clipboard.writeText(this.previousElementSibling.value)">Copy</button>
+							</div>
+							<button type="button" class="btn btn-sm btn-link p-0"
+							        wire:click="dismissShareLink">Dismiss</button>
+						<bx:else>
+							<button class="btn btn-sm btn-outline-secondary w-100" wire:click="sharePreview">
+								Share preview link
+							</button>
+						</bx:if>
+					</bx:if>
+
+					<!--- B5 — Autosave indicator + client timer --->
+					<bx:if ( args.postId ?: 0 ) > 0 && args.status != "trashed">
+						<hr class="my-3">
+						<div class="small text-muted" data-autosave-indicator>
+							<bx:if len( args.lastAutosaveAt )>
+								Autosaved at #encodeForHTML( args.lastAutosaveAt )#
+							<bx:else>
+								Autosave enabled (every 30s)
+							</bx:if>
+						</div>
+					</bx:if>
 				</div>
 			</div>
 
@@ -385,5 +564,66 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 			</div>
 		</div>
 	</div>
+
+	<!--- B4 — Media picker modal ---------------------------------- --->
+	<bx:if args.showMediaPicker>
+		<div class="modal show d-block" tabindex="-1" style="background:rgba(0,0,0,.35);">
+			<div class="modal-dialog modal-lg">
+				<div class="modal-content">
+					<div class="modal-header">
+						<h5 class="modal-title">Insert media</h5>
+						<button type="button" class="btn-close" wire:click="closeMediaPicker"></button>
+					</div>
+					<div class="modal-body">
+						<input type="text" class="form-control form-control-sm mb-3"
+						       placeholder="Search filename, alt, or title…"
+						       wire:model.live.debounce.400ms="pickerSearch">
+						<bx:script>picks = pickerRows()</bx:script>
+						<bx:if picks.len() == 0>
+							<p class="text-muted small">No images match. Upload some via the Media library.</p>
+						<bx:else>
+							<div class="row row-cols-3 row-cols-md-4 g-2">
+								<bx:loop array="#picks#" item="p">
+									<div class="col">
+										<button type="button"
+										        class="btn p-0 border w-100 text-start"
+										        wire:click="insertMedia(#p.id#)"
+										        title="Insert into post body">
+											<img src="#pickerUrl( p )#"
+											     alt="#encodeForHTMLAttribute( p.alt_text ?: p.original_filename )#"
+											     class="img-fluid rounded"
+											     style="object-fit: cover; aspect-ratio: 1/1;">
+											<div class="small p-1 text-truncate">#encodeForHTML( p.original_filename )#</div>
+										</button>
+									</div>
+								</bx:loop>
+							</div>
+						</bx:if>
+					</div>
+				</div>
+			</div>
+		</div>
+	</bx:if>
 </div>
+
+<bx:if ( args.postId ?: 0 ) > 0 && args.status != "trashed">
+<script>
+// B5 — autosave ticker. Fires every 30s while the editor page is open;
+// Livewire ignores no-ops (wire:click handlers are idempotent, the
+// service guards against missing postId). Stops when the user
+// navigates away — ordinary script lifecycle.
+( function() {
+    if ( window.__bxEditorAutosave ) return;   // don't double-bind on re-render
+    window.__bxEditorAutosave = setInterval( function() {
+        // Livewire v3 exposes a global `Livewire`; guard in case CBWIRE
+        // reshuffles the symbol name.
+        if ( typeof Livewire === "undefined" ) return;
+        var component = document.querySelector( "[wire\\:id]" );
+        if ( !component ) return;
+        var wire = Livewire.find( component.getAttribute( "wire:id" ) );
+        if ( wire && typeof wire.call === "function" ) wire.call( "autosave" );
+    }, 30000 );
+} )();
+</script>
+</bx:if>
 </bx:output>

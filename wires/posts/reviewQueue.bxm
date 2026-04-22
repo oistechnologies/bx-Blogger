@@ -1,0 +1,123 @@
+<bx:script>
+// @startWire
+/**
+ * posts.review-queue (A7) — editors' inbox of `pending_review` posts.
+ *
+ * Per-row actions:
+ *   Open   — jump into the editor
+ *   Publish — one-click publish straight from the queue (bypasses the
+ *             editor; useful for "looks good, ship it" flows)
+ *   Back to draft — reject with a subtle nudge to the author
+ */
+
+property name="postService" inject="PostService";
+property name="cbauth"      inject="AuthenticationService@cbauth";
+
+data = {
+    "flashOk"    : "",
+    "flashError" : ""
+};
+
+function publishPost( required id ) {
+    clearFlashes();
+    var user = cbauth.getUser();
+    if ( !user.hasPermission( "posts.publish.others" ) ) {
+        data.flashError = "You don't have permission to publish others' posts.";
+        return;
+    }
+    var post = getInstance( "Post" ).find( arguments.id );
+    if ( isNull( post ) ) return;
+    postService.publish( post );
+    data.flashOk = "Published '" & post.getTitle() & "'.";
+}
+
+function returnToDraft( required id ) {
+    clearFlashes();
+    var user = cbauth.getUser();
+    if ( !user.hasPermission( "posts.publish.others" ) ) {
+        data.flashError = "You don't have permission to change others' posts.";
+        return;
+    }
+    var post = getInstance( "Post" ).find( arguments.id );
+    if ( isNull( post ) ) return;
+    postService.unpublish( post );   // returns to draft + bumps version
+    data.flashOk = "Returned '" & post.getTitle() & "' to draft.";
+}
+
+function queuedPosts() {
+    return getInstance( "QueryBuilder@qb" ).newQuery()
+        .from( "posts as p" )
+        .leftJoin( "users as u", "p.author_id", "=", "u.id" )
+        .whereNull( "p.deleted_at" )
+        .where( "p.status", "pending_review" )
+        .select( "p.id", "p.title", "p.slug", "p.updated_at", "u.display_name as author" )
+        .orderBy( "p.updated_at", "asc" )
+        .get();
+}
+
+private function clearFlashes() {
+    data.flashOk = "";
+    data.flashError = "";
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:script>rows = queuedPosts()</bx:script>
+
+<div>
+	<bx:if len( args.flashOk )>
+		<div class="alert alert-success alert-dismissible">
+			#encodeForHTML( args.flashOk )#
+			<button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+		</div>
+	</bx:if>
+	<bx:if len( args.flashError )>
+		<div class="alert alert-danger alert-dismissible">
+			#encodeForHTML( args.flashError )#
+			<button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+		</div>
+	</bx:if>
+
+	<div class="card">
+		<bx:if rows.len() == 0>
+			<div class="card-body text-center text-muted py-5">
+				No posts are waiting for review.
+			</div>
+		<bx:else>
+			<table class="table table-hover mb-0">
+				<thead class="table-light">
+					<tr>
+						<th>Title</th>
+						<th>Author</th>
+						<th>Submitted</th>
+						<th class="text-end">Actions</th>
+					</tr>
+				</thead>
+				<tbody>
+					<bx:loop array="#rows#" item="row">
+						<tr>
+							<td>
+								<a href="#event.buildLink( to = 'admin:Posts.editor', queryString = 'id=' & row.id )#">
+									#encodeForHTML( row.title )#
+								</a>
+								<br><small class="text-muted">/#encodeForHTML( row.slug )#</small>
+							</td>
+							<td>#encodeForHTML( row.author ?: "—" )#</td>
+							<td><small>#dateTimeFormat( row.updated_at, "yyyy-mm-dd HH:nn" )#</small></td>
+							<td class="text-end">
+								<a class="btn btn-sm btn-outline-secondary"
+								   href="#event.buildLink( to = 'admin:Posts.editor', queryString = 'id=' & row.id )#">Open</a>
+								<button class="btn btn-sm btn-primary"
+								        wire:click="publishPost(#row.id#)">Publish</button>
+								<button class="btn btn-sm btn-outline-warning"
+								        wire:click="returnToDraft(#row.id#)">Back to draft</button>
+							</td>
+						</tr>
+					</bx:loop>
+				</tbody>
+			</table>
+		</bx:if>
+	</div>
+</div>
+</bx:output>

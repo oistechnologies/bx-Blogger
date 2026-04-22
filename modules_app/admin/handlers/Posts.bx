@@ -47,4 +47,21 @@ class extends="coldbox.system.EventHandler" {
         event.setView( view = "posts/editor" );
     }
 
+    /**
+     * GET /admin/posts/reviewQueue — A7. Editors + admins see every
+     * post currently in `pending_review`. Users lacking
+     * `posts.publish.others` still see the page but the queue is
+     * filtered via the service call inside the wire — contributors
+     * can't reach the route directly (this handler checks).
+     */
+    function reviewQueue( event, rc, prc ) {
+        if ( !cbauth.getUser().hasPermission( "posts.publish.others" ) ) {
+            flash.put( "adminError", "Only editors can access the review queue." );
+            relocate( event = "admin:Posts.index" );
+            return;
+        }
+        prc.pageTitle = "Review queue";
+        event.setView( view = "posts/reviewQueue" );
+    }
+
 }

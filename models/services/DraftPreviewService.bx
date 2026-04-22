@@ -1,0 +1,129 @@
+/**
+ * bx-Blogger — DraftPreviewService (Chunk 2.G — B2)
+ *
+ * Share-a-draft signed-URL service. Authors click "Share Preview" in
+ * the editor; this service mints a random token, stores its SHA-256
+ * hash in `draft_preview_tokens`, and returns the plaintext token
+ * embedded in a `/preview/{token}` URL. The plaintext never touches
+ * the database — rot-forward even if a backup leaks.
+ *
+ * Expiry: 7 days by default (settings.draft_preview_ttl_days). A Phase
+ * 6 scheduler task prunes consumed/expired rows; this service just
+ * checks `expires_at > now()` at validation time.
+ *
+ * Lifecycle:
+ *   share( post, creatorId )      → { token, url, expiresAt }
+ *   validate( token )             → { valid: bool, post: Post? }
+ *   revoke( post )                → deletes every active token for
+ *                                   a post (e.g. called on trash)
+ */
+class accessors="true" singleton {
+
+    property name="wirebox" inject="wirebox";
+    property name="log"     inject="logbox:logger:{this}";
+
+    variables.tokenLengthBytes = 32;      // → 64-char hex
+    variables.ttlDays          = 7;
+
+    /**
+     * Mint a new preview token for a post.
+     *
+     * @return struct { token, url, expiresAt }
+     */
+    struct function share( required any post, required numeric creatorId ) {
+        var plainToken = generateToken();
+        var expiresAt  = dateAdd( "d", variables.ttlDays, now() );
+
+        variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "draft_preview_tokens" )
+            .insert( {
+                "post_id"    : arguments.post.getId(),
+                "token_hash" : hashToken( plainToken ),
+                "created_by" : arguments.creatorId,
+                "expires_at" : expiresAt
+            } );
+
+        log.info( "DraftPreviewService: issued token for post=" & arguments.post.getId() & " by user=" & arguments.creatorId );
+
+        return {
+            "token"     : plainToken,
+            "url"       : buildPreviewUrl( plainToken ),
+            "expiresAt" : expiresAt
+        };
+    }
+
+    /**
+     * Validate a plaintext token. Returns `{ valid, post }` where
+     * post is the Quick entity when valid; touches `last_used_at` on
+     * the token row so operators can see recent activity.
+     */
+    struct function validate( required string token ) {
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        var row = qb.newQuery()
+            .from( "draft_preview_tokens" )
+            .where( "token_hash", hashToken( arguments.token ) )
+            .where( "expires_at", ">", now() )
+            .orderBy( "id", "desc" )
+            .first();
+        // qb's first() may return null OR an empty struct when nothing
+        // matches — guard both shapes.
+        if ( isNull( row ) || !isStruct( row ) || !structKeyExists( row, "post_id" ) ) {
+            return { "valid" : false, "post" : javaCast( "null", "" ) };
+        }
+
+        var post = variables.wirebox.getInstance( "Post" ).find( row.post_id );
+        if ( isNull( post ) || len( post.getDeletedAt() ?: "" ) ) {
+            return { "valid" : false, "post" : javaCast( "null", "" ) };
+        }
+
+        qb.newQuery().from( "draft_preview_tokens" )
+            .where( "id", row.id )
+            .update( { "last_used_at" : now() } );
+
+        return { "valid" : true, "post" : post };
+    }
+
+    /**
+     * Drop every unexpired token for a post — called when a post is
+     * trashed so a shared link can't keep leaking content. Returns
+     * the number of rows removed. qb's `.delete()` hands back a
+     * result struct with `.recordcount`; we extract the count so
+     * callers don't have to know that detail.
+     */
+    numeric function revoke( required any post ) {
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        // Count first, then delete — qb's delete() return shape varies
+        // between providers, so a separate count is the robust option.
+        var doomed = qb.newQuery()
+            .from( "draft_preview_tokens" )
+            .where( "post_id", arguments.post.getId() )
+            .count();
+        if ( doomed > 0 ) {
+            qb.newQuery()
+                .from( "draft_preview_tokens" )
+                .where( "post_id", arguments.post.getId() )
+                .delete();
+        }
+        return doomed;
+    }
+
+    // --------------------------------------------------------------------
+
+    private string function generateToken() {
+        var bytes = binaryDecode(
+            generateSecretKey( "AES", variables.tokenLengthBytes * 8 ),
+            "base64"
+        );
+        return lCase( binaryEncode( bytes, "hex" ) );
+    }
+
+    private string function hashToken( required string plainToken ) {
+        return hash( arguments.plainToken, "SHA-256" );
+    }
+
+    private string function buildPreviewUrl( required string plainToken ) {
+        var base = getSystemSetting( "APP_URL", "http://localhost:8080" );
+        return base & "/preview/" & arguments.plainToken;
+    }
+
+}

@@ -33,9 +33,12 @@
  */
 class accessors="true" singleton {
 
-    property name="wirebox"   inject="wirebox";
-    property name="antisamy"  inject="AntiSamy@cbantisamy";
-    property name="log"       inject="logbox:logger:{this}";
+    property name="wirebox"            inject="wirebox";
+    property name="antisamy"           inject="AntiSamy@cbantisamy";
+    property name="interceptorService" inject="coldbox:InterceptorService";
+    property name="log"                inject="logbox:logger:{this}";
+
+    variables.autosaveKeep = 20;   // B5: prune autosave revisions beyond this per post
 
     variables.readingWordsPerMinute = 225;   // newsroom-average reading pace
     variables.maxSlugLength         = 200;   // matches posts.slug VARCHAR
@@ -178,6 +181,86 @@ class accessors="true" singleton {
         arguments.post.setStatus( "trashed" );
         arguments.post.save();
         return arguments.post;
+    }
+
+    /**
+     * A7 — submit a draft for editor review. Flips status to
+     * `pending_review` and announces `bxBlogger.postPostSubmitReview`
+     * so the Phase 6 notifier can notify users with
+     * `posts.publish.others`. Caller owns the permission check
+     * (usually `posts.submit_for_review`).
+     */
+    function submitForReview( required any post, required numeric editorId ) {
+        arguments.post.setStatus( "pending_review" );
+        arguments.post.save();
+
+        variables.interceptorService.announce(
+            state = "bxBlogger.postPostSubmitReview",
+            data  = {
+                "postId"      : arguments.post.getId(),
+                "authorId"    : arguments.post.getAuthorId(),
+                "submitterId" : arguments.editorId,
+                "title"       : arguments.post.getTitle()
+            }
+        );
+        log.info( "PostService: post=" & arguments.post.getId() & " submitted for review by user=" & arguments.editorId );
+        return arguments.post;
+    }
+
+    /**
+     * B5 — autosave the current editor buffer as a revision tagged
+     * `change_summary='autosave'`. Does NOT touch the live post row
+     * — the draft/published state stays where the author left it
+     * until they explicitly save. Prunes to the newest `autosaveKeep`
+     * autosaves per post so we don't grow the revisions table
+     * unbounded on a long editing session.
+     */
+    function autosave(
+        required any     post,
+        required numeric editorId,
+        required string  bodyMarkdown,
+                 string  title = ""
+    ) {
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+
+        qb.newQuery().from( "post_revisions" ).insert( {
+            "post_id"        : arguments.post.getId(),
+            "editor_id"      : arguments.editorId,
+            "title"          : len( arguments.title ) ? arguments.title : ( arguments.post.getTitle() ?: "" ),
+            "body_markdown"  : arguments.bodyMarkdown,
+            "body_html"      : compileBody( arguments.bodyMarkdown ),
+            "change_summary" : "autosave"
+        } );
+
+        pruneAutosaves( arguments.post.getId() );
+    }
+
+    /**
+     * Keep the newest `autosaveKeep` autosave revisions for a post;
+     * delete older ones. Runs in one DELETE with a subselect so we
+     * don't round-trip every candidate id.
+     */
+    private void function pruneAutosaves( required numeric postId ) {
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+
+        var keepers = qb.newQuery()
+            .from( "post_revisions" )
+            .where( "post_id", arguments.postId )
+            .where( "change_summary", "autosave" )
+            .orderBy( "id", "desc" )
+            .limit( variables.autosaveKeep )
+            .select( "id" )
+            .get();
+
+        if ( keepers.len() < variables.autosaveKeep ) return;  // nothing to prune
+
+        var keeperIds = keepers.map( function( r ) { return r.id; } );
+        qb.newQuery()
+            .from( "post_revisions" )
+            .where( "post_id", arguments.postId )
+            .where( "change_summary", "autosave" )
+            .whereNotIn( "id", keeperIds )
+            .delete();
     }
 
     function restore( required any post ) {

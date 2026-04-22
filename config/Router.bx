@@ -62,6 +62,14 @@ class {
 		route( "/verify-email/:token" ).to( "emailVerification.verify" );
 
 		/**
+		 * Draft preview (B2 — Chunk 2.G).
+		 *   GET /preview/:token → render the unpublished post through a
+		 *   minimal HTML shell (Phase 3 themes take over the layout).
+		 *   Public by design — the token itself is the access credential.
+		 */
+		route( "/preview/:token" ).to( "preview.show" );
+
+		/**
 		 * Account self-service (B6 — Chunk 1.H).
 		 *   GET  /account           → show()
 		 *   POST /account           → updateProfile()  (display name)

@@ -44,8 +44,12 @@
 					<bx:set currentEvent = event.getCurrentEvent()>
 					<a class="nav-link #( currentEvent == 'admin:Dashboard.index' ? 'active' : '' )#"
 					   href="#event.buildLink( 'admin' )#">Dashboard</a>
-					<a class="nav-link #( currentEvent.startsWith( 'admin:Posts.' ) ? 'active' : '' )#"
+					<a class="nav-link #( currentEvent == 'admin:Posts.index' || currentEvent == 'admin:Posts.editor' ? 'active' : '' )#"
 					   href="#event.buildLink( 'admin:Posts.index' )#">Posts</a>
+					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "posts.publish.others" )>
+						<a class="nav-link ps-4 #( currentEvent == 'admin:Posts.reviewQueue' ? 'active' : '' )#"
+						   href="#event.buildLink( 'admin:Posts.reviewQueue' )#">Review queue</a>
+					</bx:if>
 					<a class="nav-link #( currentEvent.startsWith( 'admin:Categories.' ) ? 'active' : '' )#"
 					   href="#event.buildLink( 'admin:Categories.index' )#">Categories</a>
 					<a class="nav-link #( currentEvent.startsWith( 'admin:Tags.' ) ? 'active' : '' )#"

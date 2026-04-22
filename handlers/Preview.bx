@@ -1,0 +1,53 @@
+/**
+ * bx-Blogger — Preview handler (Chunk 2.G — B2)
+ *
+ * Public route /preview/:token — renders an unpublished post via its
+ * shared preview token. Intentionally outside the admin firewall;
+ * the token itself is the access credential.
+ *
+ * Phase 3 themes take over the actual rendering — until then, this
+ * handler emits a minimal HTML page with the post's compiled body
+ * so authors can eyeball their work. A yellow "Preview" banner at
+ * the top makes it obvious the link is not the public URL.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    property name="draftPreviewService" inject="DraftPreviewService";
+    property name="postService"         inject="PostService";
+
+    /**
+     * GET /preview/:token
+     */
+    function show( event, rc, prc ) {
+        param name="rc.token" default="";
+
+        if ( !len( rc.token ) ) {
+            return invalid( event, "No token supplied." );
+        }
+
+        var result = draftPreviewService.validate( rc.token );
+        if ( !result.valid ) {
+            return invalid( event, "This preview link is invalid or has expired." );
+        }
+
+        prc.post     = result.post;
+        prc.bodyHtml = len( result.post.getBodyHtml() ?: "" )
+            ? result.post.getBodyHtml()
+            : postService.renderPreview( result.post.getBodyMarkdown() ?: "" );
+
+        event.setView( view = "preview/show", layout = "Main" );
+    }
+
+    private function invalid( required any event, required string reason ) {
+        arguments.event.setHTTPHeader( statusCode = 404 );
+        arguments.event.renderData(
+            type       = "html",
+            statusCode = 404,
+            data       = "<!doctype html><html><head><title>Preview unavailable</title>"
+                & "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                & "<style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem}</style>"
+                & "</head><body><h1>Preview unavailable</h1><p>" & encodeForHTML( arguments.reason ) & "</p></body></html>"
+        );
+    }
+
+}
