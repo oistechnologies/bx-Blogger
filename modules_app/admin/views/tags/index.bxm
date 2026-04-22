@@ -1,0 +1,5 @@
+<bx:output>
+<h1 class="h3 mb-4">Tags</h1>
+
+#wire( "tags.manager" )#
+</bx:output>

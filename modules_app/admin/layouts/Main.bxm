@@ -46,8 +46,10 @@
 					   href="#event.buildLink( 'admin' )#">Dashboard</a>
 					<a class="nav-link #( currentEvent.startsWith( 'admin:Posts.' ) ? 'active' : '' )#"
 					   href="#event.buildLink( 'admin:Posts.index' )#">Posts</a>
-					<a class="nav-link disabled"  aria-disabled="true">Categories <small class="text-muted">(2.E)</small></a>
-					<a class="nav-link disabled"  aria-disabled="true">Tags <small class="text-muted">(2.E)</small></a>
+					<a class="nav-link #( currentEvent.startsWith( 'admin:Categories.' ) ? 'active' : '' )#"
+					   href="#event.buildLink( 'admin:Categories.index' )#">Categories</a>
+					<a class="nav-link #( currentEvent.startsWith( 'admin:Tags.' ) ? 'active' : '' )#"
+					   href="#event.buildLink( 'admin:Tags.index' )#">Tags</a>
 					<a class="nav-link disabled"  aria-disabled="true">Media <small class="text-muted">(2.F)</small></a>
 				</nav>
 			</aside>

@@ -1,0 +1,5 @@
+<bx:output>
+<h1 class="h3 mb-4">Categories</h1>
+
+#wire( "categories.manager" )#
+</bx:output>

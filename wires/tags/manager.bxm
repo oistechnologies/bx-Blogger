@@ -1,0 +1,261 @@
+<bx:script>
+// @startWire
+/**
+ * tags.manager — flat list + add/rename/delete + merge.
+ *
+ * Merge flow: the user picks a source tag's row, clicks "Merge", the
+ * wire exposes a target-tag dropdown, then confirm executes
+ * TagService.merge(source, target). No multi-select bulk-merge for
+ * Chunk 2.E — a follow-up chunk can layer it on the same service
+ * method.
+ */
+
+property name="tagService" inject="TagService";
+property name="cbauth"     inject="AuthenticationService@cbauth";
+
+data = {
+    "newName"    : "",
+    "editingId"  : 0,
+    "editName"   : "",
+    "editSlug"   : "",
+    "mergeSourceId" : 0,
+    "mergeTargetId" : 0,
+    "flashOk"    : "",
+    "flashError" : ""
+};
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function addTag() {
+    clearFlashes();
+    if ( !requirePerm( "tags.manage" ) ) return;
+    var name = trim( data.newName );
+    if ( !len( name ) ) {
+        data.flashError = "Name is required.";
+        return;
+    }
+    tagService.create( { "name" : name } );
+    data.newName = "";
+    data.flashOk = "Tag added.";
+}
+
+function startEdit( required id ) {
+    clearFlashes();
+    var tag = getInstance( "Tag" ).find( arguments.id );
+    if ( isNull( tag ) ) return;
+    data.editingId = tag.getId();
+    data.editName  = tag.getName();
+    data.editSlug  = tag.getSlug();
+}
+
+function cancelEdit() {
+    data.editingId = 0;
+    data.editName  = "";
+    data.editSlug  = "";
+}
+
+function saveEdit() {
+    clearFlashes();
+    if ( !requirePerm( "tags.manage" ) ) return;
+    if ( ( data.editingId ?: 0 ) == 0 ) return;
+
+    var tag = getInstance( "Tag" ).find( data.editingId );
+    if ( isNull( tag ) ) {
+        data.flashError = "Tag no longer exists.";
+        cancelEdit();
+        return;
+    }
+    tagService.update( tag, { "name" : data.editName, "slug" : data.editSlug } );
+    data.flashOk = "Tag updated.";
+    cancelEdit();
+}
+
+function deleteTag( required id ) {
+    clearFlashes();
+    if ( !requirePerm( "tags.manage" ) ) return;
+    var tag = getInstance( "Tag" ).find( arguments.id );
+    if ( isNull( tag ) ) return;
+    var name = tag.getName();
+    tagService.delete( tag );
+    data.flashOk = "Deleted '" & name & "' — any posts using it lost the tag but remain published.";
+}
+
+function startMerge( required id ) {
+    clearFlashes();
+    data.mergeSourceId = arguments.id;
+    data.mergeTargetId = 0;
+}
+
+function cancelMerge() {
+    data.mergeSourceId = 0;
+    data.mergeTargetId = 0;
+}
+
+function confirmMerge() {
+    clearFlashes();
+    if ( !requirePerm( "tags.manage" ) ) return;
+    if ( ( data.mergeSourceId ?: 0 ) == 0 || ( data.mergeTargetId ?: 0 ) == 0 ) {
+        data.flashError = "Pick a target tag to merge into.";
+        return;
+    }
+    if ( data.mergeSourceId == data.mergeTargetId ) {
+        data.flashError = "Source and target must be different tags.";
+        return;
+    }
+    var src = getInstance( "Tag" ).find( data.mergeSourceId );
+    var tgt = getInstance( "Tag" ).find( data.mergeTargetId );
+    if ( isNull( src ) || isNull( tgt ) ) {
+        data.flashError = "One of the tags no longer exists.";
+        cancelMerge();
+        return;
+    }
+
+    var moved = tagService.merge( src, tgt );
+    data.flashOk = "Merged " & moved & " post association(s) into '" & tgt.getName() & "'.";
+    cancelMerge();
+}
+
+// --------------------------------------------------------------------
+// Helpers
+// --------------------------------------------------------------------
+
+function allTags() {
+    return getInstance( "Tag" ).orderBy( "name", "asc" ).get();
+}
+
+private function clearFlashes() {
+    data.flashOk = "";
+    data.flashError = "";
+}
+
+private boolean function requirePerm( required string perm ) {
+    var user = cbauth.getUser();
+    if ( user.hasPermission( arguments.perm ) ) return true;
+    data.flashError = "You don't have permission to manage tags.";
+    return false;
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:script>
+    tags = allTags();
+</bx:script>
+
+<div>
+	<bx:if len( args.flashOk )>
+		<div class="alert alert-success alert-dismissible">
+			#encodeForHTML( args.flashOk )#
+			<button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+		</div>
+	</bx:if>
+	<bx:if len( args.flashError )>
+		<div class="alert alert-danger alert-dismissible">
+			#encodeForHTML( args.flashError )#
+			<button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+		</div>
+	</bx:if>
+
+	<div class="row g-3">
+		<div class="col-md-4">
+			<div class="card">
+				<div class="card-body">
+					<h2 class="h6">Add tag</h2>
+					<form wire:submit.prevent="addTag">
+						<div class="mb-2">
+							<label for="newTagName" class="form-label small">Name</label>
+							<input type="text" id="newTagName" class="form-control form-control-sm" wire:model="newName">
+						</div>
+						<button type="submit" class="btn btn-primary btn-sm w-100">Add</button>
+					</form>
+				</div>
+			</div>
+		</div>
+
+		<div class="col-md-8">
+			<div class="card">
+				<div class="card-body">
+					<h2 class="h6 d-flex justify-content-between align-items-center">
+						<span>All tags</span>
+						<small class="text-muted">#tags.len()# total</small>
+					</h2>
+
+					<bx:if tags.len() == 0>
+						<p class="text-muted small mb-0">No tags yet.</p>
+					<bx:else>
+						<table class="table table-sm table-borderless mb-0">
+							<tbody>
+								<bx:loop array="#tags#" item="t">
+									<tr>
+										<bx:if args.editingId == t.getId()>
+											<td colspan="2">
+												<form wire:submit.prevent="saveEdit" class="row g-2 align-items-end">
+													<div class="col-md-5">
+														<label class="form-label small">Name</label>
+														<input type="text" class="form-control form-control-sm" wire:model="editName">
+													</div>
+													<div class="col-md-5">
+														<label class="form-label small">Slug</label>
+														<input type="text" class="form-control form-control-sm" wire:model="editSlug">
+													</div>
+													<div class="col-md-2 d-flex gap-1">
+														<button type="submit" class="btn btn-sm btn-primary">Save</button>
+														<button type="button" class="btn btn-sm btn-outline-secondary" wire:click="cancelEdit">Cancel</button>
+													</div>
+												</form>
+											</td>
+										<bx:elseif args.mergeSourceId == t.getId()>
+											<td colspan="2">
+												<div class="row g-2 align-items-end">
+													<div class="col-md-8">
+														<label class="form-label small">
+															Merge <strong>#encodeForHTML( t.getName() )#</strong> into:
+														</label>
+														<select class="form-select form-select-sm" wire:model="mergeTargetId">
+															<option value="0">— pick a target —</option>
+															<bx:loop array="#tags#" item="opt">
+																<bx:if opt.getId() != t.getId()>
+																	<option value="#opt.getId()#">#encodeForHTML( opt.getName() )#</option>
+																</bx:if>
+															</bx:loop>
+														</select>
+													</div>
+													<div class="col-md-4 d-flex gap-1">
+														<button type="button" class="btn btn-sm btn-primary flex-grow-1"
+														        wire:click="confirmMerge">Merge</button>
+														<button type="button" class="btn btn-sm btn-outline-secondary"
+														        wire:click="cancelMerge">Cancel</button>
+													</div>
+												</div>
+											</td>
+										<bx:else>
+											<td>
+												<strong>#encodeForHTML( t.getName() )#</strong>
+												<br>
+												<small class="text-muted">##/#encodeForHTML( t.getSlug() )#</small>
+											</td>
+											<td class="text-end">
+												<button class="btn btn-sm btn-outline-secondary"
+												        wire:click="startEdit(#t.getId()#)">Edit</button>
+												<button class="btn btn-sm btn-outline-secondary"
+												        wire:click="startMerge(#t.getId()#)">Merge…</button>
+												<button class="btn btn-sm btn-outline-danger"
+												        wire:click="deleteTag(#t.getId()#)"
+												        wire:confirm="Delete this tag? Posts using it lose the tag.">
+													Delete
+												</button>
+											</td>
+										</bx:if>
+									</tr>
+								</bx:loop>
+							</tbody>
+						</table>
+					</bx:if>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+</bx:output>

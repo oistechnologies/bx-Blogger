@@ -1,0 +1,298 @@
+/**
+ * bx-Blogger — CategoryService (Chunk 2.E)
+ *
+ * Business rules for the `categories` table. Categories are a tree —
+ * `parentId` points up, `path` is the materialized slash-separated
+ * slug trail maintained by this service on every create / rename /
+ * move so descendant lookups are `WHERE path LIKE 'parent/%'` with
+ * one index scan.
+ *
+ * Uniqueness: (parent_id, slug) is enforced at the DB level, but —
+ * same MySQL NULL-distinct quirk as posts — two sibling categories
+ * at the top level (parent_id = NULL) can pass the DB index check
+ * with the same slug. `slugExists()` closes that gap.
+ *
+ * Permissions: handler responsibility. This service assumes the
+ * caller holds `categories.manage`.
+ *
+ * Move semantics: `move( category, newParentId )` reparents the
+ * subtree and rewrites every descendant's `path` in one pass. A
+ * guard rejects moves that would create a cycle (cat → own
+ * descendant). A `null` newParentId moves to the root.
+ *
+ * Delete: the current posts→categories pivot doesn't cascade — we
+ * delete pivot rows manually and reassign any orphaned children to
+ * the deleted category's parent (rather than nuking the subtree).
+ */
+class accessors="true" singleton {
+
+    property name="wirebox" inject="wirebox";
+    property name="log"     inject="logbox:logger:{this}";
+
+    variables.maxSlugLength = 140;
+
+    // --------------------------------------------------------------------
+    // Create / update
+    // --------------------------------------------------------------------
+
+    function create( required struct attrs ) {
+        var data = normalizeIncoming( arguments.attrs );
+        data.slug = ensureUniqueSlug(
+            slug     = data.slug,
+            parentId = structKeyExists( data, "parentId" ) ? data.parentId : javaCast( "null", "" )
+        );
+        data.path = buildPath( data.parentId ?: "", data.slug );
+
+        var cat = variables.wirebox.getInstance( "Category" ).create( data );
+        log.info( "CategoryService: created category=" & cat.getId() & " path=" & cat.getPath() );
+        return cat;
+    }
+
+    function update(
+        required any    category,
+        required struct attrs
+    ) {
+        var data = normalizeIncoming( arguments.attrs );
+
+        // Slug change → re-validate + cascade to children's path
+        var slugChanged = false;
+        if ( structKeyExists( data, "slug" ) && len( data.slug ) && data.slug != arguments.category.getSlug() ) {
+            data.slug = ensureUniqueSlug(
+                slug      = data.slug,
+                parentId  = arguments.category.getParentId(),
+                excludeId = arguments.category.getId()
+            );
+            slugChanged = true;
+        }
+
+        applyAttrsToEntity( arguments.category, data );
+        if ( slugChanged ) {
+            arguments.category.setPath( buildPath( arguments.category.getParentId() ?: "", arguments.category.getSlug() ) );
+        }
+        arguments.category.save();
+
+        if ( slugChanged ) {
+            rebuildDescendantPaths( arguments.category );
+        }
+        return arguments.category;
+    }
+
+    /**
+     * Move a category (and its subtree) under `newParentId`. Pass
+     * 0 / "" / null to promote to a root category. Rejects cycles.
+     */
+    function move( required any category, any newParentId = "" ) {
+        var catId  = arguments.category.getId();
+        var target = arguments.newParentId ?: "";
+
+        if ( len( target ) && ( target == catId || isDescendantOf( target, catId ) ) ) {
+            throw( type = "bxBlogger.CategoryCycle", message = "Cannot move a category under itself or one of its descendants." );
+        }
+
+        // Re-check slug uniqueness under the new parent scope
+        var safeSlug = ensureUniqueSlug(
+            slug      = arguments.category.getSlug(),
+            parentId  = len( target ) ? target : javaCast( "null", "" ),
+            excludeId = catId
+        );
+
+        if ( len( target ) ) {
+            arguments.category.setParentId( target );
+        } else {
+            // Quick's set-null is unreliable on BoxLang — go through qb.
+            variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "categories" ).where( "id", catId )
+                .update( { "parent_id" : variables.wirebox.getInstance( "QueryBuilder@qb" ).raw( "NULL" ) } );
+            arguments.category.refresh();
+        }
+        arguments.category.setSlug( safeSlug );
+        arguments.category.setPath( buildPath( len( target ) ? target : "", safeSlug ) );
+        arguments.category.save();
+        rebuildDescendantPaths( arguments.category );
+        return arguments.category;
+    }
+
+    /**
+     * Reorder siblings. `orderedIds` is the array of sibling ids in
+     * their desired order — we rewrite `sort_order` to match the
+     * array index.
+     */
+    function reorder( required any parentId, required array orderedIds ) {
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        var i = 0;
+        for ( var id in arguments.orderedIds ) {
+            qb.newQuery()
+                .from( "categories" )
+                .where( "id", id )
+                .update( { "sort_order" : i } );
+            i++;
+        }
+    }
+
+    /**
+     * Delete a category. Its direct children are reparented to the
+     * deleted category's parent (so a subtree never gets orphaned by
+     * accident), and pivot rows in post_categories for this category
+     * are deleted. The deleted category's posts lose the tag but
+     * remain published.
+     */
+    function delete( required any category ) {
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        var parentId = arguments.category.getParentId();
+
+        // Reparent children
+        var children = variables.wirebox.getInstance( "Category" )
+            .where( "parent_id", arguments.category.getId() )
+            .get();
+        for ( var child in children ) {
+            if ( isNull( parentId ) || !len( parentId ?: "" ) ) {
+                qb.newQuery().from( "categories" ).where( "id", child.getId() )
+                    .update( { "parent_id" : qb.raw( "NULL" ) } );
+            } else {
+                child.setParentId( parentId );
+                child.save();
+            }
+            // refresh + rebuild that child's subtree path
+            var reloaded = variables.wirebox.getInstance( "Category" ).find( child.getId() );
+            reloaded.setPath( buildPath( reloaded.getParentId() ?: "", reloaded.getSlug() ) );
+            reloaded.save();
+            rebuildDescendantPaths( reloaded );
+        }
+
+        qb.newQuery().from( "post_categories" ).where( "category_id", arguments.category.getId() ).delete();
+        qb.newQuery().from( "categories" ).where( "id", arguments.category.getId() ).delete();
+    }
+
+    // --------------------------------------------------------------------
+    // Query helpers
+    // --------------------------------------------------------------------
+
+    /**
+     * Flat tree sorted by path — the caller renders it indented by
+     * counting slashes in `path`. Cheaper than a recursive CTE for
+     * the Phase 2 category counts we expect (<1k).
+     */
+    array function listAll() {
+        return variables.wirebox.getInstance( "Category" )
+            .orderBy( "path", "asc" )
+            .get();
+    }
+
+    string function slugify( required string source ) {
+        var s = lCase( trim( arguments.source ) );
+        s = replaceList( s,
+            "à,á,â,ã,ä,å,ç,è,é,ê,ë,ì,í,î,ï,ñ,ò,ó,ô,õ,ö,ø,ù,ú,û,ü,ý,ÿ",
+            "a,a,a,a,a,a,c,e,e,e,e,i,i,i,i,n,o,o,o,o,o,o,u,u,u,u,y,y"
+        );
+        s = reReplace( s, "[^a-z0-9]+", "-", "all" );
+        s = reReplace( s, "^-+|-+$", "", "all" );
+        if ( len( s ) > variables.maxSlugLength ) {
+            s = left( s, variables.maxSlugLength );
+            s = reReplace( s, "-+$", "", "all" );
+        }
+        return len( s ) ? s : "untitled";
+    }
+
+    string function ensureUniqueSlug(
+        required string  slug,
+                 any     parentId,
+                 numeric excludeId = 0
+    ) {
+        var base = arguments.slug;
+        var candidate = base;
+        var suffix = 1;
+        while ( slugExists( candidate, arguments.parentId, arguments.excludeId ) ) {
+            suffix++;
+            candidate = base & "-" & suffix;
+        }
+        return candidate;
+    }
+
+    private boolean function slugExists(
+        required string slug,
+                 any    parentId,
+                 numeric excludeId = 0
+    ) {
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "categories" )
+            .where( "slug", arguments.slug );
+        if ( isNull( arguments.parentId ) || !len( arguments.parentId ?: "" ) ) {
+            qb.whereNull( "parent_id" );
+        } else {
+            qb.where( "parent_id", arguments.parentId );
+        }
+        if ( arguments.excludeId > 0 ) {
+            qb.where( "id", "!=", arguments.excludeId );
+        }
+        return qb.exists();
+    }
+
+    // --------------------------------------------------------------------
+    // Path helpers
+    // --------------------------------------------------------------------
+
+    /**
+     * Compose the materialized path for a category. Walks the parent
+     * chain until it hits a root; deliberately NOT cached because
+     * categories move rarely and the tree is shallow.
+     */
+    string function buildPath( any parentId, required string slug ) {
+        if ( isNull( parentId ) || !len( parentId ?: "" ) ) return arguments.slug;
+        var parent = variables.wirebox.getInstance( "Category" ).find( arguments.parentId );
+        if ( isNull( parent ) ) return arguments.slug;
+        return parent.getPath() & "/" & arguments.slug;
+    }
+
+    /**
+     * After a category moves or renames, every descendant needs its
+     * `path` re-materialized.
+     */
+    private void function rebuildDescendantPaths( required any category ) {
+        var children = variables.wirebox.getInstance( "Category" )
+            .where( "parent_id", arguments.category.getId() )
+            .get();
+        for ( var child in children ) {
+            child.setPath( arguments.category.getPath() & "/" & child.getSlug() );
+            child.save();
+            rebuildDescendantPaths( child );
+        }
+    }
+
+    /**
+     * Is `candidateId` somewhere under `ancestorId`? Used by the cycle
+     * check in `move()`.
+     */
+    private boolean function isDescendantOf( required any candidateId, required any ancestorId ) {
+        var current = variables.wirebox.getInstance( "Category" ).find( arguments.candidateId );
+        while ( !isNull( current ) && !isNull( current.getParentId() ) && len( current.getParentId() ?: "" ) ) {
+            if ( current.getParentId() == arguments.ancestorId ) return true;
+            current = variables.wirebox.getInstance( "Category" ).find( current.getParentId() );
+        }
+        return false;
+    }
+
+    // --------------------------------------------------------------------
+    // Internals
+    // --------------------------------------------------------------------
+
+    private struct function normalizeIncoming( required struct attrs ) {
+        var out = duplicate( arguments.attrs );
+        if ( !structKeyExists( out, "slug" ) || !len( trim( out.slug ?: "" ) ) ) {
+            out.slug = slugify( out.name ?: "untitled" );
+        } else {
+            out.slug = slugify( out.slug );
+        }
+        if ( !structKeyExists( out, "sortOrder" ) ) out.sortOrder = 0;
+        return out;
+    }
+
+    private void function applyAttrsToEntity( required any entity, required struct data ) {
+        for ( var key in arguments.data ) {
+            var setter = "set" & uCase( left( key, 1 ) ) & mid( key, 2, 999 );
+            if ( structKeyExists( arguments.entity, setter ) ) {
+                invoke( arguments.entity, setter, { "1" : arguments.data[ key ] } );
+            }
+        }
+    }
+
+}

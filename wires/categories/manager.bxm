@@ -1,0 +1,255 @@
+<bx:script>
+// @startWire
+/**
+ * categories.manager — tree view + inline edit.
+ *
+ * Scope for Chunk 2.E: add, rename, reparent (dropdown), delete. Drag-
+ * to-reorder (sortable.js) is deferred — `reorder()` exists on the
+ * service, a follow-up chunk wires it to a JS handle. Inline rename
+ * uses a per-row "editingId" marker so only one category is in edit
+ * mode at a time.
+ */
+
+property name="categoryService" inject="CategoryService";
+property name="cbauth"          inject="AuthenticationService@cbauth";
+
+data = {
+    "newName"      : "",
+    "newParentId"  : "",
+    "editingId"    : 0,
+    "editName"     : "",
+    "editSlug"     : "",
+    "editParentId" : "",
+    "flashOk"      : "",
+    "flashError"   : ""
+};
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function addCategory() {
+    clearFlashes();
+    if ( !requirePerm( "categories.manage" ) ) return;
+
+    var name = trim( data.newName );
+    if ( !len( name ) ) {
+        data.flashError = "Name is required.";
+        return;
+    }
+
+    var attrs = { "name" : name };
+    if ( len( data.newParentId ) ) attrs.parentId = data.newParentId;
+    categoryService.create( attrs );
+
+    data.newName = "";
+    data.newParentId = "";
+    data.flashOk = "Category added.";
+}
+
+function startEdit( required id ) {
+    clearFlashes();
+    var cat = getInstance( "Category" ).find( arguments.id );
+    if ( isNull( cat ) ) return;
+    data.editingId    = cat.getId();
+    data.editName     = cat.getName();
+    data.editSlug     = cat.getSlug();
+    data.editParentId = cat.getParentId() ?: "";
+}
+
+function cancelEdit() {
+    data.editingId    = 0;
+    data.editName     = "";
+    data.editSlug     = "";
+    data.editParentId = "";
+}
+
+function saveEdit() {
+    clearFlashes();
+    if ( !requirePerm( "categories.manage" ) ) return;
+    if ( ( data.editingId ?: 0 ) == 0 ) return;
+
+    var cat = getInstance( "Category" ).find( data.editingId );
+    if ( isNull( cat ) ) {
+        data.flashError = "Category no longer exists.";
+        cancelEdit();
+        return;
+    }
+
+    // Apply name / slug changes
+    categoryService.update( cat, {
+        "name" : data.editName,
+        "slug" : data.editSlug
+    } );
+
+    // Reparent separately — move() takes "" for root, handles cycle check
+    var newParent = data.editParentId ?: "";
+    var currentParent = cat.getParentId() ?: "";
+    if ( newParent != currentParent ) {
+        try {
+            categoryService.move( cat, len( newParent ) ? newParent : "" );
+        }
+        catch ( any e ) {
+            data.flashError = e.message;
+            return;
+        }
+    }
+
+    data.flashOk = "Category updated.";
+    cancelEdit();
+}
+
+function deleteCategory( required id ) {
+    clearFlashes();
+    if ( !requirePerm( "categories.manage" ) ) return;
+    var cat = getInstance( "Category" ).find( arguments.id );
+    if ( isNull( cat ) ) return;
+    var name = cat.getName();
+    categoryService.delete( cat );
+    data.flashOk = "Deleted '" & name & "' — any children were reparented to its parent.";
+}
+
+// --------------------------------------------------------------------
+// Helpers
+// --------------------------------------------------------------------
+
+function allCategories() {
+    return categoryService.listAll();
+}
+
+function depthOf( required path ) {
+    return listLen( arguments.path, "/" ) - 1;
+}
+
+private function clearFlashes() {
+    data.flashOk = "";
+    data.flashError = "";
+}
+
+private boolean function requirePerm( required string perm ) {
+    var user = cbauth.getUser();
+    if ( user.hasPermission( arguments.perm ) ) return true;
+    data.flashError = "You don't have permission to manage categories.";
+    return false;
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:script>
+    categories = allCategories();
+</bx:script>
+
+<div>
+	<bx:if len( args.flashOk )>
+		<div class="alert alert-success alert-dismissible">
+			#encodeForHTML( args.flashOk )#
+			<button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+		</div>
+	</bx:if>
+	<bx:if len( args.flashError )>
+		<div class="alert alert-danger alert-dismissible">
+			#encodeForHTML( args.flashError )#
+			<button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+		</div>
+	</bx:if>
+
+	<div class="row g-3">
+		<div class="col-md-4">
+			<div class="card">
+				<div class="card-body">
+					<h2 class="h6">Add category</h2>
+					<form wire:submit.prevent="addCategory">
+						<div class="mb-2">
+							<label for="newCatName" class="form-label small">Name</label>
+							<input type="text" id="newCatName" class="form-control form-control-sm" wire:model="newName">
+						</div>
+						<div class="mb-2">
+							<label for="newCatParent" class="form-label small">Parent (optional)</label>
+							<select id="newCatParent" class="form-select form-select-sm" wire:model="newParentId">
+								<option value="">— root —</option>
+								<bx:loop array="#categories#" item="c">
+									<option value="#c.getId()#">
+										#repeatString( "— ", depthOf( c.getPath() ) )##encodeForHTML( c.getName() )#
+									</option>
+								</bx:loop>
+							</select>
+						</div>
+						<button type="submit" class="btn btn-primary btn-sm w-100">Add</button>
+					</form>
+				</div>
+			</div>
+		</div>
+
+		<div class="col-md-8">
+			<div class="card">
+				<div class="card-body">
+					<h2 class="h6 d-flex justify-content-between align-items-center">
+						<span>All categories</span>
+						<small class="text-muted">#categories.len()# total</small>
+					</h2>
+					<bx:if categories.len() == 0>
+						<p class="text-muted small mb-0">No categories yet.</p>
+					<bx:else>
+						<table class="table table-sm table-borderless mb-0">
+							<tbody>
+								<bx:loop array="#categories#" item="c">
+									<bx:script>depth = depthOf( c.getPath() )</bx:script>
+									<tr>
+										<bx:if args.editingId == c.getId()>
+											<td colspan="2">
+												<form wire:submit.prevent="saveEdit" class="row g-2 align-items-end">
+													<div class="col-md-4">
+														<label class="form-label small">Name</label>
+														<input type="text" class="form-control form-control-sm" wire:model="editName">
+													</div>
+													<div class="col-md-3">
+														<label class="form-label small">Slug</label>
+														<input type="text" class="form-control form-control-sm" wire:model="editSlug">
+													</div>
+													<div class="col-md-3">
+														<label class="form-label small">Parent</label>
+														<select class="form-select form-select-sm" wire:model="editParentId">
+															<option value="">— root —</option>
+															<bx:loop array="#categories#" item="opt">
+																<bx:if opt.getId() != c.getId()>
+																	<option value="#opt.getId()#" #( opt.getId() == ( args.editParentId ?: '' ) ? 'selected' : '' )#>
+																		#repeatString( "— ", depthOf( opt.getPath() ) )##encodeForHTML( opt.getName() )#
+																	</option>
+																</bx:if>
+															</bx:loop>
+														</select>
+													</div>
+													<div class="col-md-2 d-flex gap-1">
+														<button type="submit" class="btn btn-sm btn-primary">Save</button>
+														<button type="button" class="btn btn-sm btn-outline-secondary" wire:click="cancelEdit">Cancel</button>
+													</div>
+												</form>
+											</td>
+										<bx:else>
+											<td style="padding-left: #( depth * 1.5 )#rem;">
+												<strong>#encodeForHTML( c.getName() )#</strong>
+												<br>
+												<small class="text-muted">/#encodeForHTML( c.getPath() )#</small>
+											</td>
+											<td class="text-end">
+												<button class="btn btn-sm btn-outline-secondary"
+												        wire:click="startEdit(#c.getId()#)">Edit</button>
+												<button class="btn btn-sm btn-outline-danger"
+												        wire:click="deleteCategory(#c.getId()#)"
+												        wire:confirm="Delete this category? Children reparent to its parent.">
+													Delete
+												</button>
+											</td>
+										</bx:if>
+									</tr>
+								</bx:loop>
+							</tbody>
+						</table>
+					</bx:if>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+</bx:output>

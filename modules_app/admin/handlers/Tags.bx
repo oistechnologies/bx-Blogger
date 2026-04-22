@@ -1,0 +1,16 @@
+/**
+ * bx-Blogger — admin:Tags (Chunk 2.E)
+ *
+ * Mounts the tags.manager wire. All CRUD + merge happen inside the
+ * wire against TagService; the handler just sets the page title.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    this.layouts = { "Main.bxm" : "*" };
+
+    function index( event, rc, prc ) {
+        prc.pageTitle = "Tags";
+        event.setView( view = "tags/index" );
+    }
+
+}

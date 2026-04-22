@@ -1,0 +1,263 @@
+/**
+ * bx-Blogger — TaxonomyServicesSpec (Chunk 2.E)
+ *
+ * Covers CategoryService + TagService business rules:
+ *   - slug generation + uniqueness (scoped per parent for categories,
+ *     global for tags)
+ *   - create/update/delete round-trips
+ *   - category path materialization on create, rename, move
+ *   - category cycle guard + root-promotion via null parentId
+ *   - descendant reparenting on delete
+ *   - tag merge moves pivot rows safely + deletes the source tag
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        try {
+            var qb = getInstance( "QueryBuilder@qb" );
+            if ( arrayLen( variables.createdIds.tags ?: [] ) ) {
+                qb.newQuery().from( "post_tags"      ).whereIn( "tag_id", variables.createdIds.tags ).delete();
+                qb.newQuery().from( "tags"           ).whereIn( "id",     variables.createdIds.tags ).delete();
+            }
+            if ( arrayLen( variables.createdIds.categories ?: [] ) ) {
+                qb.newQuery().from( "post_categories" ).whereIn( "category_id", variables.createdIds.categories ).delete();
+                qb.newQuery().from( "categories"      ).whereIn( "id",          variables.createdIds.categories ).delete();
+            }
+            if ( arrayLen( variables.createdIds.posts ?: [] ) ) {
+                qb.newQuery().from( "post_revisions" ).whereIn( "post_id", variables.createdIds.posts ).delete();
+                qb.newQuery().from( "posts"           ).whereIn( "id",      variables.createdIds.posts ).delete();
+            }
+        } catch ( any e ) {
+            writeLog( file = "testbox", text = "TaxonomyServicesSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.createdIds = { "categories" : [], "tags" : [], "posts" : [] };
+        variables.categoryService = getInstance( "CategoryService" );
+        variables.tagService      = getInstance( "TagService" );
+    }
+
+    function run() {
+        describe( "CategoryService", function() {
+
+            describe( "create()", function() {
+                it( "derives slug from name when none provided", function() {
+                    var cat = trackCat( categoryService.create( { "name" : "Breaking News" & uniq() } ) );
+                    expect( cat.getSlug() ).toStartWith( "breaking-news" );
+                } );
+
+                it( "sets path = slug for a root-level category", function() {
+                    var slug = "root-" & uniq();
+                    var cat = trackCat( categoryService.create( { "name" : "Root", "slug" : slug } ) );
+                    expect( cat.getPath() ).toBe( slug );
+                } );
+
+                it( "composes child path from parent path + slug", function() {
+                    var parentSlug = "parent-" & uniq();
+                    var childSlug  = "child-" & uniq();
+                    var parent = trackCat( categoryService.create( { "name" : "P", "slug" : parentSlug } ) );
+                    var child  = trackCat( categoryService.create( {
+                        "name" : "C", "slug" : childSlug, "parentId" : parent.getId()
+                    } ) );
+                    expect( child.getPath() ).toBe( parentSlug & "/" & childSlug );
+                } );
+
+                it( "suffixes duplicate slugs inside the same parent scope", function() {
+                    var s = "dup-" & uniq();
+                    trackCat( categoryService.create( { "name" : "One", "slug" : s } ) );
+                    var two = trackCat( categoryService.create( { "name" : "Two", "slug" : s } ) );
+                    expect( two.getSlug() ).toBe( s & "-2" );
+                } );
+
+                it( "allows the same slug under different parents", function() {
+                    var shared = "shared-" & uniq();
+                    var pA = trackCat( categoryService.create( { "name" : "PA", "slug" : "pa-" & uniq() } ) );
+                    var pB = trackCat( categoryService.create( { "name" : "PB", "slug" : "pb-" & uniq() } ) );
+
+                    trackCat( categoryService.create( { "name" : "X", "slug" : shared, "parentId" : pA.getId() } ) );
+                    var otherSide = trackCat( categoryService.create( { "name" : "Y", "slug" : shared, "parentId" : pB.getId() } ) );
+                    expect( otherSide.getSlug() ).toBe( shared, "sibling scope means same slug is still allowed" );
+                } );
+            } );
+
+            describe( "update()", function() {
+                it( "re-materializes path + descendant paths on slug change", function() {
+                    var originalSlug = "before-" & uniq();
+                    var parent = trackCat( categoryService.create( { "name" : "P", "slug" : originalSlug } ) );
+                    var child  = trackCat( categoryService.create( {
+                        "name" : "C", "slug" : "kid-" & uniq(), "parentId" : parent.getId()
+                    } ) );
+
+                    var newSlug = "after-" & uniq();
+                    categoryService.update( parent, { "slug" : newSlug } );
+
+                    var reParent = getInstance( "Category" ).find( parent.getId() );
+                    var reChild  = getInstance( "Category" ).find( child.getId() );
+                    expect( reParent.getPath() ).toBe( newSlug );
+                    expect( reChild.getPath()  ).toBe( newSlug & "/" & reChild.getSlug() );
+                } );
+            } );
+
+            describe( "move()", function() {
+                it( "moves a subtree under a new parent and rewrites paths", function() {
+                    var oldParent = trackCat( categoryService.create( { "name" : "OLD", "slug" : "old-" & uniq() } ) );
+                    var newParent = trackCat( categoryService.create( { "name" : "NEW", "slug" : "new-" & uniq() } ) );
+                    var leaf = trackCat( categoryService.create( {
+                        "name" : "Leaf", "slug" : "leaf-" & uniq(), "parentId" : oldParent.getId()
+                    } ) );
+
+                    categoryService.move( leaf, newParent.getId() );
+                    var reLeaf = getInstance( "Category" ).find( leaf.getId() );
+                    expect( reLeaf.getParentId() ).toBe( newParent.getId() );
+                    expect( reLeaf.getPath() ).toBe( newParent.getPath() & "/" & reLeaf.getSlug() );
+                } );
+
+                it( "rejects a move that would create a cycle", function() {
+                    var grand = trackCat( categoryService.create( { "name" : "G", "slug" : "g-" & uniq() } ) );
+                    var par   = trackCat( categoryService.create( {
+                        "name" : "P", "slug" : "p-" & uniq(), "parentId" : grand.getId()
+                    } ) );
+
+                    var threw = false;
+                    try { categoryService.move( grand, par.getId() ); }
+                    catch ( any e ) { threw = true; }
+                    expect( threw ).toBeTrue( "moving a category under its own descendant should throw" );
+                } );
+
+                it( "promotes a child to root when newParentId is blank", function() {
+                    var parent = trackCat( categoryService.create( { "name" : "P", "slug" : "rootpar-" & uniq() } ) );
+                    var child  = trackCat( categoryService.create( {
+                        "name" : "C", "slug" : "rootkid-" & uniq(), "parentId" : parent.getId()
+                    } ) );
+                    categoryService.move( child, "" );
+                    var reChild = getInstance( "Category" ).find( child.getId() );
+                    expect( reChild.getParentId() ?: "" ).toBe( "" );
+                    expect( reChild.getPath() ).toBe( reChild.getSlug() );
+                } );
+            } );
+
+            describe( "delete()", function() {
+                it( "reparents children to the deleted category's parent", function() {
+                    var gp   = trackCat( categoryService.create( { "name" : "GP", "slug" : "gp-" & uniq() } ) );
+                    var par  = trackCat( categoryService.create( {
+                        "name" : "P", "slug" : "p-" & uniq(), "parentId" : gp.getId()
+                    } ) );
+                    var kid  = trackCat( categoryService.create( {
+                        "name" : "K", "slug" : "k-" & uniq(), "parentId" : par.getId()
+                    } ) );
+
+                    categoryService.delete( par );
+                    // par no longer exists — kid should now parent to gp
+                    var reKid = getInstance( "Category" ).find( kid.getId() );
+                    expect( reKid.getParentId() ).toBe( gp.getId() );
+                    expect( reKid.getPath() ).toBe( gp.getPath() & "/" & reKid.getSlug() );
+                } );
+            } );
+
+        } );
+
+        describe( "TagService", function() {
+
+            describe( "create()/update()/delete()", function() {
+                it( "auto-slugs from name", function() {
+                    var t = trackTag( tagService.create( { "name" : "Brand New Tag " & uniq() } ) );
+                    expect( t.getSlug() ).toStartWith( "brand-new-tag" );
+                } );
+
+                it( "suffixes a colliding slug", function() {
+                    var n = "dup-tag-" & uniq();
+                    var a = trackTag( tagService.create( { "name" : n, "slug" : n } ) );
+                    var b = trackTag( tagService.create( { "name" : n & " again", "slug" : n } ) );
+                    expect( b.getSlug() ).toBe( n & "-2" );
+                } );
+
+                it( "delete() removes the tag + its pivot rows", function() {
+                    var tag = trackTag( tagService.create( { "name" : "tmp-" & uniq() } ) );
+                    // attach to a throwaway post
+                    var author = createTestUser();
+                    var post   = createPost( author );
+                    getInstance( "QueryBuilder@qb" ).newQuery().from( "post_tags" ).insert( {
+                        "post_id" : post.getId(), "tag_id" : tag.getId()
+                    } );
+
+                    tagService.delete( tag );
+
+                    var stillHere = getInstance( "Tag" ).find( tag.getId() );
+                    expect( isNull( stillHere ) ).toBeTrue();
+
+                    var pivotCount = getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "post_tags" ).where( "tag_id", tag.getId() ).count();
+                    expect( pivotCount ).toBe( 0 );
+                } );
+            } );
+
+            describe( "merge()", function() {
+                it( "moves pivot rows from source → target and deletes source", function() {
+                    var author = createTestUser();
+                    var source = trackTag( tagService.create( { "name" : "src-" & uniq() } ) );
+                    var target = trackTag( tagService.create( { "name" : "tgt-" & uniq() } ) );
+
+                    var postA = createPost( author );
+                    var postB = createPost( author );
+
+                    var qb = getInstance( "QueryBuilder@qb" );
+                    // A has source only; B has both — expect 1 new association
+                    qb.newQuery().from( "post_tags" ).insert( { "post_id" : postA.getId(), "tag_id" : source.getId() } );
+                    qb.newQuery().from( "post_tags" ).insert( { "post_id" : postB.getId(), "tag_id" : source.getId() } );
+                    qb.newQuery().from( "post_tags" ).insert( { "post_id" : postB.getId(), "tag_id" : target.getId() } );
+
+                    var newRows = tagService.merge( source, target );
+                    expect( newRows ).toBe( 1 );
+
+                    // Source tag gone
+                    expect( isNull( getInstance( "Tag" ).find( source.getId() ) ) ).toBeTrue();
+                    // Post A now has target
+                    var aHasTarget = qb.newQuery().from( "post_tags" )
+                        .where( "post_id", postA.getId() ).where( "tag_id", target.getId() ).exists();
+                    expect( aHasTarget ).toBeTrue();
+                    // Post B has one row for target (no duplicates)
+                    var bTargetCount = qb.newQuery().from( "post_tags" )
+                        .where( "post_id", postB.getId() ).where( "tag_id", target.getId() ).count();
+                    expect( bTargetCount ).toBe( 1 );
+                } );
+
+                it( "merging a tag into itself is a no-op", function() {
+                    var t = trackTag( tagService.create( { "name" : "self-" & uniq() } ) );
+                    expect( tagService.merge( t, t ) ).toBe( 0 );
+                } );
+            } );
+        } );
+    }
+
+    // --------------------------------------------------------------------
+    // Helpers
+    // --------------------------------------------------------------------
+
+    private string function uniq() {
+        return left( createUUID(), 8 );
+    }
+
+    private any function trackCat( required any cat ) {
+        variables.createdIds.categories.append( arguments.cat.getId() );
+        return arguments.cat;
+    }
+
+    private any function trackTag( required any tag ) {
+        variables.createdIds.tags.append( arguments.tag.getId() );
+        return arguments.tag;
+    }
+
+    private any function createPost( required any author ) {
+        var post = getInstance( "PostService" ).create( {
+            "authorId"     : arguments.author.getId(),
+            "title"        : "Tax post " & uniq(),
+            "bodyMarkdown" : "body"
+        } );
+        variables.createdIds.posts.append( post.getId() );
+        return post;
+    }
+
+}

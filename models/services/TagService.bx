@@ -1,0 +1,156 @@
+/**
+ * bx-Blogger — TagService (Chunk 2.E)
+ *
+ * Tags are flat — no hierarchy, no path — but they need a merge
+ * operation that the admin uses to consolidate duplicates:
+ *
+ *   merge( sourceTag, targetTag ) → walks post_tags rows from source
+ *   to target (skipping any post that already has both), deletes the
+ *   source tag + its remaining pivot rows, returns the number of
+ *   posts that inherited the target tag.
+ *
+ * Slug uniqueness is globally enforced (the `tags.slug` column is
+ * UNIQUE). Renames through update() go through the same slugify +
+ * suffix-on-collision path as categories / posts.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox" inject="wirebox";
+    property name="log"     inject="logbox:logger:{this}";
+
+    variables.maxSlugLength = 140;
+
+    function create( required struct attrs ) {
+        var data = normalizeIncoming( arguments.attrs );
+        data.slug = ensureUniqueSlug( data.slug );
+        var tag = variables.wirebox.getInstance( "Tag" ).create( data );
+        log.info( "TagService: created tag=" & tag.getId() & " slug=" & tag.getSlug() );
+        return tag;
+    }
+
+    function update( required any tag, required struct attrs ) {
+        var data = normalizeIncoming( arguments.attrs );
+
+        if ( structKeyExists( data, "slug" ) && len( data.slug ) && data.slug != arguments.tag.getSlug() ) {
+            data.slug = ensureUniqueSlug( slug = data.slug, excludeId = arguments.tag.getId() );
+        }
+        applyAttrsToEntity( arguments.tag, data );
+        arguments.tag.save();
+        return arguments.tag;
+    }
+
+    /**
+     * Delete a tag and its pivot rows. Posts previously using this tag
+     * lose it but remain published.
+     */
+    function delete( required any tag ) {
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        qb.newQuery().from( "post_tags" ).where( "tag_id", arguments.tag.getId() ).delete();
+        qb.newQuery().from( "tags" ).where( "id", arguments.tag.getId() ).delete();
+    }
+
+    /**
+     * Merge `source` into `target`. Returns the number of *new*
+     * post→target associations created (excludes posts that already
+     * had both). Source tag + its pivot rows are deleted.
+     */
+    numeric function merge( required any sourceTag, required any targetTag ) {
+        if ( arguments.sourceTag.getId() == arguments.targetTag.getId() ) return 0;
+
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        // Capture ids in local vars — qb's closure has its own `arguments`
+        // scope so `arguments.targetTag` inside the whereNotExists resolves
+        // to that closure's args, not this method's.
+        var sourceId = arguments.sourceTag.getId();
+        var targetId = arguments.targetTag.getId();
+
+        // Posts tagged with source that AREN'T already tagged with target
+        var postIds = qb.newQuery()
+            .from( "post_tags as pt" )
+            .where( "pt.tag_id", sourceId )
+            .whereNotExists( function( sub ) {
+                sub.from( "post_tags as pt2" )
+                    .whereColumn( "pt2.post_id", "pt.post_id" )
+                    .where( "pt2.tag_id", targetId );
+            } )
+            .select( "pt.post_id" )
+            .get();
+
+        var inserted = 0;
+        for ( var row in postIds ) {
+            qb.newQuery().from( "post_tags" ).insert( {
+                "post_id" : row.post_id,
+                "tag_id"  : targetId
+            } );
+            inserted++;
+        }
+
+        // Clean up every remaining source pivot row + the source tag itself
+        qb.newQuery().from( "post_tags" ).where( "tag_id", sourceId ).delete();
+        qb.newQuery().from( "tags" ).where( "id", sourceId ).delete();
+
+        log.info( "TagService.merge: " & arguments.sourceTag.getName() & " → " & arguments.targetTag.getName() &
+                  " (" & inserted & " new associations)" );
+        return inserted;
+    }
+
+    // --------------------------------------------------------------------
+    // Slug helpers
+    // --------------------------------------------------------------------
+
+    string function slugify( required string source ) {
+        var s = lCase( trim( arguments.source ) );
+        s = replaceList( s,
+            "à,á,â,ã,ä,å,ç,è,é,ê,ë,ì,í,î,ï,ñ,ò,ó,ô,õ,ö,ø,ù,ú,û,ü,ý,ÿ",
+            "a,a,a,a,a,a,c,e,e,e,e,i,i,i,i,n,o,o,o,o,o,o,u,u,u,u,y,y"
+        );
+        s = reReplace( s, "[^a-z0-9]+", "-", "all" );
+        s = reReplace( s, "^-+|-+$", "", "all" );
+        if ( len( s ) > variables.maxSlugLength ) {
+            s = left( s, variables.maxSlugLength );
+            s = reReplace( s, "-+$", "", "all" );
+        }
+        return len( s ) ? s : "untitled";
+    }
+
+    string function ensureUniqueSlug( required string slug, numeric excludeId = 0 ) {
+        var base = arguments.slug;
+        var candidate = base;
+        var suffix = 1;
+        while ( slugExists( candidate, arguments.excludeId ) ) {
+            suffix++;
+            candidate = base & "-" & suffix;
+        }
+        return candidate;
+    }
+
+    private boolean function slugExists( required string slug, numeric excludeId = 0 ) {
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "tags" )
+            .where( "slug", arguments.slug );
+        if ( arguments.excludeId > 0 ) qb.where( "id", "!=", arguments.excludeId );
+        return qb.exists();
+    }
+
+    // --------------------------------------------------------------------
+
+    private struct function normalizeIncoming( required struct attrs ) {
+        var out = duplicate( arguments.attrs );
+        if ( !structKeyExists( out, "slug" ) || !len( trim( out.slug ?: "" ) ) ) {
+            out.slug = slugify( out.name ?: "untitled" );
+        } else {
+            out.slug = slugify( out.slug );
+        }
+        return out;
+    }
+
+    private void function applyAttrsToEntity( required any entity, required struct data ) {
+        for ( var key in arguments.data ) {
+            var setter = "set" & uCase( left( key, 1 ) ) & mid( key, 2, 999 );
+            if ( structKeyExists( arguments.entity, setter ) ) {
+                invoke( arguments.entity, setter, { "1" : arguments.data[ key ] } );
+            }
+        }
+    }
+
+}

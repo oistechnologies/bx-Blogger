@@ -1,0 +1,16 @@
+/**
+ * bx-Blogger — admin:Categories (Chunk 2.E)
+ *
+ * Mounts the categories.manager wire. All CRUD happens inside the
+ * wire against CategoryService; the handler just sets the page title.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    this.layouts = { "Main.bxm" : "*" };
+
+    function index( event, rc, prc ) {
+        prc.pageTitle = "Categories";
+        event.setView( view = "categories/index" );
+    }
+
+}
