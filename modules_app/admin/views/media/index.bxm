@@ -1,0 +1,47 @@
+<bx:output>
+<div class="d-flex justify-content-between align-items-center mb-4">
+	<h1 class="h3 mb-0">Media library</h1>
+</div>
+
+<bx:if flash.exists( "mediaMessage" )>
+	<div class="alert alert-success">#encodeForHTML( flash.get( "mediaMessage" ) )#</div>
+</bx:if>
+<bx:if flash.exists( "mediaError" )>
+	<div class="alert alert-danger">#encodeForHTML( flash.get( "mediaError" ) )#</div>
+</bx:if>
+
+<!--- Upload form — plain multipart POST straight to the Media handler.
+      Lives in the view rather than the library wire because CBWIRE file
+      uploads add a round-trip and a preview step we don't need at this
+      scope; a standard form keeps the ingest path narrow and testable. --->
+<div class="card mb-4">
+	<div class="card-body">
+		<h2 class="h6">Upload a file</h2>
+		<form method="POST"
+		      action="#event.buildLink( 'admin:Media.upload' )#"
+		      enctype="multipart/form-data"
+		      class="row g-2 align-items-end">
+			<div class="col-md-4">
+				<label for="mediaFile" class="form-label small">File</label>
+				<input type="file" id="mediaFile" name="file" class="form-control form-control-sm" required>
+			</div>
+			<div class="col-md-4">
+				<label for="mediaAlt" class="form-label small">
+					Alt text <span class="text-danger">*</span>
+					<small class="text-muted">(required for images)</small>
+				</label>
+				<input type="text" id="mediaAlt" name="altText" class="form-control form-control-sm" maxlength="500">
+			</div>
+			<div class="col-md-2">
+				<label for="mediaTitle" class="form-label small">Title</label>
+				<input type="text" id="mediaTitle" name="title" class="form-control form-control-sm" maxlength="255">
+			</div>
+			<div class="col-md-2">
+				<button type="submit" class="btn btn-primary btn-sm w-100">Upload</button>
+			</div>
+		</form>
+	</div>
+</div>
+
+#wire( "media.library" )#
+</bx:output>

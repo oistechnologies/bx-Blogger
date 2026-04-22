@@ -235,6 +235,24 @@ class {
 				// Short alias works because autoMapModels=true + unique class names.
 				"userServiceClass" : "UserService"
 			},
+			"cbfs" : {
+				// Named disks per PLAN §15 — Phase 2 ships `media` (user
+				// uploads), later phases add `themeAssets`, `backups`,
+				// etc. Dev stays local for fast iteration; prod points
+				// the same disk id at S3/MinIO via env vars so handler
+				// code keeps using `cbfs:disk:media` regardless.
+				"disks" : {
+					"media" : {
+						"provider"   : "Local",
+						"properties" : {
+							"path"    : getSystemSetting( "CBFS_MEDIA_DISK_PATH", expandPath( "/includes/public/media" ) ),
+							"diskUrl" : function() {
+								return "/includes/public/media";
+							}
+						}
+					}
+				}
+			},
 			"cbmailservices" : {
 				// Applied to every outbound mail. SMTP settings flow through
 				// to cfmail's `server/port/username/password` attributes.

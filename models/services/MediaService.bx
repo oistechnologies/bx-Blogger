@@ -1,0 +1,245 @@
+/**
+ * bx-Blogger — MediaService (Chunk 2.F)
+ *
+ * Business-logic authority for uploaded files. Every upload flows
+ * through `upload()` — which deduplicates by SHA-256 hash, writes the
+ * file to the cbfs `media` disk, and creates the `media` row.
+ * Handlers never touch cbfs directly.
+ *
+ * Key behaviors:
+ *   - Dedup: if a file with the same SHA-256 already exists (same
+ *     bytes), return the existing row; don't write a second copy.
+ *     Each caller gets its own reference to the same row.
+ *   - B18 alt-text enforcement: image uploads REQUIRE alt_text.
+ *     Non-image uploads (PDFs, CSVs, etc.) don't — alt_text is an
+ *     a11y concept specific to `<img>`.
+ *   - Path layout: `YYYY/MM/{hashPrefix}-{safeFilename}`. Writing
+ *     into year/month folders keeps the inode count per directory
+ *     reasonable on local-disk providers and mirrors the S3 prefix
+ *     layout once prod swaps the provider.
+ *   - Size cap: 10MB default, configurable via settings.media_*.
+ *     Uploads over the limit throw `bxBlogger.MediaTooLarge` —
+ *     caller formats a user-friendly message.
+ *
+ * Prod-swap story: the `media` disk id stays the same between dev
+ * and prod; operators flip `cbfs.disks.media.provider` from Local to
+ * S3 in config/Coldbox.bx's environment override (or via env vars).
+ * MediaService doesn't know which provider it's talking to — it
+ * gets a disk handle from cbfs.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox"         inject="wirebox";
+    property name="cbfs"            inject="DiskService@cbfs";
+    property name="log"             inject="logbox:logger:{this}";
+
+    variables.maxUploadBytes = 10 * 1024 * 1024;   // 10 MB default
+    variables.diskName       = "media";
+    variables.imageMimePrefix = "image/";
+
+    // --------------------------------------------------------------------
+    // Upload
+    // --------------------------------------------------------------------
+
+    /**
+     * Ingest an uploaded file.
+     *
+     * @tmpPath           Absolute filesystem path to the just-uploaded
+     *                    file (typically `tempFile.serverFile`).
+     * @originalFilename  What the user's browser named it.
+     * @mimeType          Detected MIME type. Can be empty; we probe
+     *                    with fileGetMimeType() as a fallback.
+     * @sizeBytes         File size, in bytes.
+     * @uploaderId        users.id of the person uploading.
+     * @altText           REQUIRED for image uploads (B18). Rejected as
+     *                    empty for anything `image/*`.
+     * @title, @caption   Optional display metadata.
+     * @focalX, @focalY   0..1 focal point for thumb cropping. Default 0.5.
+     *
+     * @return the Media entity (possibly an existing dedup match).
+     * @throws bxBlogger.MediaAltRequired  image uploads need alt_text
+     * @throws bxBlogger.MediaTooLarge     over the size cap
+     */
+    any function upload(
+        required string  tmpPath,
+        required string  originalFilename,
+        required string  mimeType,
+        required numeric sizeBytes,
+        required numeric uploaderId,
+                 string  altText  = "",
+                 string  title    = "",
+                 string  caption  = "",
+                 numeric focalX   = 0.5,
+                 numeric focalY   = 0.5
+    ) {
+        if ( arguments.sizeBytes > variables.maxUploadBytes ) {
+            throw(
+                type    = "bxBlogger.MediaTooLarge",
+                message = "File exceeds the " & numberFormat( variables.maxUploadBytes / 1024 / 1024 ) & " MB upload limit."
+            );
+        }
+
+        var mime = len( arguments.mimeType )
+            ? arguments.mimeType
+            : fileGetMimeType( arguments.tmpPath );
+        var isImage = left( mime, len( variables.imageMimePrefix ) ) == variables.imageMimePrefix;
+
+        if ( isImage && !len( trim( arguments.altText ) ) ) {
+            throw(
+                type    = "bxBlogger.MediaAltRequired",
+                message = "Alt text is required for image uploads (accessibility — B18)."
+            );
+        }
+
+        var sha = lCase( hash( fileReadBinary( arguments.tmpPath ), "SHA-256" ) );
+
+        // Dedup: same bytes already on file? Return the existing row.
+        var existing = variables.wirebox.getInstance( "Media" )
+            .where( "hash", sha )
+            .whereNull( "deleted_at" )
+            .first();
+        if ( !isNull( existing ) ) {
+            log.info( "MediaService.upload: dedup hit hash=" & sha & " → media=" & existing.getId() );
+            return existing;
+        }
+
+        // Build the target path: YYYY/MM/{hashPrefix}-{safeName}.{ext}
+        var yyyy = dateTimeFormat( now(), "yyyy" );
+        var mm   = dateTimeFormat( now(), "MM" );
+        var safe = safeFilename( arguments.originalFilename );
+        var diskPath = yyyy & "/" & mm & "/" & left( sha, 8 ) & "-" & safe;
+
+        var disk = variables.cbfs.get( variables.diskName );
+        disk.create(
+            path      = diskPath,
+            contents  = fileReadBinary( arguments.tmpPath ),
+            overwrite = true
+        );
+
+        // Dimensions for images — cheap enough to probe here rather
+        // than defer to a Phase 6 job. Non-image / failed-probe leaves
+        // width/height null.
+        var width  = "";
+        var height = "";
+        if ( isImage ) {
+            try {
+                var info = imageInfo( imageRead( arguments.tmpPath ) );
+                width  = info.width;
+                height = info.height;
+            }
+            catch ( any e ) { /* non-fatal — leave nulls */ }
+        }
+
+        var row = {
+            "uploaderId"       : arguments.uploaderId,
+            "disk"             : variables.diskName,
+            "path"             : diskPath,
+            "filename"         : listLast( diskPath, "/" ),
+            "originalFilename" : arguments.originalFilename,
+            "mimeType"         : mime,
+            "sizeBytes"        : arguments.sizeBytes,
+            "hash"             : sha,
+            "focalX"           : arguments.focalX,
+            "focalY"           : arguments.focalY,
+            "altText"          : arguments.altText,
+            "title"            : arguments.title,
+            "caption"          : arguments.caption
+        };
+        if ( len( width ) )  row.width  = width;
+        if ( len( height ) ) row.height = height;
+
+        var media = variables.wirebox.getInstance( "Media" ).create( row );
+        log.info( "MediaService.upload: stored media=" & media.getId() & " path=" & diskPath & " size=" & arguments.sizeBytes );
+        return media;
+    }
+
+    // --------------------------------------------------------------------
+    // Mutations on existing rows
+    // --------------------------------------------------------------------
+
+    /**
+     * Update alt-text / title / caption / focal point. Pass a struct —
+     * only keys present are updated. Alt-text cannot be cleared to
+     * empty string on images (B18 invariant).
+     */
+    any function updateMeta( required any media, required struct attrs ) {
+        if (
+            structKeyExists( arguments.attrs, "altText" )
+            && !len( trim( arguments.attrs.altText ) )
+            && left( arguments.media.getMimeType(), len( variables.imageMimePrefix ) ) == variables.imageMimePrefix
+        ) {
+            throw(
+                type    = "bxBlogger.MediaAltRequired",
+                message = "Alt text cannot be blank for image files."
+            );
+        }
+
+        for ( var key in arguments.attrs ) {
+            var setter = "set" & uCase( left( key, 1 ) ) & mid( key, 2, 999 );
+            if ( structKeyExists( arguments.media, setter ) ) {
+                invoke( arguments.media, setter, { "1" : arguments.attrs[ key ] } );
+            }
+        }
+        arguments.media.save();
+        return arguments.media;
+    }
+
+    /**
+     * Soft-delete: marks the row deleted_at and removes the blob from
+     * the disk. Pivot rows in post_featured_media etc. aren't
+     * cascade-cleared — the FK is a soft reference (nullable), so
+     * orphaned posts keep their featured_media_id pointing at a row
+     * that now has deleted_at set. The Phase 3 theme renderer treats
+     * that as "no featured image." Hard-delete ships in Phase 8 (B11
+     * GDPR purge).
+     */
+    void function softDelete( required any media ) {
+        try {
+            variables.cbfs.get( variables.diskName ).delete( arguments.media.getPath() );
+        }
+        catch ( any e ) {
+            // Best-effort — blob may already be gone on a shared
+            // storage with eventual consistency. DB row still soft-
+            // deletes so the UI respects the intent.
+            log.warn( "MediaService.softDelete: could not remove blob at " & arguments.media.getPath() & " — " & e.message );
+        }
+        arguments.media.setDeletedAt( now() );
+        arguments.media.save();
+    }
+
+    // --------------------------------------------------------------------
+    // Query helpers
+    // --------------------------------------------------------------------
+
+    /**
+     * Returns the public URL for a media row. In dev the file lives
+     * under `/includes/public/media/...` which the MiniServer serves
+     * directly. In prod with S3, the provider's own `url()` returns
+     * a signed / CDN URL.
+     */
+    string function urlFor( required any media ) {
+        var disk = variables.cbfs.get( variables.diskName );
+        return disk.url( arguments.media.getPath() );
+    }
+
+    /**
+     * Sanitize a filename: lowercase, keep alphanumerics + dots +
+     * hyphens, collapse anything else into a single dash. Preserves
+     * the extension.
+     */
+    string function safeFilename( required string original ) {
+        var dotAt = arguments.original.listLast( "." );
+        var ext   = ( dotAt != arguments.original ) ? "." & lCase( dotAt ) : "";
+        var base  = arguments.original.replaceNoCase( ext, "", "one" );
+        var clean = reReplace( lCase( base ), "[^a-z0-9]+", "-", "all" );
+        clean = reReplace( clean, "^-+|-+$", "", "all" );
+        if ( !len( clean ) ) clean = "file";
+        if ( len( clean ) > 80 ) clean = left( clean, 80 );
+        return clean & ext;
+    }
+
+    numeric function getMaxUploadBytes() {
+        return variables.maxUploadBytes;
+    }
+
+}

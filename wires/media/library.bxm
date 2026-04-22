@@ -1,0 +1,315 @@
+<bx:script>
+// @startWire
+/**
+ * media.library — grid view + inline meta edit + delete.
+ *
+ * Scope: filename/alt-text search, paginated tile grid, click a tile
+ * to expand inline metadata editor (alt / title / caption / focal),
+ * Delete action. Upload lives in the parent handler/view because
+ * CBWIRE file-upload adds a round-trip we don't need at this scope.
+ */
+
+property name="mediaService" inject="MediaService";
+property name="cbauth"       inject="AuthenticationService@cbauth";
+
+data = {
+    "search"     : "",
+    "page"       : 1,
+    "perPage"    : 24,
+    "openId"     : 0,
+    "editAlt"    : "",
+    "editTitle"  : "",
+    "editCaption": "",
+    "editFocalX" : 0.5,
+    "editFocalY" : 0.5,
+    "flashOk"    : "",
+    "flashError" : ""
+};
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function applySearch() {
+    data.page = 1;
+}
+
+function gotoPage( required pageNumber ) {
+    data.page = max( pageNumber, 1 );
+}
+
+function openTile( required id ) {
+    var m = getInstance( "Media" ).find( arguments.id );
+    if ( isNull( m ) ) return;
+    data.openId      = m.getId();
+    data.editAlt     = m.getAltText() ?: "";
+    data.editTitle   = m.getTitle() ?: "";
+    data.editCaption = m.getCaption() ?: "";
+    data.editFocalX  = m.getFocalX() ?: 0.5;
+    data.editFocalY  = m.getFocalY() ?: 0.5;
+    clearFlashes();
+}
+
+function closeTile() {
+    data.openId = 0;
+    clearFlashes();
+}
+
+function saveMeta() {
+    clearFlashes();
+    if ( ( data.openId ?: 0 ) == 0 ) return;
+    var m = getInstance( "Media" ).find( data.openId );
+    if ( isNull( m ) ) {
+        data.flashError = "That media row no longer exists.";
+        closeTile();
+        return;
+    }
+    try {
+        mediaService.updateMeta( m, {
+            "altText" : data.editAlt,
+            "title"   : data.editTitle,
+            "caption" : data.editCaption,
+            "focalX"  : data.editFocalX,
+            "focalY"  : data.editFocalY
+        } );
+        data.flashOk = "Saved.";
+    }
+    catch ( bxBlogger.MediaAltRequired e ) {
+        data.flashError = e.message;
+    }
+}
+
+function deleteMedia( required id ) {
+    clearFlashes();
+    var user = cbauth.getUser();
+    var m = getInstance( "Media" ).find( arguments.id );
+    if ( isNull( m ) ) return;
+
+    var isMine = m.getUploaderId() == user.getId();
+    var canDelete = isMine
+        ? user.hasPermission( "media.upload" )   // uploader owns → can always delete own
+        : user.hasPermission( "media.delete.others" );
+    if ( !canDelete ) {
+        data.flashError = "You don't have permission to delete that file.";
+        return;
+    }
+
+    mediaService.softDelete( m );
+    if ( data.openId == arguments.id ) closeTile();
+    data.flashOk = "File removed from the library.";
+}
+
+// --------------------------------------------------------------------
+// Read-side helpers — called from the template
+// --------------------------------------------------------------------
+
+function listPage() {
+    var qb = getInstance( "QueryBuilder@qb" ).newQuery()
+        .from( "media" )
+        .whereNull( "deleted_at" );
+
+    if ( len( trim( data.search ) ) ) {
+        var q = "%" & trim( data.search ) & "%";
+        qb.where( function( w ) {
+            w.where( "original_filename", "like", q )
+             .orWhere( "alt_text", "like", q )
+             .orWhere( "title",    "like", q );
+        } );
+    }
+
+    var total = qb.count();
+    var offset = ( data.page - 1 ) * data.perPage;
+    if ( offset < 0 ) offset = 0;
+
+    var rows = qb
+        .orderBy( "created_at", "desc" )
+        .limit( data.perPage )
+        .offset( offset )
+        .get();
+
+    return { "rows" : rows, "total" : total };
+}
+
+function urlFor( required row ) {
+    return getInstance( "DiskService@cbfs" ).get( "media" ).url( arguments.row.path );
+}
+
+function isImage( required mime ) {
+    return left( arguments.mime ?: "", 6 ) == "image/";
+}
+
+private function clearFlashes() {
+    data.flashOk = "";
+    data.flashError = "";
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:script>
+    lp       = listPage();
+    rows     = lp.rows;
+    total    = lp.total;
+    pageMax  = ceiling( total / args.perPage );
+    if ( pageMax < 1 ) pageMax = 1;
+</bx:script>
+
+<div>
+	<bx:if len( args.flashOk )>
+		<div class="alert alert-success alert-dismissible">
+			#encodeForHTML( args.flashOk )#
+			<button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+		</div>
+	</bx:if>
+	<bx:if len( args.flashError )>
+		<div class="alert alert-danger alert-dismissible">
+			#encodeForHTML( args.flashError )#
+			<button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+		</div>
+	</bx:if>
+
+	<form class="row g-2 mb-3" wire:submit.prevent="applySearch">
+		<div class="col-md-9">
+			<input type="text" class="form-control form-control-sm"
+			       placeholder="Search filename, alt text, or title…"
+			       wire:model="search"
+			       wire:keydown.enter="applySearch">
+		</div>
+		<div class="col-md-3">
+			<button class="btn btn-outline-secondary btn-sm w-100" type="submit">Search</button>
+		</div>
+	</form>
+
+	<bx:if rows.len() == 0>
+		<div class="card">
+			<div class="card-body text-center text-muted py-5">
+				No media matches those filters.
+			</div>
+		</div>
+	<bx:else>
+		<div class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3">
+			<bx:loop array="#rows#" item="row">
+				<div class="col">
+					<div class="card h-100">
+						<bx:if isImage( row.mime_type )>
+							<img src="#urlFor( row )#"
+							     class="card-img-top"
+							     alt="#encodeForHTMLAttribute( row.alt_text ?: '' )#"
+							     style="object-fit: cover; aspect-ratio: 16/10;">
+						<bx:else>
+							<div class="card-img-top bg-light d-flex align-items-center justify-content-center"
+							     style="aspect-ratio: 16/10;">
+								<span class="text-muted small">#encodeForHTML( row.mime_type )#</span>
+							</div>
+						</bx:if>
+						<div class="card-body p-2">
+							<small class="text-truncate d-block">#encodeForHTML( row.original_filename )#</small>
+							<div class="d-flex gap-1 mt-1">
+								<button class="btn btn-sm btn-outline-secondary flex-grow-1"
+								        wire:click="openTile(#row.id#)">Edit</button>
+								<button class="btn btn-sm btn-outline-danger"
+								        wire:click="deleteMedia(#row.id#)"
+								        wire:confirm="Delete this file? Posts referencing it will show a broken link.">×</button>
+							</div>
+						</div>
+					</div>
+				</div>
+			</bx:loop>
+		</div>
+
+		<bx:if pageMax > 1>
+			<nav class="mt-3">
+				<ul class="pagination pagination-sm mb-0">
+					<li class="page-item #( args.page <= 1 ? 'disabled' : '' )#">
+						<button class="page-link" wire:click="gotoPage(#args.page - 1#)">Prev</button>
+					</li>
+					<li class="page-item">
+						<span class="page-link">Page #args.page# of #pageMax# · #total# total</span>
+					</li>
+					<li class="page-item #( args.page >= pageMax ? 'disabled' : '' )#">
+						<button class="page-link" wire:click="gotoPage(#args.page + 1#)">Next</button>
+					</li>
+				</ul>
+			</nav>
+		</bx:if>
+	</bx:if>
+
+	<!--- Inline editor pane — opens below the grid when openId > 0 --->
+	<bx:if ( args.openId ?: 0 ) > 0>
+		<bx:script>
+			openRow = getInstance( "Media" ).find( args.openId );
+		</bx:script>
+		<bx:if !isNull( openRow )>
+			<div class="card mt-4">
+				<div class="card-body">
+					<div class="d-flex justify-content-between align-items-start mb-3">
+						<h2 class="h6 mb-0">Edit metadata — #encodeForHTML( openRow.getOriginalFilename() )#</h2>
+						<button class="btn btn-sm btn-link" wire:click="closeTile">Close</button>
+					</div>
+
+					<div class="row g-3">
+						<div class="col-md-4">
+							<bx:if isImage( openRow.getMimeType() )>
+								<img src="#urlFor( openRow )#"
+								     class="img-fluid rounded"
+								     alt="#encodeForHTMLAttribute( args.editAlt )#">
+							</bx:if>
+							<dl class="small mt-2 mb-0">
+								<dt>Size</dt>
+								<dd>#numberFormat( openRow.getSizeBytes() )# bytes</dd>
+								<bx:if !isNull( openRow.getWidth() ) && len( openRow.getWidth() ?: "" )>
+									<dt>Dimensions</dt>
+									<dd>#openRow.getWidth()# × #openRow.getHeight()# px</dd>
+								</bx:if>
+								<dt>MIME</dt>
+								<dd>#encodeForHTML( openRow.getMimeType() )#</dd>
+							</dl>
+						</div>
+
+						<div class="col-md-8">
+							<form wire:submit.prevent="saveMeta">
+								<div class="mb-2">
+									<label class="form-label small">Alt text
+										<bx:if isImage( openRow.getMimeType() )>
+											<span class="text-danger">*</span>
+										</bx:if>
+									</label>
+									<input type="text" class="form-control form-control-sm"
+									       wire:model="editAlt" maxlength="500">
+								</div>
+								<div class="row g-2 mb-2">
+									<div class="col-md-6">
+										<label class="form-label small">Title</label>
+										<input type="text" class="form-control form-control-sm"
+										       wire:model="editTitle" maxlength="255">
+									</div>
+									<div class="col-md-6">
+										<label class="form-label small">Caption</label>
+										<input type="text" class="form-control form-control-sm"
+										       wire:model="editCaption" maxlength="500">
+									</div>
+								</div>
+								<div class="row g-2 mb-3">
+									<div class="col-md-6">
+										<label class="form-label small">Focal X (0..1)</label>
+										<input type="number" step="0.01" min="0" max="1"
+										       class="form-control form-control-sm"
+										       wire:model="editFocalX">
+									</div>
+									<div class="col-md-6">
+										<label class="form-label small">Focal Y (0..1)</label>
+										<input type="number" step="0.01" min="0" max="1"
+										       class="form-control form-control-sm"
+										       wire:model="editFocalY">
+									</div>
+								</div>
+								<button type="submit" class="btn btn-primary btn-sm">Save changes</button>
+							</form>
+						</div>
+					</div>
+				</div>
+			</div>
+		</bx:if>
+	</bx:if>
+</div>
+</bx:output>

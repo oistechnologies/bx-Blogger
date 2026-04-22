@@ -50,7 +50,8 @@
 					   href="#event.buildLink( 'admin:Categories.index' )#">Categories</a>
 					<a class="nav-link #( currentEvent.startsWith( 'admin:Tags.' ) ? 'active' : '' )#"
 					   href="#event.buildLink( 'admin:Tags.index' )#">Tags</a>
-					<a class="nav-link disabled"  aria-disabled="true">Media <small class="text-muted">(2.F)</small></a>
+					<a class="nav-link #( currentEvent.startsWith( 'admin:Media.' ) ? 'active' : '' )#"
+					   href="#event.buildLink( 'admin:Media.index' )#">Media</a>
 				</nav>
 			</aside>
 			<main class="col-12 col-md-9 col-lg-10">

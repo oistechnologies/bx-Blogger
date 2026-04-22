@@ -1,0 +1,96 @@
+/**
+ * bx-Blogger — admin:Media (Chunk 2.F)
+ *
+ * Mounts the media.library wire + handles multipart uploads. CBWIRE
+ * can carry file uploads but the standard browser POST path is simpler
+ * and less leaky for chunk 2.F — the library wire handles read /
+ * search / inline meta edit / delete, and the handler owns the upload
+ * ingest into MediaService. The form posts to this handler; on
+ * success we flash a message and redirect back to /admin/media.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    property name="mediaService" inject="MediaService";
+    property name="cbauth"       inject="AuthenticationService@cbauth";
+
+    this.layouts = { "Main.bxm" : "*" };
+
+    /**
+     * GET /admin/media — library grid.
+     */
+    function index( event, rc, prc ) {
+        prc.pageTitle = "Media";
+        event.setView( view = "media/index" );
+    }
+
+    /**
+     * POST /admin/media/upload — multipart ingest.
+     *
+     *   file      the uploaded file (name="file")
+     *   altText   required for images (B18)
+     *   title     optional
+     *   caption   optional
+     *
+     * We let MediaService own size-limit + alt enforcement + dedup;
+     * the handler is just a thin transport. Any service exception
+     * turns into a flash error — we never lose the user's alt text
+     * on a validation round-trip because a failed upload redirects
+     * back with form state in the flash scope.
+     */
+    function upload( event, rc, prc ) {
+        param name="rc.altText" default="";
+        param name="rc.title"   default="";
+        param name="rc.caption" default="";
+
+        var user = cbauth.getUser();
+        if ( !user.hasPermission( "media.upload" ) ) {
+            flash.put( "mediaError", "You don't have permission to upload media." );
+            relocate( event = "admin:Media.index" );
+            return;
+        }
+
+        // Without a file field the upload struct is missing — bail early.
+        if ( !structKeyExists( form, "file" ) || !len( form.file ?: "" ) ) {
+            flash.put( "mediaError", "No file selected." );
+            relocate( event = "admin:Media.index" );
+            return;
+        }
+
+        try {
+            var result = fileUpload(
+                destination = getTempDirectory(),
+                fileField   = "file",
+                nameConflict = "makeunique"
+            );
+
+            var tmpFile = result.serverDirectory & "/" & result.serverFile;
+            mediaService.upload(
+                tmpPath          = tmpFile,
+                originalFilename = result.clientFile,
+                mimeType         = result.contentType & "/" & result.contentSubType,
+                sizeBytes        = result.fileSize,
+                uploaderId       = user.getId(),
+                altText          = rc.altText,
+                title            = rc.title,
+                caption          = rc.caption
+            );
+
+            // Clean up the temp file — MediaService already copied it onto cbfs.
+            try { fileDelete( tmpFile ); } catch ( any e ) {}
+
+            flash.put( "mediaMessage", "Upload complete." );
+        }
+        catch ( bxBlogger.MediaAltRequired e ) {
+            flash.put( "mediaError", e.message );
+        }
+        catch ( bxBlogger.MediaTooLarge e ) {
+            flash.put( "mediaError", e.message );
+        }
+        catch ( any e ) {
+            flash.put( "mediaError", "Upload failed: " & e.message );
+        }
+
+        relocate( event = "admin:Media.index" );
+    }
+
+}

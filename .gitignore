@@ -40,6 +40,12 @@ node_modules/
 package-lock.json
 public/themes/*/assets/
 
+# Uploaded media files — MediaService writes here on the local disk
+# provider. Dev only; prod lands in S3/MinIO via cbfs. Keep the folder
+# itself (via .gitkeep) so fresh clones have a valid upload target.
+includes/public/media/*
+!includes/public/media/.gitkeep
+
 # TestBox results
 tests/results/
 

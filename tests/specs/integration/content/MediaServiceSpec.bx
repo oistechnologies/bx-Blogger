@@ -1,0 +1,233 @@
+/**
+ * bx-Blogger — MediaServiceSpec (Chunk 2.F)
+ *
+ * Covers MediaService business rules:
+ *   - upload() writes a row + returns the Media entity
+ *   - B18 alt-text enforcement (required for images, not for PDFs etc.)
+ *   - Dedup by SHA-256 returns the existing row instead of writing twice
+ *   - Size cap throws bxBlogger.MediaTooLarge
+ *   - updateMeta() refuses to clear alt on images
+ *   - softDelete() marks deleted_at + best-effort removes the blob
+ *   - safeFilename() handles weird filenames
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        try {
+            var qb = getInstance( "QueryBuilder@qb" );
+            if ( arrayLen( variables.createdIds.media ?: [] ) ) {
+                qb.newQuery().from( "media" ).whereIn( "id", variables.createdIds.media ).delete();
+            }
+        } catch ( any e ) {
+            writeLog( file = "testbox", text = "MediaServiceSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.createdIds = { "media" : [] };
+        variables.mediaService = getInstance( "MediaService" );
+    }
+
+    function run() {
+        describe( "MediaService", function() {
+
+            describe( "safeFilename()", function() {
+                it( "lowercases and dashes weird characters", function() {
+                    expect( mediaService.safeFilename( "My Photo (final)!.JPG" ) ).toBe( "my-photo-final.jpg" );
+                } );
+
+                it( "falls back to 'file' when the basename is empty", function() {
+                    expect( mediaService.safeFilename( "!!!.png" ) ).toBe( "file.png" );
+                } );
+
+                it( "truncates very long names to 80 chars before extension", function() {
+                    var long = repeatString( "a", 200 ) & ".jpg";
+                    var safe = mediaService.safeFilename( long );
+                    expect( listLast( safe, "." ) ).toBe( "jpg" );
+                    expect( len( listFirst( safe, "." ) ) ).toBeLTE( 80 );
+                } );
+            } );
+
+            describe( "upload()", function() {
+                it( "rejects an image upload with no alt-text (B18)", function() {
+                    var user   = createTestUser();
+                    var tmp    = writeTmpFile( "fake-png-bytes", ".png" );
+
+                    var threw = false;
+                    var msg = "";
+                    try {
+                        mediaService.upload(
+                            tmpPath          = tmp,
+                            originalFilename = "noalt.png",
+                            mimeType         = "image/png",
+                            sizeBytes        = 14,
+                            uploaderId       = user.getId(),
+                            altText          = ""
+                        );
+                    }
+                    catch ( bxBlogger.MediaAltRequired e ) {
+                        threw = true;
+                        msg = e.message;
+                    }
+                    expect( threw ).toBeTrue( "image upload with empty alt should throw" );
+                    expect( msg ).toInclude( "Alt text" );
+                } );
+
+                it( "accepts a non-image upload with no alt-text", function() {
+                    var user = createTestUser();
+                    var tmp  = writeTmpFile( "some,csv,data", ".csv" );
+                    var media = mediaService.upload(
+                        tmpPath          = tmp,
+                        originalFilename = "data.csv",
+                        mimeType         = "text/csv",
+                        sizeBytes        = 13,
+                        uploaderId       = user.getId()
+                    );
+                    trackMedia( media );
+                    expect( media.getMimeType() ).toBe( "text/csv" );
+                } );
+
+                it( "writes a media row + the disk blob + populates hash", function() {
+                    var user = createTestUser();
+                    var tmp  = writeTmpFile( "image-bytes-" & createUUID(), ".png" );
+                    var media = mediaService.upload(
+                        tmpPath          = tmp,
+                        originalFilename = "snap.png",
+                        mimeType         = "image/png",
+                        sizeBytes        = 30,
+                        uploaderId       = user.getId(),
+                        altText          = "A test image"
+                    );
+                    trackMedia( media );
+
+                    expect( len( media.getHash() ) ).toBe( 64 );
+                    expect( media.getPath() ).toInclude( "/" );  // YYYY/MM/... layout
+                    expect( media.getAltText() ).toBe( "A test image" );
+
+                    // Blob actually written
+                    var disk = getInstance( "DiskService@cbfs" ).get( "media" );
+                    expect( disk.exists( media.getPath() ) ).toBeTrue();
+                } );
+
+                it( "dedups by SHA-256 when the same bytes upload twice", function() {
+                    var user = createTestUser();
+                    var payload = "duplicate-bytes-" & createUUID();
+                    var first = mediaService.upload(
+                        tmpPath          = writeTmpFile( payload, ".png" ),
+                        originalFilename = "a.png",
+                        mimeType         = "image/png",
+                        sizeBytes        = len( payload ),
+                        uploaderId       = user.getId(),
+                        altText          = "first"
+                    );
+                    trackMedia( first );
+
+                    // Uploading the same bytes — with a different filename
+                    // and a different alt — should return the FIRST row.
+                    var second = mediaService.upload(
+                        tmpPath          = writeTmpFile( payload, ".png" ),
+                        originalFilename = "b.png",
+                        mimeType         = "image/png",
+                        sizeBytes        = len( payload ),
+                        uploaderId       = user.getId(),
+                        altText          = "second"
+                    );
+                    expect( second.getId() ).toBe( first.getId() );
+                    expect( second.getAltText() ).toBe( "first", "dedup returns the existing row, not the new metadata" );
+                } );
+
+                it( "throws MediaTooLarge when sizeBytes exceeds the cap", function() {
+                    var user = createTestUser();
+                    var tmp  = writeTmpFile( "tiny", ".png" );
+                    var threw = false;
+                    try {
+                        mediaService.upload(
+                            tmpPath          = tmp,
+                            originalFilename = "huge.png",
+                            mimeType         = "image/png",
+                            sizeBytes        = mediaService.getMaxUploadBytes() + 1,
+                            uploaderId       = user.getId(),
+                            altText          = "x"
+                        );
+                    }
+                    catch ( bxBlogger.MediaTooLarge e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+            } );
+
+            describe( "updateMeta()", function() {
+                it( "updates title / caption / focal freely", function() {
+                    var media = uploadFixture();
+                    mediaService.updateMeta( media, {
+                        "title"   : "A fine photo",
+                        "caption" : "Taken last week",
+                        "focalX"  : 0.3,
+                        "focalY"  : 0.7
+                    } );
+                    var reloaded = getInstance( "Media" ).find( media.getId() );
+                    expect( reloaded.getTitle() ).toBe( "A fine photo" );
+                    expect( reloaded.getFocalX() ).toBe( 0.3 );
+                } );
+
+                it( "refuses to blank alt-text on an image (B18)", function() {
+                    var media = uploadFixture();
+                    var threw = false;
+                    try {
+                        mediaService.updateMeta( media, { "altText" : "   " } );
+                    }
+                    catch ( bxBlogger.MediaAltRequired e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+            } );
+
+            describe( "softDelete()", function() {
+                it( "sets deleted_at and removes the blob from the disk", function() {
+                    var media = uploadFixture();
+                    var path  = media.getPath();
+
+                    mediaService.softDelete( media );
+
+                    var reloaded = getInstance( "Media" ).find( media.getId() );
+                    expect( isNull( reloaded.getDeletedAt() ) ).toBeFalse();
+
+                    var disk = getInstance( "DiskService@cbfs" ).get( "media" );
+                    expect( disk.exists( path ) ).toBeFalse( "blob should be removed from disk" );
+                } );
+            } );
+
+        } );
+    }
+
+    // --------------------------------------------------------------------
+    // Helpers
+    // --------------------------------------------------------------------
+
+    private any function uploadFixture() {
+        var user    = createTestUser();
+        var payload = "fixture-" & createUUID();
+        var m = mediaService.upload(
+            tmpPath          = writeTmpFile( payload, ".png" ),
+            originalFilename = "fx.png",
+            mimeType         = "image/png",
+            sizeBytes        = len( payload ),
+            uploaderId       = user.getId(),
+            altText          = "fixture"
+        );
+        trackMedia( m );
+        return m;
+    }
+
+    private string function writeTmpFile( required string content, string ext = ".png" ) {
+        var p = getTempDirectory() & "/bx-spec-" & createUUID() & arguments.ext;
+        fileWrite( p, arguments.content );
+        return p;
+    }
+
+    private any function trackMedia( required any media ) {
+        variables.createdIds.media.append( arguments.media.getId() );
+        return arguments.media;
+    }
+
+}
