@@ -77,6 +77,11 @@
 			<a class="navbar-brand app-brand" href="#event.buildLink( 'admin' )#">bx-Blogger</a>
 			<ul class="navbar-nav ms-auto">
 				<bx:set cbauth = getInstance( "AuthenticationService@cbauth" )>
+				<li class="nav-item">
+					<a class="nav-link" href="/" title="Open the public site in this tab">
+						&##8599; Site Home
+					</a>
+				</li>
 				<bx:if cbauth.isLoggedIn()>
 					<li class="nav-item"><a class="nav-link" href="#event.buildLink( 'account' )#">#encodeForHTML( cbauth.getUser().getDisplayName() )#</a></li>
 					<li class="nav-item"><a class="nav-link" href="#event.buildLink( 'logout' )#">Sign out</a></li>
