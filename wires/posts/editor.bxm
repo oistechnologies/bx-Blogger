@@ -69,7 +69,10 @@ data = {
     "imageBusy"       : false,
     "imageError"      : "",
     "imageTarget"     : "inline", // "inline" appends ![alt](url); "featured" sets featured_media_id
-    "featuredMediaId" : 0         // updated from loadFromDb + by "Use as featured"
+    "featuredMediaId" : 0,        // updated from loadFromDb + by "Use as featured"
+    // Phase UX — taxonomy assignment
+    "categoryIds"     : [],       // array of numeric category ids currently attached
+    "tagsText"        : ""        // comma-separated tag names; resolved via find-or-create on save
 };
 
 /**
@@ -113,6 +116,27 @@ private function loadFromDb( required id ) {
         ? dateTimeFormat( post.getScheduledAt(), "yyyy-mm-dd'T'HH:nn" )
         : "";
     data.featuredMediaId = val( post.getFeaturedMediaId() ?: 0 );
+
+    // Phase UX — hydrate category + tag assignments from the pivots.
+    // qb is cheaper + simpler than Quick's `.categories().get()` for
+    // a read-only id pull, and it avoids lazy-load surprises during
+    // the wire render cycle.
+    var qb = getInstance( "QueryBuilder@qb" );
+    data.categoryIds = qb.newQuery()
+        .from( "post_categories" )
+        .where( "post_id", post.getId() )
+        .select( "category_id" )
+        .get()
+        .map( ( r ) => r.category_id );
+
+    var tagRows = qb.newQuery()
+        .from( "post_tags" )
+        .join( "tags", "tags.id", "post_tags.tag_id" )
+        .where( "post_tags.post_id", post.getId() )
+        .orderBy( "tags.name", "asc" )
+        .select( "tags.name AS name" )
+        .get();
+    data.tagsText = tagRows.map( ( r ) => r.name ).toList( ", " );
 }
 
 // --------------------------------------------------------------------
@@ -149,6 +173,15 @@ function save() {
         );
         data.flashOk = "Saved.";
     }
+
+    // Phase UX — taxonomy sync happens AFTER the post save so we
+    // always have a valid postId, including on first-save. Pulls the
+    // freshly-saved Post out of Quick to keep the Post variable in
+    // this scope consistent with the DB row after the initial insert.
+    var saved = getInstance( "Post" ).find( data.postId );
+    postService.syncCategories( saved, data.categoryIds ?: [] );
+    postService.syncTags( saved, parseTagsText( data.tagsText ?: "" ) );
+
     // Reload to reflect normalised slug, bumped version, etc.
     loadFromDb( data.postId );
 }
@@ -576,6 +609,75 @@ private function clearFlashes() {
 array function availableTemplates() {
     return themeService.templatesForPostType( data.postType ?: "post" );
 }
+
+// --------------------------------------------------------------------
+// Phase UX — Taxonomy (categories + tags)
+// --------------------------------------------------------------------
+
+/**
+ * Flat tree of every category, annotated with depth for the template
+ * indent. Uses CategoryService.listAll() (path-sorted) so parents
+ * always come before their children.
+ */
+array function allCategoriesFlat() {
+    var rows = getInstance( "CategoryService" ).listAll();
+    var out  = [];
+    for ( var c in rows ) {
+        out.append( {
+            "id"    : c.getId(),
+            "name"  : c.getName(),
+            "depth" : listLen( c.getPath(), "/" ) - 1
+        } );
+    }
+    return out;
+}
+
+/**
+ * Array of existing tag names for the `<datalist>` autocomplete.
+ * Ordered alphabetically, capped — if someone has thousands of tags
+ * we'll want a live search, but the cap keeps the initial payload
+ * reasonable without that work.
+ */
+array function allTagNames() {
+    return getInstance( "QueryBuilder@qb" ).newQuery()
+        .from( "tags" )
+        .orderBy( "name", "asc" )
+        .limit( 500 )
+        .select( "name" )
+        .get()
+        .map( ( r ) => r.name );
+}
+
+/**
+ * Toggle membership of a category id in data.categoryIds. Called by
+ * each row's wire:click on the checkbox; we handle it server-side so
+ * the tree renders its own state from the authoritative wire data
+ * (no `wire:model` array binding that can drift from the checkbox
+ * visual state on re-render).
+ */
+function toggleCategory( required id ) {
+    var cur = data.categoryIds ?: [];
+    var idx = cur.findNoCase( arguments.id );
+    if ( idx ) {
+        cur.deleteAt( idx );
+    } else {
+        cur.append( arguments.id );
+    }
+    data.categoryIds = cur;
+}
+
+/**
+ * Split the free-text tags field on commas, strip blanks. Used by
+ * save() to feed PostService.syncTags.
+ */
+private array function parseTagsText( required string text ) {
+    var out = [];
+    for ( var part in listToArray( arguments.text, "," ) ) {
+        var n = trim( part );
+        if ( len( n ) ) out.append( n );
+    }
+    return out;
+}
 // @endWire
 </bx:script>
 
@@ -841,6 +943,66 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 						<button type="button" class="btn btn-sm btn-outline-primary w-100 mt-2"
 						        wire:click="openImageModal('featured')">Generate featured image</button>
 					</bx:if>
+				</div>
+			</div>
+
+			<!--- Categories sidebar --------------------------------- --->
+			<bx:script>
+				catTree = allCategoriesFlat();
+			</bx:script>
+			<div class="card stat-card stat-card-info mb-3">
+				<div class="card-header card-header-soft card-header-soft-info">
+					<span class="h6 mb-0">Categories</span>
+				</div>
+				<div class="card-body">
+					<bx:if !catTree.len()>
+						<p class="small text-muted mb-0">
+							No categories yet. Add some at
+							<a href="#event.buildLink( 'admin:Categories.index' )#">Categories</a>.
+						</p>
+					<bx:else>
+						<div class="small" style="max-height: 16rem; overflow-y: auto;">
+							<bx:loop array="#catTree#" item="c">
+								<bx:set checked = args.categoryIds.findNoCase( c.id ) gt 0>
+								<div class="form-check" style="padding-left: #( 1.5 + ( c.depth * 1.25 ) )#rem;">
+									<input type="checkbox"
+									       class="form-check-input"
+									       id="cat-#c.id#"
+									       #( checked ? 'checked' : '' )#
+									       wire:click="toggleCategory(#c.id#)">
+									<label class="form-check-label" for="cat-#c.id#">
+										#encodeForHTML( c.name )#
+									</label>
+								</div>
+							</bx:loop>
+						</div>
+					</bx:if>
+				</div>
+			</div>
+
+			<!--- Tags sidebar --------------------------------------- --->
+			<bx:script>
+				existingTags = allTagNames();
+			</bx:script>
+			<div class="card stat-card stat-card-secondary mb-3">
+				<div class="card-header card-header-soft card-header-soft-secondary">
+					<span class="h6 mb-0">Tags</span>
+				</div>
+				<div class="card-body">
+					<label for="postTags" class="form-label small d-block mb-1">
+						Comma-separated. New tags are created on save.
+					</label>
+					<input type="text"
+					       id="postTags"
+					       class="form-control form-control-sm"
+					       list="postTagsList"
+					       wire:model.blur="tagsText"
+					       placeholder="e.g. boxlang, release-notes, 1.0">
+					<datalist id="postTagsList">
+						<bx:loop array="#existingTags#" item="t">
+							<option value="#encodeForHTMLAttribute( t )#"></option>
+						</bx:loop>
+					</datalist>
 				</div>
 			</div>
 

@@ -464,6 +464,68 @@ class accessors="true" singleton {
     }
 
     /**
+     * Replace the full set of categories attached to a post. Takes an
+     * array of category ids (ints or numeric strings) and wholesale-
+     * overwrites the `post_categories` pivot. Simpler than diffing for
+     * the typical <10 categories per post; we can swap to diff if the
+     * cost ever shows up.
+     */
+    function syncCategories( required any post, required array categoryIds ) {
+        var qb     = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        var postId = arguments.post.getId();
+
+        qb.newQuery().from( "post_categories" ).where( "post_id", postId ).delete();
+        for ( var catId in arguments.categoryIds ) {
+            if ( !val( catId ) ) continue;
+            variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "post_categories" )
+                .insert( {
+                    "post_id"     : postId,
+                    "category_id" : catId,
+                    "is_primary"  : 0
+                } );
+        }
+    }
+
+    /**
+     * Replace the full set of tags attached to a post. Accepts names
+     * (not ids) so the editor form can be a plain text input — each
+     * name is find-or-created via TagService (slug generation,
+     * uniqueness handling). Blank / duplicate names are squashed.
+     */
+    function syncTags( required any post, required array tagNames ) {
+        var postId     = arguments.post.getId();
+        var tagService = variables.wirebox.getInstance( "TagService" );
+        var qb         = variables.wirebox.getInstance( "QueryBuilder@qb" );
+
+        // Resolve names → ids. Case-insensitive de-dupe by lowercased name.
+        var seen = {};
+        var ids  = [];
+        for ( var raw in arguments.tagNames ) {
+            var name = trim( raw );
+            if ( !len( name ) ) continue;
+            var key = lCase( name );
+            if ( structKeyExists( seen, key ) ) continue;
+            seen[ key ] = true;
+
+            var existing = variables.wirebox.getInstance( "Tag" )
+                .where( "name", name )
+                .first();
+            if ( isNull( existing ) ) {
+                existing = tagService.create( { "name" : name } );
+            }
+            ids.append( existing.getId() );
+        }
+
+        qb.newQuery().from( "post_tags" ).where( "post_id", postId ).delete();
+        for ( var tagId in ids ) {
+            variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "post_tags" )
+                .insert( { "post_id" : postId, "tag_id" : tagId } );
+        }
+    }
+
+    /**
      * Words in a markdown body. Strips common markdown punctuation so
      * `[link](x)` doesn't inflate the count and code fences / images
      * don't count as prose. Accurate enough for reading-time display;
