@@ -62,6 +62,26 @@ class {
 		route( "/verify-email/:token" ).to( "emailVerification.verify" );
 
 		/**
+		 * Account self-service (B6 — Chunk 1.H).
+		 *   GET  /account           → show()
+		 *   POST /account           → updateProfile()  (display name)
+		 *   POST /account/email     → updateEmail()    (triggers A2 verify)
+		 *   POST /account/password  → updatePassword() (re-auth required)
+		 * cbsecurity firewall gates all four behind /login.
+		 * Specific sub-routes must be declared BEFORE the base /account route;
+		 * ColdBox matches in order and /account would otherwise swallow them.
+		 */
+		route( "/account/email"    ).to( "account.updateEmail" );
+		route( "/account/password" ).to( "account.updatePassword" );
+
+		route( "/account" )
+			.withAction( {
+				"GET"  : "show",
+				"POST" : "updateProfile"
+			} )
+			.toHandler( "account" );
+
+		/**
 		 * Admin dashboard. cbsecurity firewall (config/Coldbox.bx
 		 * moduleSettings.cbsecurity.firewall) redirects unauthenticated
 		 * requests to /login before the handler runs.

@@ -1,0 +1,92 @@
+/**
+ * bx-Blogger — RateLimitService (A6)
+ *
+ * Thin facade over CacheBox that implements a fixed-window counter per
+ * bucket key. A "bucket" is a string like `login:1.2.3.4` or
+ * `forgot:1.2.3.4`; the service is agnostic to the naming scheme —
+ * callers decide how fine-grained they want to be.
+ *
+ * Why fixed-window (not sliding): simpler, and adequate for auth flows
+ * where we care about "no more than N in any rolling interval of size T".
+ * Edge effect: a burst straddling the window boundary could fire up to
+ * 2*limit within a short span. Good enough for Phase 1; Phase 11 can
+ * upgrade to a token bucket if we ever rate-limit the public API.
+ *
+ * Contract:
+ *   hit( bucket, windowSeconds ) → struct
+ *     { count: int, first_hit: epoch-seconds, window_seconds: int }
+ *   getCount( bucket ) → int (0 if bucket absent / expired)
+ *   clear( bucket ) → void (used on success to reset login attempt counter)
+ *
+ * Storage: a struct `{ count, firstHit }` with TTL equal to the window.
+ * CacheBox expires it automatically; we never need to sweep.
+ */
+class accessors="true" singleton {
+
+    property name="cache" inject="cachebox:default";
+    property name="log"   inject="logbox:logger:{this}";
+
+    /**
+     * Increment the counter for `bucket`. If the bucket is new (or expired),
+     * start a fresh window of `windowSeconds` and set count=1.
+     *
+     * @bucket         Any string key — e.g. "login:admin@x.com" or "forgot:1.2.3.4"
+     * @windowSeconds  How long the counter lives before resetting.
+     *
+     * @return struct { count, first_hit, window_seconds }
+     */
+    struct function hit( required string bucket, required numeric windowSeconds ) {
+        var key     = cacheKey( arguments.bucket );
+        var current = variables.cache.get( key );
+        var now     = getTickCount() / 1000;
+
+        if ( isNull( current ) || !isStruct( current ) ) {
+            current = { "count" : 0, "firstHit" : now };
+        }
+        current.count = current.count + 1;
+
+        // Store with TTL = remaining window. Timeouts are expressed as
+        // minutes in cachebox; we can set a fractional minute with precision.
+        var remaining = ( arguments.windowSeconds - ( now - current.firstHit ) ) / 60;
+        if ( remaining <= 0 ) remaining = arguments.windowSeconds / 60;
+
+        variables.cache.set( key, current, remaining, 0 );  // idle timeout 0 = never idle-evict
+
+        return {
+            "count"          : current.count,
+            "first_hit"      : current.firstHit,
+            "window_seconds" : arguments.windowSeconds
+        };
+    }
+
+    /**
+     * Get current count without incrementing. 0 if the bucket is fresh.
+     */
+    numeric function getCount( required string bucket ) {
+        var current = variables.cache.get( cacheKey( arguments.bucket ) );
+        return ( !isNull( current ) && isStruct( current ) ) ? current.count : 0;
+    }
+
+    /**
+     * Wipe the counter. Called on success (good login clears any pending
+     * failed-attempt count for the same bucket).
+     */
+    function clear( required string bucket ) {
+        variables.cache.clear( cacheKey( arguments.bucket ) );
+    }
+
+    /**
+     * Check if the next hit would exceed the limit — without actually
+     * hitting the counter. Useful for pre-flight warnings.
+     */
+    boolean function wouldExceed( required string bucket, required numeric limit ) {
+        return getCount( arguments.bucket ) >= arguments.limit;
+    }
+
+    // --------------------------------------------------------------------
+
+    private string function cacheKey( required string bucket ) {
+        return "rateLimit:" & arguments.bucket;
+    }
+
+}

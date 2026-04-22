@@ -57,6 +57,12 @@ class extends="coldbox.system.EventHandler" {
             userService.recordFailedLogin( email = email, ip = ip, userAgent = userAgent, reason = "user_not_found" );
             return rejectLogin( argumentCollection = arguments );
         }
+        // Durable per-user lockout (A6). In-memory rate limit smooths bursts;
+        // this row-level flag survives app restarts and CacheBox eviction.
+        if ( user.isLocked() ) {
+            userService.recordFailedLogin( email = email, ip = ip, userAgent = userAgent, reason = "account_locked" );
+            return rejectLogin( argumentCollection = arguments );
+        }
         if ( !user.canLogin() ) {
             var reason = isNull( user.getEmailVerifiedAt() )
                 ? "email_not_verified"

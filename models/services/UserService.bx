@@ -22,6 +22,14 @@ class accessors="true" singleton {
     property name="passwordService" inject="PasswordService";
 
     /**
+     * Failed-login lockout knobs (A6 — durable per-user lock complementing
+     * the in-memory rate-limit interceptor). Hard-coded Phase 1; a future
+     * settings UI can promote these to `settings.auth_*` rows.
+     */
+    variables.lockoutThreshold      = 5;    // failed attempts before lock
+    variables.lockoutDurationMinutes = 15;  // lock length
+
+    /**
      * cbauth: does the email + plaintext-password combo authenticate?
      * Also records the audit row (success OR failure) so the handler
      * doesn't have to do a second call.
@@ -55,8 +63,8 @@ class accessors="true" singleton {
     }
 
     /**
-     * Record a successful login in the login_audit table and bump the
-     * user's last_login_at / last_login_ip columns.
+     * Record a successful login in the login_audit table, clear the
+     * failed-attempts counter, and bump last_login_at / last_login_ip.
      */
     function recordSuccessfulLogin(
         required any    user,
@@ -71,6 +79,7 @@ class accessors="true" singleton {
             success:       1,
             failure_reason: javaCast( "null", "" )
         } );
+        resetLockout( arguments.user );
         touchLastLogin( arguments.user, arguments.ip );
     }
 
@@ -78,7 +87,11 @@ class accessors="true" singleton {
      * Record a failed login. `email` is the string the user typed (may
      * not match any real account). `reason` is one of:
      *   "bad_password", "user_inactive", "user_not_found",
-     *   "email_not_verified", "rate_limited"
+     *   "email_not_verified", "rate_limited", "account_locked"
+     *
+     * When a real user is involved and the reason is a credential failure
+     * (not e.g. "account_locked" — already locked, don't extend), we also
+     * bump failed_login_count and potentially set locked_until.
      */
     function recordFailedLogin(
         required string email,
@@ -97,6 +110,44 @@ class accessors="true" singleton {
             user_agent:     left( arguments.userAgent, 512 ),
             success:        0,
             failure_reason: arguments.reason
+        } );
+
+        // Only escalate the per-user lockout counter for true credential
+        // failures against a known account. Don't bump on "account_locked"
+        // (already locked — no need to double-penalize) or "user_not_found"
+        // (no account to associate the count with).
+        if ( !isNull( user ) && listFindNoCase( "bad_password,email_not_verified,user_inactive", arguments.reason ) ) {
+            bumpFailureCount( user );
+        }
+    }
+
+    /**
+     * Increment failed_login_count; once threshold is hit, set locked_until.
+     * Uses a qb update rather than Quick so we don't clobber unrelated
+     * columns someone else might be mutating in the same request.
+     */
+    private function bumpFailureCount( required any user ) {
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        var nextCount = ( arguments.user.getFailedLoginCount() ?: 0 ) + 1;
+        var update = { "failed_login_count" : nextCount };
+        if ( nextCount >= variables.lockoutThreshold ) {
+            update[ "locked_until" ] = dateAdd( "n", variables.lockoutDurationMinutes, now() );
+        }
+        qb.from( "users" ).where( "id", arguments.user.getId() ).update( update );
+    }
+
+    /**
+     * Reset the per-user lockout state after a successful login (or after
+     * an admin manually unlocks). Uses qb so we don't pick up unrelated
+     * pending changes on the Quick entity. `locked_until` is set back to
+     * NULL via `qb.raw` because qb's update-struct path trips a type
+     * mismatch when a value is `javaCast("null", "")`.
+     */
+    function resetLockout( required any user ) {
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        qb.from( "users" ).where( "id", arguments.user.getId() ).update( {
+            "failed_login_count" : 0,
+            "locked_until"       : qb.raw( "NULL" )
         } );
     }
 

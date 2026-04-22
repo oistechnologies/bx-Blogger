@@ -1,0 +1,164 @@
+/**
+ * bx-Blogger — Account handler (Chunk 1.H — B6)
+ *
+ * Minimal self-service profile for Phase 1. Three fields:
+ *   - Display name (immediate save)
+ *   - Email (change triggers A2 verify flow — buffers in pending_email
+ *            until the user clicks the verification link)
+ *   - Password (re-auth with current password required on every change)
+ *
+ * Phase 2 replaces this with a CBWire `admin:Profile.show/update` component
+ * inside the admin module — avatar via media library, bio, website,
+ * timezone, locale, 2FA toggle, etc. Until then, this gives authenticated
+ * users a way to rotate their password + keep their display name fresh.
+ *
+ * cbsecurity firewall protects /account — the handler trusts cbauth.getUser()
+ * is non-null (anonymous requests redirect to /login before we run).
+ */
+class extends="coldbox.system.EventHandler" {
+
+    property name="cbauth"                    inject="AuthenticationService@cbauth";
+    property name="passwordService"           inject="PasswordService";
+    property name="userService"               inject="UserService";
+    property name="emailVerificationService"  inject="EmailVerificationService";
+    property name="log"                       inject="logbox:logger:{this}";
+
+    this.layouts = {
+        "Admin.bxm" : "*"
+    };
+
+    /**
+     * GET /account — render the profile form.
+     */
+    function show( event, rc, prc ) {
+        prc.pageTitle = "Your account";
+        prc.user      = cbauth.getUser();
+        event.setView( view = "account/show", layout = "Admin" );
+    }
+
+    /**
+     * POST /account — update display name. Separate action so the form can
+     * declare `action="/account"` without a hidden `_action` field.
+     */
+    function updateProfile( event, rc, prc ) {
+        param name="rc.displayName" default="";
+
+        var user    = cbauth.getUser();
+        var newName = trim( rc.displayName );
+        if ( !len( newName ) ) {
+            flash.put( "accountError", "Display name cannot be empty." );
+            relocate( "account" );
+            return;
+        }
+        if ( len( newName ) > 120 ) {
+            flash.put( "accountError", "Display name is limited to 120 characters." );
+            relocate( "account" );
+            return;
+        }
+        user.setDisplayName( newName );
+        user.save();
+        flash.put( "accountMessage", "Display name updated." );
+        relocate( "account" );
+    }
+
+    /**
+     * POST /account/email — start the change-email flow.
+     *
+     * Writes the requested email to `users.pending_email` and fires a
+     * verification email bound to that address. On click, A2 promotes
+     * `pending_email` → `email` and clears the pending field.
+     *
+     * Requires current password to guard against hijacked sessions.
+     */
+    function updateEmail( event, rc, prc ) {
+        param name="rc.email"           default="";
+        param name="rc.currentPassword" default="";
+
+        var user    = cbauth.getUser();
+        var newEmail = trim( rc.email );
+        if ( !len( newEmail ) || !isValid( "email", newEmail ) ) {
+            flash.put( "accountError", "Enter a valid email address." );
+            relocate( "account" );
+            return;
+        }
+        if ( newEmail == user.getEmail() ) {
+            flash.put( "accountMessage", "That's already your current email." );
+            relocate( "account" );
+            return;
+        }
+        if ( !passwordService.verify( rc.currentPassword, user.getPasswordHash() ) ) {
+            flash.put( "accountError", "Current password is incorrect." );
+            relocate( "account" );
+            return;
+        }
+
+        // Collision check — don't leak whether the email is in use (still
+        // shows a generic "check your inbox" message) but also don't send
+        // a verification email that would ultimately fail on promotion.
+        // Uses qb (not Quick) because nested .where closures on Quick
+        // entities triggered a stray INSERT path in BoxLang/qb.
+        var qb   = getInstance( "QueryBuilder@qb" );
+        var rows = qb.from( "users" )
+            .where( function( q ) {
+                q.where( "email", newEmail ).orWhere( "pending_email", newEmail );
+            } )
+            .whereNull( "deleted_at" )
+            .where( "id", "!=", user.getId() )
+            .select( "id" )
+            .limit( 1 )
+            .get();
+        if ( rows.len() > 0 ) {
+            // Don't confirm existence; give the same "check your inbox"
+            // UX as a successful request. Log for operator visibility.
+            log.info( "Account.updateEmail: silent reject - collision on " & newEmail & " requested by user=" & user.getId() );
+        } else {
+            user.setPendingEmail( newEmail );
+            user.save();
+            var ip = event.getHTTPHeader( "X-Forwarded-For", cgi.remote_addr ?: "" );
+            emailVerificationService.request( user = user, email = newEmail, ip = ip );
+        }
+
+        flash.put( "accountMessage", "Check your new inbox for a verification link. Your current email stays in place until you click it." );
+        relocate( "account" );
+    }
+
+    /**
+     * POST /account/password — change password. Requires current password
+     * confirmation; new password runs through the policy service.
+     */
+    function updatePassword( event, rc, prc ) {
+        param name="rc.currentPassword" default="";
+        param name="rc.newPassword"     default="";
+        param name="rc.confirmPassword" default="";
+
+        var user = cbauth.getUser();
+        if ( !passwordService.verify( rc.currentPassword, user.getPasswordHash() ) ) {
+            flash.put( "accountError", "Current password is incorrect." );
+            relocate( "account" );
+            return;
+        }
+        if ( rc.newPassword != rc.confirmPassword ) {
+            flash.put( "accountError", "New passwords don't match." );
+            relocate( "account" );
+            return;
+        }
+        var policy = passwordService.validate(
+            rc.newPassword,
+            { "email" : user.getEmail(), "displayName" : user.getDisplayName() }
+        );
+        if ( !policy.valid ) {
+            flash.put( "accountError", policy.errors.toList( " " ) );
+            relocate( "account" );
+            return;
+        }
+
+        user.setPasswordHash( passwordService.hash( rc.newPassword ) );
+        user.setPasswordChangedAt( now() );
+        user.setMustChangePassword( 0 );
+        user.save();
+
+        flash.put( "accountMessage", "Password updated." );
+        relocate( "account" );
+    }
+
+}

@@ -1,0 +1,156 @@
+/**
+ * bx-Blogger — RateLimitInterceptor (A6)
+ *
+ * Applies configured rate-limit budgets to specific ColdBox events at the
+ * `preProcess` interception point — i.e. before the handler fires. If the
+ * request exceeds its budget, the interceptor:
+ *   1. Announces `bxBlogger.rateLimitTriggered` so downstream (B7 notifier,
+ *      audit log, etc.) can react.
+ *   2. Short-circuits with a 429 response + human-readable message.
+ *
+ * Configuration comes from the interceptor's own `properties` struct,
+ * wired in `config/Coldbox.bx`:
+ *
+ *   variables.interceptors = [
+ *     {
+ *       class      : "interceptors.RateLimitInterceptor",
+ *       properties : {
+ *         budgets : {
+ *           "security.doLogin"        : { limit: 5, windowSeconds: 900, keyBy: "ip" },
+ *           "passwordReset.doForgot"  : { limit: 5, windowSeconds: 3600, keyBy: "ip" }
+ *         }
+ *       }
+ *     }
+ *   ];
+ *
+ * `keyBy`:
+ *   "ip"   → single bucket per IP per event
+ *   "user" → single bucket per authenticated user per event (falls back to ip
+ *            if not logged in — avoids a loophole where an anonymous burst
+ *            bypasses the limit)
+ *
+ * The interceptor does NOT know about login-specific account lockout;
+ * that's enforced in the Security handler via the `users.locked_until`
+ * column. This is purely in-memory / CacheBox, per-IP, for smoothing bursts.
+ */
+class extends="coldbox.system.Interceptor" {
+
+    /**
+     * ColdBox calls configure() at module load. The `properties` struct
+     * carries the interceptor-level settings we declared in Coldbox.bx.
+     *
+     * We deliberately do NOT use property-injection for RateLimitService
+     * or cbauth here — interceptors load before the full model scan
+     * completes, and early injection fails with "Instance not found".
+     * Looking them up lazily in preProcess() resolves after the WireBox
+     * catalog is populated.
+     */
+    function configure() {
+        if ( !variables.keyExists( "properties" ) || isNull( variables.properties ) ) {
+            variables.properties = {};
+        }
+        if ( !structKeyExists( variables.properties, "budgets" ) ) {
+            variables.properties.budgets = {};
+        }
+    }
+
+    /**
+     * Fires before every event. We look up the current event in our
+     * budget map; if there's a rule, apply it.
+     */
+    function preProcess( event, data, buffer, rc, prc ) {
+        var currentEvent = arguments.event.getCurrentEvent();
+        var budgets      = variables.properties.budgets;
+        if ( !structKeyExists( budgets, currentEvent ) ) return;
+
+        var rule   = budgets[ currentEvent ];
+        var bucket = buildBucket(
+            event  = arguments.event,
+            action = currentEvent,
+            keyBy  = rule.keyBy ?: "ip"
+        );
+
+        var hit = getInstance( "RateLimitService" ).hit(
+            bucket        = bucket,
+            windowSeconds = rule.windowSeconds
+        );
+
+        if ( hit.count > rule.limit ) {
+            announce(
+                state = "bxBlogger.rateLimitTriggered",
+                data  = {
+                    "event"          : currentEvent,
+                    "bucket"         : bucket,
+                    "count"          : hit.count,
+                    "limit"          : rule.limit,
+                    "window_seconds" : rule.windowSeconds,
+                    "ip"             : getClientIp( arguments.event ),
+                    "user_id"        : getCurrentUserId()
+                }
+            );
+
+            var retryAfter = ceiling( rule.windowSeconds - ( ( getTickCount() / 1000 ) - hit.first_hit ) );
+            if ( retryAfter < 1 ) retryAfter = 1;
+
+            arguments.event.setHTTPHeader( name = "Retry-After", value = retryAfter );
+            arguments.event.renderData(
+                type       = "html",
+                data       = buildRateLimitedBody( retryAfter ),
+                statusCode = 429,
+                statusText = "Too Many Requests"
+            );
+            arguments.event.noExecution();
+        }
+    }
+
+    // --------------------------------------------------------------------
+    // Helpers
+    // --------------------------------------------------------------------
+
+    private string function buildBucket(
+        required any    event,
+        required string action,
+        required string keyBy
+    ) {
+        switch ( arguments.keyBy ) {
+            case "user":
+                var uid = getCurrentUserId();
+                if ( len( uid ) ) return arguments.action & ":user:" & uid;
+                // fall through — unauthenticated user: key by IP
+            default:
+                return arguments.action & ":ip:" & getClientIp( arguments.event );
+        }
+    }
+
+    private string function getClientIp( required any event ) {
+        // Phase 1 uses raw remote addr; B15 TrustedProxyInterceptor will
+        // swap this out to read the unwrapped X-Forwarded-For value off prc.
+        return arguments.event.getHTTPHeader( "X-Forwarded-For", cgi.remote_addr ?: "0.0.0.0" );
+    }
+
+    private string function getCurrentUserId() {
+        try {
+            var cbauth = getInstance( "AuthenticationService@cbauth" );
+            if ( cbauth.isLoggedIn() ) return cbauth.getUser().getId();
+        }
+        catch ( any e ) {
+            // cbauth may not be ready during very early requests — fall through
+        }
+        return "";
+    }
+
+    private string function buildRateLimitedBody( required numeric retryAfter ) {
+        var minutes = ceiling( arguments.retryAfter / 60 );
+        var wait    = minutes > 1 ? ( minutes & " minutes" ) : "a minute";
+        return "<!doctype html><html><head><title>Too many attempts</title>"
+            & "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+            & "<style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+            & "max-width:36rem;margin:4rem auto;padding:0 1rem;color:##222;line-height:1.5}"
+            & "h1{font-size:1.4rem}p{color:##555}</style></head>"
+            & "<body><h1>Too many attempts</h1>"
+            & "<p>You've made too many requests. Please wait about " & wait & " before trying again.</p>"
+            & "<p>If you're locked out and need help, contact the site administrator.</p>"
+            & "</body></html>";
+    }
+
+}

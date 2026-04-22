@@ -1,0 +1,118 @@
+<bx:output>
+<div class="row">
+	<div class="col-12 col-lg-8">
+		<h1 class="h3 mb-4">Your account</h1>
+
+		<bx:if flash.exists( "accountMessage" )>
+			<div class="alert alert-success">#encodeForHTML( flash.get( "accountMessage" ) )#</div>
+		</bx:if>
+		<bx:if flash.exists( "accountError" )>
+			<div class="alert alert-danger">#encodeForHTML( flash.get( "accountError" ) )#</div>
+		</bx:if>
+
+		<!---------- Display name ---------->
+		<div class="card mb-4">
+			<div class="card-body">
+				<h2 class="h5 mb-3">Profile</h2>
+				<form method="POST" action="#event.buildLink( 'account.updateProfile' )#">
+					<div class="mb-3">
+						<label for="displayName" class="form-label">Display name</label>
+						<input type="text"
+						       class="form-control"
+						       id="displayName"
+						       name="displayName"
+						       maxlength="120"
+						       required
+						       value="#encodeForHTMLAttribute( prc.user.getDisplayName() )#">
+						<div class="form-text">Shown on comments, the author page, and the admin header.</div>
+					</div>
+					<button type="submit" class="btn btn-primary">Save profile</button>
+				</form>
+			</div>
+		</div>
+
+		<!---------- Email change ---------->
+		<div class="card mb-4">
+			<div class="card-body">
+				<h2 class="h5 mb-3">Email address</h2>
+				<p class="text-muted small">
+					Current: <code>#encodeForHTML( prc.user.getEmail() )#</code>
+					<bx:if len( prc.user.getPendingEmail() ?: "" )>
+						<br>
+						<span class="badge bg-warning text-dark">Pending</span>
+						Waiting for verification of <code>#encodeForHTML( prc.user.getPendingEmail() )#</code>.
+					</bx:if>
+				</p>
+				<form method="POST" action="#event.buildLink( 'account.updateEmail' )#" autocomplete="off">
+					<div class="mb-3">
+						<label for="email" class="form-label">New email address</label>
+						<input type="email"
+						       class="form-control"
+						       id="email"
+						       name="email"
+						       required
+						       autocomplete="email">
+						<div class="form-text">
+							We'll send a verification link to the new address. Your current email
+							stays in place until you click the link.
+						</div>
+					</div>
+					<div class="mb-3">
+						<label for="emailCurrentPassword" class="form-label">Current password</label>
+						<input type="password"
+						       class="form-control"
+						       id="emailCurrentPassword"
+						       name="currentPassword"
+						       required
+						       autocomplete="current-password">
+					</div>
+					<button type="submit" class="btn btn-outline-primary">Request email change</button>
+				</form>
+			</div>
+		</div>
+
+		<!---------- Password change ---------->
+		<div class="card">
+			<div class="card-body">
+				<h2 class="h5 mb-3">Password</h2>
+				<form method="POST" action="#event.buildLink( 'account.updatePassword' )#" autocomplete="off">
+					<div class="mb-3">
+						<label for="currentPassword" class="form-label">Current password</label>
+						<input type="password"
+						       class="form-control"
+						       id="currentPassword"
+						       name="currentPassword"
+						       required
+						       autocomplete="current-password">
+					</div>
+					<div class="mb-3">
+						<label for="newPassword" class="form-label">New password</label>
+						<input type="password"
+						       class="form-control"
+						       id="newPassword"
+						       name="newPassword"
+						       required
+						       minlength="12"
+						       autocomplete="new-password">
+						<div class="form-text">
+							At least 12 characters, with a letter and a digit. Avoid your name or email.
+						</div>
+					</div>
+					<div class="mb-3">
+						<label for="confirmPassword" class="form-label">Confirm new password</label>
+						<input type="password"
+						       class="form-control"
+						       id="confirmPassword"
+						       name="confirmPassword"
+						       required
+						       minlength="12"
+						       autocomplete="new-password">
+					</div>
+					<button type="submit" class="btn btn-primary">Change password</button>
+				</form>
+			</div>
+		</div>
+
+	</div>
+</div>
+</bx:output>

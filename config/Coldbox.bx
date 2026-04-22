@@ -196,10 +196,23 @@ class {
 		 * ----------------------------------------------------------------
 		 * Application Interceptors
 		 * ----------------------------------------------------------------
-		 * Phase 0: none. Phases 1+ register SecurityInterceptor,
-		 * RateLimitInterceptor, TrustedProxyInterceptor, etc.
+		 * A6 — RateLimitInterceptor applies per-event budgets keyed by IP
+		 * or authenticated user. Budgets below are the Phase 1 seeds per
+		 * PLAN §19; Phase 2+ adds autosave, search, admin-write, etc.
+		 * Exceeding a budget fires `bxBlogger.rateLimitTriggered` (B7 picks
+		 * it up in Phase 7) and returns HTTP 429 to the caller.
 		 */
-		variables.interceptors = [];
+		variables.interceptors = [
+			{
+				class      : "interceptors.RateLimitInterceptor",
+				properties : {
+					budgets : {
+						"security.doLogin"        : { limit : 5, windowSeconds :  900, keyBy : "ip" },  // 5 / 15m
+						"passwordReset.doForgot"  : { limit : 5, windowSeconds : 3600, keyBy : "ip" }   // 5 / hour
+					}
+				}
+			}
+		];
 
 		/**
 		 * ----------------------------------------------------------------
@@ -258,6 +271,12 @@ class {
 							// Regex matches event.getCurrentRoutedURL() which returns
 							// paths without a leading slash (e.g. "admin/", "admin/users").
 							"securelist" : "^admin.*",
+							"match"      : "url",
+							"action"     : "redirect"
+						},
+						{
+							// B6 self-profile — same protection, different prefix.
+							"securelist" : "^account.*",
 							"match"      : "url",
 							"action"     : "redirect"
 						}

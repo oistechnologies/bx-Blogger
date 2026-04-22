@@ -84,17 +84,31 @@ class accessors="true" singleton {
             return { "ok" : false, "errors" : [ "The account for this verification link no longer exists." ] };
         }
 
-        // Pending-email flow: if row.email matches user.pending_email, promote it
-        if ( len( user.getPendingEmail() ?: "" ) && user.getPendingEmail() == row.email ) {
-            user.setEmail( row.email );
-            user.setPendingEmail( javaCast( "null", "" ) );
+        // Pending-email flow: if row.email matches user.pending_email,
+        // promote it to `users.email` and clear `pending_email`. Every
+        // statement gets a fresh qb instance — reusing a qb across two
+        // updates on the same table makes it accumulate bindings from
+        // the prior call, producing "too many positional parameters".
+        var promote = len( user.getPendingEmail() ?: "" ) && user.getPendingEmail() == row.email;
+        if ( promote ) {
+            freshQb().from( "users" ).where( "id", user.getId() ).update( {
+                "email"             : row.email,
+                "email_verified_at" : now()
+            } );
+            // Separate statement for `pending_email = NULL` — qb's update
+            // struct can't carry a raw NULL cleanly in BoxLang. queryExecute
+            // sidesteps the binding-count mismatch entirely.
+            queryExecute(
+                "UPDATE users SET pending_email = NULL WHERE id = :id",
+                { "id" : user.getId() }
+            );
+        } else {
+            freshQb().from( "users" ).where( "id", user.getId() ).update( {
+                "email_verified_at" : now()
+            } );
         }
 
-        user.setEmailVerifiedAt( now() );
-        user.save();
-
-        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
-        qb.from( "email_verifications" )
+        freshQb().from( "email_verifications" )
           .where( "id", row.id )
           .update( { "consumed_at" : now() } );
 
@@ -122,6 +136,15 @@ class accessors="true" singleton {
     private string function buildVerifyUrl( required string plainToken ) {
         var base = getSystemSetting( "APP_URL", "http://localhost:8080" );
         return base & "/verify-email/" & arguments.plainToken;
+    }
+
+    /**
+     * Always use a fresh QueryBuilder for chained updates. qb's WireBox
+     * mapping hands back the same instance within a request, so reusing
+     * it after `.update(...)` carries prior bindings into the next call.
+     */
+    private any function freshQb() {
+        return variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery();
     }
 
     private any function findRowByToken( required string plainToken ) {
