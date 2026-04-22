@@ -1,0 +1,18 @@
+// theme.scss — entry point compiled by Vite (see vite.config.js).
+//
+// bx-blogger-default loads Bootstrap 5 via the CDN in layouts/Main.bxm
+// and layers this compiled `theme.css` on top. That keeps the built CSS
+// small (no full Bootstrap recompile) while still giving theme authors
+// a place to customize without touching the DOM.
+//
+// To swap to a *full* Bootstrap SCSS build with variable overrides:
+//   1. Edit `_variables.scss` and set the Bootstrap SCSS variables you
+//      want to override BEFORE the Bootstrap import.
+//   2. Replace the `@use "components";` below with:
+//        @use "variables";
+//        @use "bootstrap/scss/bootstrap";
+//   3. Remove the CDN `<link>` from layouts/Main.bxm.
+//   4. Rebuild via `npm run build:themes`.
+
+@use "variables";
+@use "components";

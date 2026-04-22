@@ -1,0 +1,29 @@
+<bx:output>
+<bx:if structKeyExists( prc, "pagination" )>
+    <nav aria-label="Page navigation" class="mt-4">
+        <ul class="pagination justify-content-center mb-0">
+            <bx:if ( prc.pagination.prevUrl ?: "" ).len()>
+                <li class="page-item">
+                    <a class="page-link" href="#encodeForHTMLAttribute( prc.pagination.prevUrl )#" rel="prev">&laquo; Previous</a>
+                </li>
+            <bx:else>
+                <li class="page-item disabled"><span class="page-link">&laquo; Previous</span></li>
+            </bx:if>
+
+            <li class="page-item active" aria-current="page">
+                <span class="page-link">
+                    Page #( prc.pagination.currentPage ?: 1 )# of #( prc.pagination.totalPages ?: 1 )#
+                </span>
+            </li>
+
+            <bx:if ( prc.pagination.nextUrl ?: "" ).len()>
+                <li class="page-item">
+                    <a class="page-link" href="#encodeForHTMLAttribute( prc.pagination.nextUrl )#" rel="next">Next &raquo;</a>
+                </li>
+            <bx:else>
+                <li class="page-item disabled"><span class="page-link">Next &raquo;</span></li>
+            </bx:if>
+        </ul>
+    </nav>
+</bx:if>
+</bx:output>

@@ -1,0 +1,37 @@
+{
+    "$schema": "/resources/schemas/theme.schema.json",
+    "name": "bx-Blogger Default",
+    "slug": "bx-blogger-default",
+    "version": "1.0.0",
+    "author": "bx-Blogger Team",
+    "description": "Clean, responsive default theme. Bootstrap 5 via CDN, custom styles compiled from SCSS via Vite into public/themes/bx-blogger-default/assets/.",
+    "minBxblogerVersion": "0.1.0",
+    "bootstrap": "5.3",
+    "supports": [
+        "featured-image",
+        "menus",
+        "custom-colors",
+        "dark-mode",
+        "srcset",
+        "related-posts"
+    ],
+    "menus": {
+        "header": "Header Navigation",
+        "footer": "Footer Navigation"
+    },
+    "templates": {
+        "post": [ "default", "wide", "longform" ],
+        "page": [ "default", "landing", "sidebar", "full-width" ]
+    },
+    "thumbnails": [
+        { "name": "thumb",  "width": 150,  "height": 150, "crop": true  },
+        { "name": "small",  "width": 480,  "crop": false },
+        { "name": "medium", "width": 1024, "crop": false },
+        { "name": "large",  "width": 2048, "crop": false }
+    ],
+    "options": [
+        { "key": "primary_color",   "type": "color", "default": "#0d6efd", "label": "Primary Color (overrides Bootstrap $primary)" },
+        { "key": "posts_per_page",  "type": "int",   "default": 10,        "label": "Posts Per Page" },
+        { "key": "show_author_box", "type": "bool",  "default": true,      "label": "Show Author Box" }
+    ]
+}

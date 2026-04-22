@@ -1,0 +1,24 @@
+<bx:output>
+<header class="mb-4 pb-3 border-bottom">
+    <p class="text-secondary mb-1 text-uppercase small">Category</p>
+    <h1 class="h3 mb-1">#encodeForHTML( prc.category.getName() ?: "Category" )#</h1>
+    <bx:if len( prc.category.getDescription() ?: "" )>
+        <p class="text-secondary mb-0">#encodeForHTML( prc.category.getDescription() )#</p>
+    </bx:if>
+</header>
+
+<bx:if ( prc.posts ?: [] ).len()>
+    <section class="row g-4 mb-4">
+        <bx:loop array="#prc.posts#" item="post">
+            <div class="col-md-6 col-lg-4">
+                #view( view = "bx-blogger-default/partials/post-card", args = { "post" : post } )#
+            </div>
+        </bx:loop>
+    </section>
+    <bx:if structKeyExists( prc, "pagination" )>
+        #view( view = "bx-blogger-default/partials/pagination" )#
+    </bx:if>
+<bx:else>
+    <p class="text-secondary">No posts in this category yet.</p>
+</bx:if>
+</bx:output>

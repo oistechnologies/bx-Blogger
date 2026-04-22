@@ -191,7 +191,7 @@ class accessors="true" singleton {
         var manifestPath = dir & "/theme.json";
         if ( !fileExists( manifestPath ) ) return false;
         try {
-            deserializeJSON( fileRead( manifestPath ) );
+            jsonDeserialize( fileRead( manifestPath ) );
             return true;
         }
         catch ( any e ) {
@@ -203,14 +203,14 @@ class accessors="true" singleton {
     private any function buildTheme( required any row ) {
         var manifest = {};
         if ( len( arguments.row.manifest_json ?: "" ) ) {
-            try { manifest = deserializeJSON( arguments.row.manifest_json ); }
+            try { manifest = jsonDeserialize( arguments.row.manifest_json ); }
             catch ( any e ) { manifest = {}; }
         }
         else if ( arguments.row.slug != variables.FALLBACK_SLUG ) {
             // manifest_json wasn't cached at install time — read it off disk on the fly
             var manifestPath = expandPath( "/" & arguments.row.directory & "/theme.json" );
             if ( fileExists( manifestPath ) ) {
-                try { manifest = deserializeJSON( fileRead( manifestPath ) ); }
+                try { manifest = jsonDeserialize( fileRead( manifestPath ) ); }
                 catch ( any e ) { manifest = {}; }
             }
         }

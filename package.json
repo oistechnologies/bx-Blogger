@@ -1,0 +1,18 @@
+{
+    "name": "bx-blogger-themes",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Theme SCSS + JS build pipeline for bx-Blogger. Runs inside the `node` docker-compose service (never on the host).",
+    "type": "module",
+    "scripts": {
+        "build":        "node build-themes.mjs",
+        "build:themes": "node build-themes.mjs",
+        "watch:themes": "node build-themes.mjs --watch"
+    },
+    "devDependencies": {
+        "bootstrap": "^5.3.3",
+        "glob":      "^11.0.0",
+        "sass":      "^1.80.4",
+        "vite":      "^5.4.10"
+    }
+}

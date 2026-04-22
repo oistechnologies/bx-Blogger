@@ -56,7 +56,7 @@ class extends="quick.models.BaseEntity" accessors="true" table="media" {
         var raw = getThumbnailsJson() ?: "";
         if ( !len( raw ) ) return {};
         try {
-            return deserializeJSON( raw );
+            return jsonDeserialize( raw );
         } catch ( any e ) {
             return {};
         }

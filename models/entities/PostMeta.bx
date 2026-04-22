@@ -30,7 +30,7 @@ class extends="quick.models.BaseEntity" accessors="true" table="post_meta" {
             case "bool":   return isBoolean( raw ) && raw;
             case "int":    return isNumeric( raw ) ? val( raw ) : 0;
             case "json":
-                try { return deserializeJSON( raw ); }
+                try { return jsonDeserialize( raw ); }
                 catch ( any e ) { return {}; }
             default:       return raw;
         }

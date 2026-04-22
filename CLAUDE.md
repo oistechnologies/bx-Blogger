@@ -24,6 +24,12 @@ docker compose exec app box cbplaywright:run                     # E2E tests
 docker compose logs -f app                                       # follow app logs
 docker compose exec app bash                                     # interactive shell in the container
 docker compose down                                              # stop the stack
+
+# Theme SCSS + JS build (Chunk 3.C onward). Profile-gated — the `node`
+# service does not run under a plain `docker compose up`.
+docker compose run --rm node npm install           # first time or when deps change
+docker compose run --rm node npm run build         # build every theme's assets
+docker compose run --rm node npm run watch:themes  # rebuild on file change
 ```
 
 ### Incorrect — do not do this
@@ -128,6 +134,7 @@ Hard-won lessons from Chunks 1.E → 1.I. Read these before adding new handlers,
 - **Script-mode tags need the `bx:` prefix.** `<bx:savecontent>`, `<bx:include>`, `<bx:if>`, `<bx:output>`, etc. Plain `savecontent {}` inside a `<bx:script>` block is a parse error.
 - **No mixed positional + named arguments in one call.** `foo( arg1, name = "x" )` → `cannot mix named and positional arguments`. All-positional or all-named.
 - **`generateSecretKey("AES", 256)` returns base64, not hex.** For a 64-char hex token: `lCase( binaryEncode( binaryDecode( generateSecretKey("AES", 256), "base64" ), "hex" ) )`. Stripping non-hex chars off the raw base64 string discards most of the entropy (yielding a ~18-char token).
+- **`deserializeJSON()` fails inside singleton service classes with "Function not found".** BoxLang 1.12 + bx-compat-cfml routes the CFML-style `deserializeJSON` via compat shims that don't reliably resolve when called from inside a WireBox-managed singleton with property injection — you get `Function [deserializeJSON] not found` at runtime, even though the same function works in ad-hoc scripts. Use the native **`jsonDeserialize()`** instead; it's available everywhere and behaves identically. Same goes for `serializeJSON` → `jsonSerialize`.
 
 ### Null handling
 

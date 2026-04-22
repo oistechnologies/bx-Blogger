@@ -1,0 +1,27 @@
+<bx:output>
+<header class="mb-4 pb-3 border-bottom">
+    <p class="text-secondary mb-1 text-uppercase small">Archive</p>
+    <h1 class="h3 mb-0">
+        <bx:if len( prc.archiveMonth ?: "" )>
+            #encodeForHTML( prc.archiveLabel ?: ( prc.archiveMonth & " " & prc.archiveYear ) )#
+        <bx:else>
+            #encodeForHTML( prc.archiveLabel ?: ( prc.archiveYear ?: "" ) )#
+        </bx:if>
+    </h1>
+</header>
+
+<bx:if ( prc.posts ?: [] ).len()>
+    <section class="row g-4 mb-4">
+        <bx:loop array="#prc.posts#" item="post">
+            <div class="col-md-6 col-lg-4">
+                #view( view = "bx-blogger-default/partials/post-card", args = { "post" : post } )#
+            </div>
+        </bx:loop>
+    </section>
+    <bx:if structKeyExists( prc, "pagination" )>
+        #view( view = "bx-blogger-default/partials/pagination" )#
+    </bx:if>
+<bx:else>
+    <p class="text-secondary">No posts in this timeframe.</p>
+</bx:if>
+</bx:output>

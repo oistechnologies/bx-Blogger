@@ -1,0 +1,75 @@
+// _theme.scss — custom styles layered on top of Bootstrap 5.
+//
+// Designed to be purely additive. Every selector scopes under
+// `.site-default` (the body class set in layouts/Main.bxm) so a Phase
+// 4 admin that swaps themes can't leak these styles into the admin UI.
+
+.site-default {
+    font-size: 1rem;
+    line-height: 1.65;
+
+    // Softer headings than Bootstrap's default
+    h1, h2, h3, h4, h5, h6 {
+        font-weight: 600;
+        letter-spacing: -0.01em;
+    }
+
+    // Site brand a touch heavier
+    .site-header .navbar-brand { letter-spacing: -0.02em; }
+
+    // Post cards — subtle lift on hover, minimal in default state
+    .post-card {
+        transition: transform 120ms ease-out, box-shadow 120ms ease-out;
+
+        &:hover {
+            transform: translateY(-2px);
+        }
+    }
+
+    // Post body: give markdown-rendered content breathing room
+    .post-body,
+    .page-body {
+        p      { margin-bottom: 1rem; }
+        ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+        li + li { margin-top: 0.25rem; }
+        img    { max-width: 100%; height: auto; border-radius: 6px; margin: 0.5rem 0; }
+        pre    {
+            background: var(--bs-tertiary-bg);
+            padding: 1rem;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 0.925em;
+        }
+        code   {
+            background: var(--bs-tertiary-bg);
+            padding: 0.1em 0.35em;
+            border-radius: 3px;
+            font-size: 0.925em;
+        }
+        pre code {
+            background: transparent;
+            padding: 0;
+            border-radius: 0;
+        }
+        blockquote {
+            border-left: 3px solid var(--bs-primary);
+            padding-left: 1rem;
+            color: var(--bs-secondary-color);
+            font-style: italic;
+            margin: 1.25rem 0;
+        }
+        h2, h3 { margin-top: 1.75rem; }
+    }
+
+    // Footer text a touch quieter
+    .site-footer code {
+        font-size: 0.8em;
+    }
+}
+
+// Dark-mode tweaks — Bootstrap 5.3 ships `data-bs-theme="dark"` support
+// out of the box; any overrides should go here. Phase 3.D wires up a
+// persistent toggle.
+[data-bs-theme="dark"] .site-default .post-card {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}

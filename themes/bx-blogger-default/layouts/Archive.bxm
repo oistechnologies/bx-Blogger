@@ -1,0 +1,40 @@
+<bx:output>
+<!doctype html>
+<html lang="en" data-bs-theme="light">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>#encodeForHTML( prc.pageTitle ?: getSetting( "AppName" ) )#</title>
+    <bx:if len( prc.pageDescription ?: "" )>
+        <meta name="description" content="#encodeForHTMLAttribute( prc.pageDescription )#">
+    </bx:if>
+
+    <link
+        rel="stylesheet"
+        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
+        integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN"
+        crossorigin="anonymous">
+    <link
+        rel="stylesheet"
+        href="#prc.theme.asset( "css/theme.css" )#"
+        onerror="this.remove()">
+</head>
+<body class="d-flex flex-column min-vh-100 site-default archive-layout">
+    #view( view = "bx-blogger-default/partials/header" )#
+
+    <main id="content" class="container py-4 flex-grow-1">
+        <bx:if ( prc.breadcrumbs ?: [] ).len()>
+            #view( view = "bx-blogger-default/partials/breadcrumbs" )#
+        </bx:if>
+        #view()#
+    </main>
+
+    #view( view = "bx-blogger-default/partials/footer" )#
+
+    <script
+        src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"
+        integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL"
+        crossorigin="anonymous"></script>
+</body>
+</html>
+</bx:output>

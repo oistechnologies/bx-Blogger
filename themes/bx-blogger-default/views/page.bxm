@@ -1,0 +1,14 @@
+<bx:output>
+<bx:if structKeyExists( prc, "page" ) && !isNull( prc.page )>
+    <article class="mx-auto page-article" style="max-width: 50rem;">
+        <header class="mb-4">
+            <h1 class="display-6 mb-0">#encodeForHTML( prc.page.getTitle() )#</h1>
+        </header>
+        <div class="page-body">
+            #( prc.page.getBodyHtml() ?: "" )#
+        </div>
+    </article>
+<bx:else>
+    <p class="text-secondary">Page unavailable.</p>
+</bx:if>
+</bx:output>

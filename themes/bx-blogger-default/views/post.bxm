@@ -1,0 +1,31 @@
+<bx:output>
+<bx:if structKeyExists( prc, "post" ) && !isNull( prc.post )>
+    <header class="mb-4">
+        <h1 class="display-6 mb-2">#encodeForHTML( prc.post.getTitle() )#</h1>
+        <p class="text-secondary small mb-0">
+            <bx:if len( prc.authorName ?: "" )>
+                By #encodeForHTML( prc.authorName )#
+            </bx:if>
+            <bx:if !isNull( prc.post.getPublishedAt() )>
+                <bx:if len( prc.authorName ?: "" )>&middot;</bx:if>
+                <time datetime="#dateTimeFormat( prc.post.getPublishedAt(), 'yyyy-mm-dd' )#">
+                    #dateFormat( prc.post.getPublishedAt(), "mmm d, yyyy" )#
+                </time>
+            </bx:if>
+            <bx:if ( prc.post.getReadingTime() ?: 0 ) > 0>
+                &middot; #prc.post.getReadingTime()# min read
+            </bx:if>
+        </p>
+    </header>
+
+    <bx:if len( prc.post.getExcerpt() ?: "" )>
+        <p class="lead text-secondary-emphasis">#encodeForHTML( prc.post.getExcerpt() )#</p>
+    </bx:if>
+
+    <div class="post-body">
+        #( prc.post.getBodyHtml() ?: "" )#
+    </div>
+<bx:else>
+    <p class="text-secondary">Post unavailable.</p>
+</bx:if>
+</bx:output>

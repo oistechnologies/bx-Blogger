@@ -1,0 +1,75 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://bx-blogger.local/schemas/theme.schema.json",
+    "title": "bx-Blogger Theme Manifest",
+    "description": "Schema for `themes/{slug}/theme.json`. Validated by the themes.discover admin action (Phase 4). Breaking changes bump the `version` field — the resolver will warn but continue to load manifests that parse against an older version of the schema.",
+    "type": "object",
+    "required": [ "name", "slug", "version", "bootstrap" ],
+    "additionalProperties": true,
+    "properties": {
+        "$schema":            { "type": "string" },
+        "name":               { "type": "string", "minLength": 1, "maxLength": 200 },
+        "slug":               { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "maxLength": 120 },
+        "version":            { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.]+)?$" },
+        "author":             { "type": "string", "maxLength": 200 },
+        "description":        { "type": "string" },
+        "minBxblogerVersion": { "type": "string" },
+        "bootstrap": {
+            "type": "string",
+            "pattern": "^5(\\.[0-9]+){0,2}$",
+            "description": "Required. Every theme must declare Bootstrap 5.x compatibility. Third-party themes that omit this field are rejected at install time."
+        },
+        "supports": {
+            "type": "array",
+            "items": {
+                "enum": [
+                    "featured-image",
+                    "menus",
+                    "custom-colors",
+                    "dark-mode",
+                    "srcset",
+                    "oembed",
+                    "custom-fonts",
+                    "related-posts"
+                ]
+            }
+        },
+        "menus": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+        },
+        "templates": {
+            "type": "object",
+            "additionalProperties": {
+                "type": "array",
+                "items": { "type": "string" }
+            }
+        },
+        "thumbnails": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [ "name", "width" ],
+                "properties": {
+                    "name":   { "type": "string" },
+                    "width":  { "type": "integer", "minimum": 1 },
+                    "height": { "type": "integer", "minimum": 1 },
+                    "crop":   { "type": "boolean" }
+                }
+            }
+        },
+        "options": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": [ "key", "type", "label" ],
+                "properties": {
+                    "key":     { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+                    "type":    { "enum": [ "color", "int", "bool", "string", "select", "textarea", "image" ] },
+                    "label":   { "type": "string" },
+                    "default": {}
+                }
+            }
+        }
+    }
+}

@@ -124,10 +124,31 @@ services:
     networks:
       - bx-blogger
 
+  # Theme SCSS + JS build (Chunk 3.C).
+  #
+  # Profile-gated so `docker compose up` doesn't spin it up. Use:
+  #   docker compose run --rm node npm ci           # first time / deps changed
+  #   docker compose run --rm node npm run build    # build all themes
+  #   docker compose run --rm node npm run watch:themes
+  #
+  # Lives outside the main bx-blogger network — no reason for the
+  # theme builder to hold TCP connections open to MySQL/MinIO.
+  node:
+    image: node:20-alpine
+    container_name: bx-blogger-node
+    working_dir: /app
+    volumes:
+      - ./:/app
+      - node-modules:/app/node_modules
+    command: [ "npm", "run", "build" ]
+    profiles:
+      - build
+
 volumes:
   mysql-data:
   minio-data:
   backup-data:
+  node-modules:
 
 networks:
   bx-blogger:

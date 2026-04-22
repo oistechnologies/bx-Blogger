@@ -1,0 +1,38 @@
+<bx:output>
+<bx:if structKeyExists( args, "post" ) && !isNull( args.post )>
+    <article class="card h-100 border-0 shadow-sm post-card">
+        <bx:if !isNull( args.post.getFeaturedMediaId() ) && structKeyExists( args, "featuredUrl" ) && len( args.featuredUrl )>
+            <a href="/blog/#encodeForHTMLAttribute( args.post.getSlug() )#" class="d-block ratio ratio-16x9 overflow-hidden">
+                <img
+                    src="#encodeForHTMLAttribute( args.featuredUrl )#"
+                    alt="#encodeForHTMLAttribute( args.featuredAlt ?: args.post.getTitle() )#"
+                    class="card-img-top object-fit-cover"
+                    loading="lazy">
+            </a>
+        </bx:if>
+        <div class="card-body d-flex flex-column">
+            <h2 class="h5 card-title mb-2">
+                <a class="text-decoration-none link-body-emphasis stretched-link"
+                   href="/blog/#encodeForHTMLAttribute( args.post.getSlug() )#">
+                    #encodeForHTML( args.post.getTitle() )#
+                </a>
+            </h2>
+            <bx:if len( args.post.getExcerpt() ?: "" )>
+                <p class="card-text text-secondary small flex-grow-1">
+                    #encodeForHTML( args.post.getExcerpt() )#
+                </p>
+            </bx:if>
+            <p class="text-secondary small mb-0 mt-2">
+                <bx:if !isNull( args.post.getPublishedAt() )>
+                    <time datetime="#dateTimeFormat( args.post.getPublishedAt(), 'yyyy-mm-dd' )#">
+                        #dateFormat( args.post.getPublishedAt(), "mmm d, yyyy" )#
+                    </time>
+                </bx:if>
+                <bx:if ( args.post.getReadingTime() ?: 0 ) > 0>
+                    &middot; #args.post.getReadingTime()# min read
+                </bx:if>
+            </p>
+        </div>
+    </article>
+</bx:if>
+</bx:output>

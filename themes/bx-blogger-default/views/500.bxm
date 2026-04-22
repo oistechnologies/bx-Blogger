@@ -1,0 +1,12 @@
+<bx:output>
+<p class="display-3 text-secondary fw-light mb-2">500</p>
+<h1 class="h3 mb-3">Something went wrong</h1>
+<p class="text-secondary">
+    We&rsquo;ve logged the error and will take a look. If the problem keeps
+    happening, please contact the site administrator.
+</p>
+<bx:if len( prc.errorReference ?: "" )>
+    <p class="text-secondary small">Reference: <code>#encodeForHTML( prc.errorReference )#</code></p>
+</bx:if>
+<p class="mt-4"><a href="/" class="btn btn-primary">Back to home</a></p>
+</bx:output>

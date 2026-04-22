@@ -152,7 +152,7 @@ class accessors="true" singleton {
         t = reReplace( t, "^```[a-z]*\s*", "", "one" );
         t = reReplace( t, "```\s*$",        "", "one" );
         try {
-            var parsed = deserializeJSON( t );
+            var parsed = jsonDeserialize( t );
             if ( isArray( parsed ) ) return parsed;
             if ( isStruct( parsed ) && structKeyExists( parsed, "suggestions" ) ) return parsed.suggestions;
         }
