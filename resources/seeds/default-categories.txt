@@ -1,0 +1,23 @@
+# bx-Blogger — default category tree seeded on first boot.
+#
+# Plain-text, 2-space indent per nesting level. Blank lines and lines
+# starting with `#` are ignored. Add / edit / remove freely — the seed
+# only fires when the `categories` table is empty, so changes here
+# affect fresh installs only, not existing ones.
+#
+# For full control over slugs or SEO description, edit a category
+# after it's been seeded (or switch this to a JSON-backed format
+# later if that becomes the shape we actually want).
+
+Tutorials
+  Getting Started
+  Advanced
+Dev News
+Reviews
+  Software
+  Hardware
+Development
+  BoxLang
+  ColdFusion
+  CFML
+  CI-CD

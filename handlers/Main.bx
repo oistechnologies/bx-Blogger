@@ -124,6 +124,15 @@ class extends="coldbox.system.EventHandler" {
 		// because the count() > 0 branch short-circuits.
 		seedInitialAdminIfMissing();
 
+		// Phase UX — on a brand-new install (no categories yet), seed
+		// a small default taxonomy tree so the admin categories page
+		// isn't empty on day one. File at
+		// resources/seeds/default-categories.txt is the source of
+		// truth; idempotent on re-boot via Category.count() check.
+		// Runs before the sample-post seed because content depends on
+		// taxonomy conceptually, not the other way around.
+		seedDefaultCategoriesIfEmpty();
+
 		// Pre-Phase-6 — on a brand-new install (no posts yet), seed a
 		// sample post demonstrating the markdown pipeline. Same
 		// idempotency story as the admin seed: short-circuits when
@@ -169,6 +178,64 @@ class extends="coldbox.system.EventHandler" {
 			"must_change_password": 0
 		} );
 		user.roles().attach( superAdmin.getId() );
+	}
+
+	/**
+	 * Parse resources/seeds/default-categories.txt and create the tree
+	 * via CategoryService on a fresh install. Tiny stack-based indent
+	 * parser — 2 spaces per nesting level, blank lines skipped, lines
+	 * starting with `#` are comments.
+	 *
+	 * Idempotent: exits early once `categories` has any rows, so
+	 * re-boots on a populated install don't touch the table. Any
+	 * failure logs a warning and swallows — a broken seed file must
+	 * not block boot.
+	 */
+	private function seedDefaultCategoriesIfEmpty() {
+		try {
+			var categoryService = getInstance( "CategoryService" );
+			if ( getInstance( "Category" ).count() > 0 ) return;
+
+			var seedPath = expandPath( "resources/seeds/default-categories.txt" );
+			if ( !fileExists( seedPath ) ) return;
+			var contents = fileRead( seedPath, "utf-8" );
+
+			var lines   = contents.listToArray( char( 10 ), true );
+			var stack   = [];
+			var created = 0;
+
+			for ( var raw in lines ) {
+				// Strip trailing \r on Windows-style line endings.
+				raw = reReplace( raw, "\r$", "" );
+				var trimmed = trim( raw );
+				if ( !len( trimmed ) ) continue;
+				if ( left( trimmed, 1 ) == '##' ) continue;   // '##' escapes a literal '#'
+
+				// Count leading spaces; 2 per indent level.
+				var leading = len( raw ) - len( raw.lTrim() );
+				var depth   = int( leading / 2 );
+
+				// Truncate the ancestor stack so `stack[ depth ]` — if
+				// any — is our parent.
+				while ( stack.len() > depth ) stack.deleteAt( stack.len() );
+
+				var attrs = { "name" : trimmed };
+				if ( depth > 0 && stack.len() >= depth ) {
+					attrs.parentId = stack[ depth ];
+				}
+
+				var cat = categoryService.create( attrs );
+				stack.append( cat.getId() );
+				created++;
+			}
+
+			getInstance( "logbox:logger:Main" )
+				.info( "seedDefaultCategoriesIfEmpty: created " & created & " default categories" );
+		}
+		catch ( any e ) {
+			getInstance( "logbox:logger:Main" )
+				.warn( "seedDefaultCategoriesIfEmpty failed: " & e.message, e );
+		}
 	}
 
 	/**
