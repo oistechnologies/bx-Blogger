@@ -31,8 +31,11 @@ fi
 # ---------------------------------------------------------------------------
 # 2. box install (idempotent — safe to run every startup)
 # ---------------------------------------------------------------------------
-echo "[bx-blogger] Running box install --production (idempotent)..."
-box install --production --verbose
+# Dev mode installs devDependencies too (testbox, cfformat, cbdebugger,
+# route-visualizer) so `docker compose exec app box run-script test` works.
+# Prod Dockerfile variant should override with --production.
+echo "[bx-blogger] Running box install (idempotent)..."
+box install --verbose
 
 # ---------------------------------------------------------------------------
 # 3. Database migrations
@@ -50,4 +53,7 @@ fi
 # 4. Start MiniServer
 # ---------------------------------------------------------------------------
 echo "[bx-blogger] Starting BoxLang MiniServer on :8080..."
-exec box server start --rc --console
+# --console keeps the process in foreground (required for PID 1 / container lifetime).
+# --rc was dropped — server.json's top-level "rc": true expresses the same intent
+# and the flag was redundant (and possibly conflicting) in our config.
+exec box server start --console

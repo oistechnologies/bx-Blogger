@@ -81,19 +81,24 @@ class {
 		};
 
 		/**
-		 * ----------------------------------------------------------------
+		 * --------------------------------------------------------------------------
 		 * Application Logging (https://logbox.ortusbooks.com)
-		 * ----------------------------------------------------------------
-		 * Phase 0 ships console-only. Phase 10 (B14/B15) hardens with file
-		 * appenders + per-category levels.
+		 * --------------------------------------------------------------------------
+		 * By Default we log to the console, but you can add many appenders or destinations to log to.
+		 * You can also choose the logging level of the root logger, or even the actual appender.
 		 */
 		variables.logBox = {
-			appenders : {
-				coldboxTracer : { class : "coldbox.system.logging.appenders.ConsoleAppender" }
+			// Define Appenders
+			appenders : { coldboxTracer : { class : "coldbox.system.logging.appenders.ConsoleAppender" } },
+			filelog    : {
+				class      : "coldbox.system.logging.appenders.RollingFileAppender",
+				properties : { filename : "app", filePath : "/app/logs" }
 			},
-			root : { levelmax : "INFO", appenders : "*" },
-			info : [ "coldbox.system" ]
-		};
+			// Root Logger
+			root      : { levelmax : "INFO", appenders : "*" },
+			// Implicit Level Categories
+			info      : [ "coldbox.system" ]
+		}
 
 		/**
 		 * ----------------------------------------------------------------
@@ -202,7 +207,16 @@ class {
 		 * ----------------------------------------------------------------
 		 * Populated per-module in later phases.
 		 */
-		variables.moduleSettings = {};
+		variables.moduleSettings = {
+			"cbq" : {
+				// The path the custom config file to register connections and worker pools
+				"configPath" : "config.cbq",
+				// Flag if workers should be registered.  If your application only pushes to the queues, you can set this to false.
+				"registerWorkers" : getSystemSetting( "CBQ_REGISTER_WORKERS", true ),
+				// The interval to poll for changes to the worker pool scaling.  Defaults to 0 which turns off the scheduled scaling feature.
+				"scaleInterval" : 0
+			}
+		};
 
 		/**
 		 * ----------------------------------------------------------------

@@ -7,19 +7,29 @@
 # exits 0 cleanly so the Dockerfile asset-builder stage (and `npm run build`
 # on the host) succeed at Phase 0 and pick up themes automatically from
 # Phase 3 onward.
+#
+# Always ensures ./public/themes/ exists (even as an empty directory) so the
+# Dockerfile's runtime stage can COPY --from=assets /build/public/themes
+# without errors.
 # =============================================================================
 
 set -e
 
 THEMES_DIR="./app/themes"
+OUT_DIR="./public/themes"
+
+# Ensure the output dir exists so downstream COPY --from=assets always works,
+# whether we build anything or not.
+mkdir -p "$OUT_DIR"
 
 if [ ! -d "$THEMES_DIR" ]; then
     echo "[build-themes] $THEMES_DIR does not exist — skipping Vite build."
     exit 0
 fi
 
-if [ -z "$(ls -A "$THEMES_DIR" 2>/dev/null)" ]; then
-    echo "[build-themes] $THEMES_DIR is empty — skipping Vite build (Phase 0 state)."
+# Ignore dotfiles (.gitkeep) when checking for themes
+if [ -z "$(ls -A "$THEMES_DIR" 2>/dev/null | grep -v '^\.')" ]; then
+    echo "[build-themes] $THEMES_DIR has no themes — skipping Vite build (Phase 0 state)."
     exit 0
 fi
 

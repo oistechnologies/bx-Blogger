@@ -22,6 +22,7 @@ services:
       dockerfile: resources/docker/Dockerfile
     image: bx-blogger-app:dev
     container_name: bx-blogger-app
+    platform: linux/amd64                # PROBE 2: force amd64 — rule out Apple Silicon arm64 quirks
     env_file: .env
     ports:
       - "8080:8080"

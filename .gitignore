@@ -5,3 +5,48 @@ DEV-NOTES/
 # Per-developer Claude Code settings (tool permissions, etc.)
 # Team-wide settings (if introduced) would go in .claude/settings.json
 .claude/settings.local.json
+
+# Per-developer IDE settings
+.vscode/
+.idea/
+
+# Environment configuration — copied from .env.example; never checked in
+.env
+.env.local
+.env.*.local
+
+# ForgeBox-installed dependencies — restored via `box install` (mvc layout)
+lib/
+
+# ForgeBox-installed dependencies — restored via `box install` (flat layout)
+modules/
+coldbox/
+testbox/
+
+# BoxLang runtime state — generated at runtime, never source-controlled
+runtime/classes/
+runtime/global/
+runtime/lib/
+runtime/logs/
+
+# ColdBox auto-generated module config stubs (some modules drop these on install)
+app/config/modules/
+app/config/cbq.bx
+config/modules/
+config/cbq.bx
+
+# Node / Vite build artifacts
+node_modules/
+package-lock.json
+public/themes/*/assets/
+
+# TestBox results
+tests/results/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor swap files
+*.swp
+*.swo

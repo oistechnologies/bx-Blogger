@@ -1,0 +1,4 @@
+# Placeholder — ensures app/themes/ exists in git.
+# Phase 0 ships no themes; Phase 3 adds bx-blogger-fallback and bx-blogger-default here.
+# The Dockerfile's asset-builder stage COPYs this directory; it must exist for the build to succeed.
+# build-themes.sh detects empty themes and skips Vite.

@@ -43,9 +43,11 @@ WORKDIR /app
 # non-dependency code changes.
 COPY box.json server.json ./
 
-# Install production dependencies from ForgeBox. The `--verbose` output
-# is useful for Phase 0 troubleshooting and for CI log inspection.
-RUN box install --production --verbose
+# Install dependencies from ForgeBox (both prod and dev — this is the dev
+# image). Prod deploys should build with --build-arg INSTALL_PRODUCTION=true
+# or use a separate prod Dockerfile that passes --production. Phase 0
+# scope: dev only.
+RUN box install --verbose
 
 # Application code + static assets
 COPY app         ./app/
