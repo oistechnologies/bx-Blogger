@@ -136,74 +136,74 @@ class {
 		variables.interceptorSettings = {
 			customInterceptionPoints : [
 				// Auth
-				"bxBlogger.preLogin", "bxBlogger.postLogin",
-				"bxBlogger.loginFailed",
-				"bxBlogger.preLogout", "bxBlogger.postLogout",
-				"bxBlogger.preRegister", "bxBlogger.postRegister",
-				"bxBlogger.preEmailVerify", "bxBlogger.postEmailVerify",
-				"bxBlogger.prePasswordReset", "bxBlogger.postPasswordReset",
-				"bxBlogger.preTwoFactorChallenge", "bxBlogger.postTwoFactorChallenge",
-				"bxBlogger.rateLimitTriggered",
+				"preLogin", "postLogin",
+				"loginFailed",
+				"preLogout", "postLogout",
+				"preRegister", "postRegister",
+				"preEmailVerify", "postEmailVerify",
+				"prePasswordReset", "postPasswordReset",
+				"preTwoFactorChallenge", "postTwoFactorChallenge",
+				"rateLimitTriggered",
 				// Posts / Pages lifecycle
-				"bxBlogger.prePostSave", "bxBlogger.postPostSave",
-				"bxBlogger.prePostPublish", "bxBlogger.postPostPublish",
-				"bxBlogger.prePostUnpublish", "bxBlogger.postPostUnpublish",
-				"bxBlogger.prePostDelete", "bxBlogger.postPostDelete",
-				"bxBlogger.postPostHardDelete",
-				"bxBlogger.prePostRestore", "bxBlogger.postPostRestore",
-				"bxBlogger.prePostRevisionCreate", "bxBlogger.postPostRevisionCreate",
-				"bxBlogger.prePostSubmitReview", "bxBlogger.postPostSubmitReview",
-				"bxBlogger.prePostAutosave", "bxBlogger.postPostAutosave",
-				"bxBlogger.prePostPreviewShare", "bxBlogger.postPostPreviewShare",
-				"bxBlogger.preReadingTimeCompute", "bxBlogger.postReadingTimeCompute",
-				"bxBlogger.relatedPostsFor",
+				"prePostSave", "postPostSave",
+				"prePostPublish", "postPostPublish",
+				"prePostUnpublish", "postPostUnpublish",
+				"prePostDelete", "postPostDelete",
+				"postPostHardDelete",
+				"prePostRestore", "postPostRestore",
+				"prePostRevisionCreate", "postPostRevisionCreate",
+				"prePostSubmitReview", "postPostSubmitReview",
+				"prePostAutosave", "postPostAutosave",
+				"prePostPreviewShare", "postPostPreviewShare",
+				"preReadingTimeCompute", "postReadingTimeCompute",
+				"relatedPostsFor",
 				// Markdown pipeline
-				"bxBlogger.preMarkdownCompile", "bxBlogger.postMarkdownCompile",
-				"bxBlogger.preMarkdownSanitize", "bxBlogger.postMarkdownSanitize",
+				"preMarkdownCompile", "postMarkdownCompile",
+				"preMarkdownSanitize", "postMarkdownSanitize",
 				// Comments (declared; ships Phase 11)
-				"bxBlogger.preCommentSubmit", "bxBlogger.postCommentSubmit",
-				"bxBlogger.preCommentApprove", "bxBlogger.postCommentApprove",
-				"bxBlogger.preCommentSpam", "bxBlogger.postCommentSpam",
+				"preCommentSubmit", "postCommentSubmit",
+				"preCommentApprove", "postCommentApprove",
+				"preCommentSpam", "postCommentSpam",
 				// Media
-				"bxBlogger.preMediaUpload", "bxBlogger.postMediaUpload",
-				"bxBlogger.preMediaDelete", "bxBlogger.postMediaDelete",
-				"bxBlogger.preThumbnailGenerate", "bxBlogger.postThumbnailGenerate",
-				"bxBlogger.preWebpConvert", "bxBlogger.postWebpConvert",
-				"bxBlogger.preOgImageGenerate", "bxBlogger.postOgImageGenerate",
-				"bxBlogger.preOembedResolve", "bxBlogger.postOembedResolve",
+				"preMediaUpload", "postMediaUpload",
+				"preMediaDelete", "postMediaDelete",
+				"preThumbnailGenerate", "postThumbnailGenerate",
+				"preWebpConvert", "postWebpConvert",
+				"preOgImageGenerate", "postOgImageGenerate",
+				"preOembedResolve", "postOembedResolve",
 				// Theming
-				"bxBlogger.preThemeSwitch", "bxBlogger.postThemeSwitch",
-				"bxBlogger.themeAssetsBuild",
-				"bxBlogger.preThemeRender", "bxBlogger.postThemeRender",
+				"preThemeSwitch", "postThemeSwitch",
+				"themeAssetsBuild",
+				"preThemeRender", "postThemeRender",
 				// Public render
-				"bxBlogger.preRenderPost", "bxBlogger.postRenderPost",
-				"bxBlogger.preRenderPage", "bxBlogger.postRenderPage",
-				"bxBlogger.preRenderArchive", "bxBlogger.postRenderArchive",
-				"bxBlogger.contentShortcode",
+				"preRenderPost", "postRenderPost",
+				"preRenderPage", "postRenderPage",
+				"preRenderArchive", "postRenderArchive",
+				"contentShortcode",
 				// Search
-				"bxBlogger.preSearch", "bxBlogger.postSearch",
+				"preSearch", "postSearch",
 				// SEO
-				"bxBlogger.seoMetaBuild",
-				"bxBlogger.preSitemapGenerate", "bxBlogger.postSitemapGenerate",
-				"bxBlogger.preRssGenerate", "bxBlogger.postRssGenerate",
+				"seoMetaBuild",
+				"preSitemapGenerate", "postSitemapGenerate",
+				"preRssGenerate", "postRssGenerate",
 				// Caching
-				"bxBlogger.preCacheStore", "bxBlogger.postCacheStore",
-				"bxBlogger.cacheInvalidate",
+				"preCacheStore", "postCacheStore",
+				"cacheInvalidate",
 				// AI authoring (Phase 2)
-				"bxBlogger.preAiRequest", "bxBlogger.postAiResponse",
-				"bxBlogger.aiBudgetExceeded",
-				"bxBlogger.preImageGenerate", "bxBlogger.postImageGenerate",
-				"bxBlogger.imageGenerationBudgetExceeded",
+				"preAiRequest", "postAiResponse",
+				"aiBudgetExceeded",
+				"preImageGenerate", "postImageGenerate",
+				"imageGenerationBudgetExceeded",
 				// Admin shell extensibility
-				"bxBlogger.adminMenuBuild",
-				"bxBlogger.adminDashboardWidgets",
-				"bxBlogger.adminPostEditorPanels",
-				"bxBlogger.adminEditorToolbar",
-				"bxBlogger.notificationCreated",
-				"bxBlogger.preAdminRender", "bxBlogger.postAdminRender",
+				"adminMenuBuild",
+				"adminDashboardWidgets",
+				"adminPostEditorPanels",
+				"adminEditorToolbar",
+				"notificationCreated",
+				"preAdminRender", "postAdminRender",
 				// Privacy / GDPR
-				"bxBlogger.preUserDataExport", "bxBlogger.postUserDataExport",
-				"bxBlogger.preUserPurge", "bxBlogger.postUserPurge"
+				"preUserDataExport", "postUserDataExport",
+				"preUserPurge", "postUserPurge"
 			]
 		};
 
@@ -236,7 +236,14 @@ class {
 			// Chunk 3.A — wires `themes/` as the views+layouts external
 			// location at app boot and populates `prc.theme` on every
 			// request so handlers/layouts can resolve theme-scoped files.
-			{ class : "interceptors.ThemeResolutionInterceptor" }
+			{ class : "interceptors.ThemeResolutionInterceptor" },
+			// 6.D — subscribes to `notificationCreated` (fired by
+			// NotificationService.notify) and dispatches a SendEmailJob
+			// when the caller included `"email"` in `channels[]`. Reads
+			// the destination from the `notifications.email_to` setting;
+			// silently logs-and-returns if the setting is blank so a
+			// half-configured install doesn't throw on every write.
+			{ class : "interceptors.NotificationEmailChannelInterceptor" }
 		];
 
 		/**

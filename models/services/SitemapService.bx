@@ -180,7 +180,7 @@ class accessors="true" singleton {
 
         // Let modules mutate the URL list before emission.
         var data = { "baseUrl" : arguments.baseUrl, "urls" : urls };
-        variables.interceptorService.announce( state = "bxBlogger.preSitemapGenerate", data = data );
+        variables.interceptorService.announce( state = "preSitemapGenerate", data = data );
 
         var buf = createObject( "java", "java.lang.StringBuilder" ).init();
         buf.append( '<?xml version="1.0" encoding="UTF-8"?>' );
@@ -201,7 +201,7 @@ class accessors="true" singleton {
 
         buf.append( "</urlset>" & char( 10 ) );
         data.xml = buf.toString();
-        variables.interceptorService.announce( state = "bxBlogger.postSitemapGenerate", data = data );
+        variables.interceptorService.announce( state = "postSitemapGenerate", data = data );
         return data.xml;
     }
 

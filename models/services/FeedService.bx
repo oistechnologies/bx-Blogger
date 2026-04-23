@@ -142,7 +142,7 @@ class accessors="true" singleton {
             "posts"   : arguments.posts
         };
 
-        variables.interceptorService.announce( state = "bxBlogger.preRssGenerate", data = data );
+        variables.interceptorService.announce( state = "preRssGenerate", data = data );
 
         var buf = createObject( "java", "java.lang.StringBuilder" ).init();
         buf.append( '<?xml version="1.0" encoding="UTF-8"?>' );
@@ -184,7 +184,7 @@ class accessors="true" singleton {
 
         var xml = buf.toString();
         data.xml = xml;
-        variables.interceptorService.announce( state = "bxBlogger.postRssGenerate", data = data );
+        variables.interceptorService.announce( state = "postRssGenerate", data = data );
         return data.xml;
     }
 

@@ -1,0 +1,149 @@
+/**
+ * bx-Blogger — NotificationEmailChannelSpec (Phase 6.D)
+ *
+ * Covers the `notificationCreated` → SendEmailJob fan-out added in
+ * 6.D. The interceptor reads the `notifications.email_to` setting,
+ * checks the caller's `channels[]` for `"email"`, and enqueues a
+ * SendEmailJob when both conditions hold.
+ *
+ * Write-path specs live here rather than in NotificationServiceSpec
+ * because this is about the announce → interceptor boundary, not
+ * the service's own read/write logic.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    variables.settingKey = "notifications.email_to";
+    variables.testEmail  = "alerts-spec@bx-blogger.local";
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.notifications = getInstance( "NotificationService" );
+        variables.settings      = getInstance( "SettingService" );
+    }
+
+    function afterAll() {
+        try {
+            var qb = getInstance( "QueryBuilder@qb" );
+            qb.newQuery().from( "cbq_jobs" ).where( "queue", "default" ).delete();
+            qb.newQuery().from( "notifications" ).where( "type", "like", "email-test.%" ).delete();
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "NotificationEmailChannelSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "NotificationEmailChannel", function() {
+
+            beforeEach( function() {
+                // Clean queue + set a known destination before each test.
+                getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "cbq_jobs" ).where( "queue", "default" ).delete();
+                settings.set( variables.settingKey, variables.testEmail, "email" );
+            } );
+
+            it( "enqueues a SendEmailJob when channels contains 'email'", function() {
+                var user = createTestUser();
+
+                notifications.notify(
+                    userId   = user.getId(),
+                    type     = "email-test.fire",
+                    title    = "Something went wrong",
+                    body     = "A background job failed three times.",
+                    link     = "/admin/jobs/failed/42",
+                    severity = "error",
+                    channels = [ "db", "email" ]
+                );
+
+                var jobs = getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "cbq_jobs" )
+                    .where( "queue", "default" )
+                    .get();
+                expect( jobs.len() ).toBe( 1, "exactly one SendEmailJob enqueued" );
+
+                // Payload is JSON in the `payload` column — verify the
+                // destination address + distinctive title made it through.
+                var payload = jobs[ 1 ].payload;
+                expect( payload contains variables.testEmail ).toBeTrue( "destination address present in payload" );
+                expect( payload contains "Something went wrong" ).toBeTrue( "title present in payload" );
+                // Error severity should prefix the subject with "[Alert]".
+                expect( payload contains "[Alert]" ).toBeTrue( "error severity prefixes subject" );
+            } );
+
+            it( "does NOT enqueue when channels omits 'email'", function() {
+                var user = createTestUser();
+                notifications.notify(
+                    userId   = user.getId(),
+                    type     = "email-test.quiet",
+                    title    = "Just a quiet DB notification",
+                    channels = [ "db" ]
+                );
+
+                var count = getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "cbq_jobs" )
+                    .where( "queue", "default" )
+                    .count();
+                expect( count ).toBe( 0, "DB-only channel skips the email fan-out" );
+            } );
+
+            it( "does NOT enqueue when the email_to setting is blank", function() {
+                settings.delete( variables.settingKey );
+
+                var user = createTestUser();
+                notifications.notify(
+                    userId   = user.getId(),
+                    type     = "email-test.noaddr",
+                    title    = "email channel with no destination",
+                    channels = [ "db", "email" ]
+                );
+
+                var count = getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "cbq_jobs" )
+                    .where( "queue", "default" )
+                    .count();
+                expect( count ).toBe( 0, "missing destination setting suppresses the email" );
+            } );
+
+            it( "prefixes [Warning] for severity=warning", function() {
+                var user = createTestUser();
+                notifications.notify(
+                    userId   = user.getId(),
+                    type     = "email-test.warn",
+                    title    = "Queue is backing up",
+                    severity = "warning",
+                    channels = [ "db", "email" ]
+                );
+
+                var row = getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "cbq_jobs" )
+                    .where( "queue", "default" )
+                    .first();
+                expect( isNull( row ) ).toBeFalse();
+                expect( row.payload contains "[Warning]" ).toBeTrue();
+            } );
+
+            it( "keeps info severity subjects unprefixed", function() {
+                var user = createTestUser();
+                notifications.notify(
+                    userId   = user.getId(),
+                    type     = "email-test.info",
+                    title    = "Weekly digest",
+                    severity = "info",
+                    channels = [ "db", "email" ]
+                );
+
+                var row = getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "cbq_jobs" )
+                    .where( "queue", "default" )
+                    .first();
+                expect( isNull( row ) ).toBeFalse();
+                expect( row.payload contains "[Alert]"   ).toBeFalse();
+                expect( row.payload contains "[Warning]" ).toBeFalse();
+                expect( row.payload contains "Weekly digest" ).toBeTrue();
+            } );
+
+        } );
+    }
+
+}

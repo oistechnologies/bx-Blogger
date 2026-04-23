@@ -1,0 +1,12 @@
+<bx:output>#uCase( data.severity ?: "info" )#: #data.title ?: "Notification"#
+
+<bx:if len( data.body ?: "" )>#data.body#
+
+</bx:if><bx:if len( data.link ?: "" )>Open in admin:
+#data.link#
+
+</bx:if>---
+You're receiving this because your #data.siteName ?: "bx-Blogger"# install
+is configured to send notifications to this address. The full list is
+visible in the admin notification bell.
+</bx:output>

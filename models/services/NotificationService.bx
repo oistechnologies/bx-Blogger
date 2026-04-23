@@ -2,18 +2,19 @@
  * bx-Blogger — NotificationService (Phase 6.C / B7)
  *
  * Writes rows to the `notifications` table and announces the
- * `bxBlogger.notificationCreated` interception event so other
- * channels (email in 6.D, push in a future iteration) can fan
- * out without coupling into this service. DB is the source of
- * truth; every notification lives here whether or not any other
- * channel also fires.
+ * `notificationCreated` interception event so other channels
+ * (email in 6.D, push in a future iteration) can fan out without
+ * coupling into this service. DB is the source of truth; every
+ * notification lives here whether or not any other channel also
+ * fires.
  *
- * The `channels` argument is accepted but ignored in 6.C — 6.D
- * reads it on the `notificationCreated` interception event to
- * decide whether to also dispatch a SendEmailJob. Callers should
- * pass `["db"]` for routine notifications and `["db","email"]`
- * for critical ones (failed jobs, security alerts); the email
- * channel will ignore anything without it.
+ * The `channels` argument drives per-channel fan-out — 6.D's
+ * NotificationEmailChannelInterceptor reads `channels` off the
+ * announced data and dispatches a SendEmailJob only when `"email"`
+ * is in the list. Callers pass `["db"]` for routine notifications
+ * and `["db","email"]` for critical ones (failed jobs, security
+ * alerts). Channels outside `["db","email"]` are silently ignored
+ * by 6.D but reserved for future subscribers (push, Slack, etc.).
  *
  * All writes flush only the specific user's notification cache
  * (unread count, recent list). No pageCache invalidation — public
@@ -104,7 +105,7 @@ class accessors="true" singleton {
         // react. Callers pass the channels[] they want; the interceptor
         // decides whether it's relevant.
         variables.interceptorService.announce(
-            state = "bxBlogger.notificationCreated",
+            state = "notificationCreated",
             data  = {
                 "notificationId" : id,
                 "userId"         : arguments.userId ?: "",

@@ -1,0 +1,100 @@
+/**
+ * bx-Blogger — NotificationEmailChannelInterceptor (Phase 6.D)
+ *
+ * The "email" fan-out channel for the notification pipeline.
+ * Subscribes to `notificationCreated` — announced by
+ * NotificationService.notify() on every write — and, when the
+ * caller requested `"email"` in its `channels[]` arg, dispatches
+ * a SendEmailJob to the address stored in the `notifications
+ * .email_to` setting.
+ *
+ * Contract:
+ *   - `channels` must contain `"email"` for this interceptor to
+ *     fire. The bare `["db"]` default means nothing lands in an
+ *     inbox — admins opt notifications in one by one.
+ *   - `notifications.email_to` must be set (seeded from the
+ *     BX_NOTIFICATION_EMAIL env var, or edited via the future
+ *     settings UI). Missing → log + return, so a half-configured
+ *     install doesn't throw on every notification.
+ *   - Render is async (SendEmailJob → cbq). Exceptions here log
+ *     but must not propagate — a failing email channel can't
+ *     roll back the DB notification that triggered it.
+ *
+ * The interceptor only fires the email; the DB row was already
+ * written by NotificationService before the announce. That's the
+ * design — DB is the source of truth, email is a fan-out sink.
+ *
+ * Per the RateLimitInterceptor gotcha (see CLAUDE.md):
+ * interceptors are instantiated before the full WireBox model
+ * scan finishes, so `property inject=` on an interceptor throws
+ * "Instance not found" at app boot. Services are resolved
+ * lazily via `getInstance()` inside the hook.
+ */
+class extends="coldbox.system.Interceptor" {
+
+    function configure() {}
+
+    /**
+     * `notificationCreated` payload (announced by NotificationService):
+     *   {
+     *     notificationId, userId, type, title, body, link,
+     *     severity, channels
+     *   }
+     */
+    function notificationCreated( event, data, buffer, rc, prc ) {
+        try {
+            if ( !isArray( arguments.data.channels ?: "" ) ) return;
+            if ( !arguments.data.channels.findNoCase( "email" ) )   return;
+
+            var settings = getInstance( "SettingService" );
+            var emailTo  = settings.get( "notifications.email_to", "" );
+            if ( !len( emailTo ) ) {
+                writeLog(
+                    file = "bxblogger",
+                    type = "warning",
+                    text = "NotificationEmailChannelInterceptor: 'email' channel requested " &
+                        "but notifications.email_to setting is not configured. " &
+                        "Set BX_NOTIFICATION_EMAIL or edit it via the settings UI."
+                );
+                return;
+            }
+
+            var emailService = getInstance( "EmailService" );
+            emailService.sendAsync(
+                to       = emailTo,
+                subject  = subjectFor( arguments.data ),
+                template = "notification",
+                data     = {
+                    "title"    : arguments.data.title    ?: "",
+                    "body"     : arguments.data.body     ?: "",
+                    "link"     : arguments.data.link     ?: "",
+                    "severity" : arguments.data.severity ?: "info",
+                    "type"     : arguments.data.type     ?: "",
+                    "siteName" : variables.controller.getSetting( "AppName" )
+                }
+            );
+        }
+        catch ( any e ) {
+            writeLog(
+                file = "bxblogger",
+                type = "error",
+                text = "NotificationEmailChannelInterceptor: " & e.message & " / " & e.detail
+            );
+        }
+    }
+
+    /**
+     * Prefix the email subject with the severity in square brackets
+     * for ["warning"]/"["error"]" — lets an operator's inbox filter
+     * rules catch alerts without opening every message. `info` gets
+     * no prefix to keep routine notifications quiet.
+     */
+    private string function subjectFor( required struct notification ) {
+        var sev = lCase( arguments.notification.severity ?: "info" );
+        var title = arguments.notification.title ?: "Notification";
+        if ( sev == "warning" ) return "[Warning] " & title;
+        if ( sev == "error"   ) return "[Alert] "   & title;
+        return title;
+    }
+
+}

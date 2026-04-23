@@ -1,0 +1,40 @@
+<bx:output>
+<bx:script>
+    severity = lCase( data.severity ?: "info" );
+    accent   = "##2c5aa0";                // info — blue
+    if ( severity == "warning" ) accent = "##b0671a";
+    if ( severity == "error"   ) accent = "##b02a37";
+
+    badgeLabel = "Notification";
+    if ( severity == "warning" ) badgeLabel = "Warning";
+    if ( severity == "error"   ) badgeLabel = "Alert";
+</bx:script>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>#encodeForHTML( data.title ?: "Notification" )#</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 560px; margin: 2rem auto; padding: 0 1rem; color: ##222; line-height: 1.5;">
+
+	<div style="border-left: 4px solid #accent#; padding: 0.1rem 0 0.1rem 1rem; margin-bottom: 1.25rem;">
+		<span style="display: inline-block; background: #accent#; color: ##fff; padding: 0.15rem 0.6rem; border-radius: 3px; font-size: 0.75rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;">#badgeLabel#</span>
+		<h1 style="font-size: 1.3rem; margin: 0.5rem 0 0 0;">#encodeForHTML( data.title ?: "Notification" )#</h1>
+	</div>
+
+	<bx:if len( data.body ?: "" )>
+		<p style="white-space: pre-wrap;">#encodeForHTML( data.body )#</p>
+	</bx:if>
+
+	<bx:if len( data.link ?: "" )>
+		<p style="margin: 1.5rem 0;">
+			<a href="#encodeForHTMLAttribute( data.link )#" style="display: inline-block; background: #accent#; color: ##fff; padding: 0.65rem 1.3rem; border-radius: 4px; text-decoration: none; font-weight: 600;">Open in admin</a>
+		</p>
+	</bx:if>
+
+	<p style="color: ##999; font-size: 0.8em; margin-top: 2rem; border-top: 1px solid ##eee; padding-top: 1rem;">
+		You're receiving this because your <strong>#encodeForHTML( data.siteName ?: "bx-Blogger" )#</strong> install is configured to send #severity# notifications to this address. The full list is visible in the admin notification bell.
+	</p>
+</body>
+</html>
+</bx:output>
