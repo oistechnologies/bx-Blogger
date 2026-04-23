@@ -1,0 +1,21 @@
+<bx:output>
+<div class="modal fade" id="postFeaturedLightbox" tabindex="-1"
+     aria-labelledby="postFeaturedLightboxTitle" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="h6 modal-title mb-0 me-auto text-truncate fw-semibold"
+                    id="postFeaturedLightboxTitle">#encodeForHTML( prc.post.getTitle() ?: "Featured image" )#</h2>
+                <button type="button" class="btn-close"
+                        data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body text-center p-0" style="background: ##1a1a1a;">
+                <img src="#encodeForHTMLAttribute( prc.featuredImageUrl ?: '' )#"
+                     alt="#encodeForHTMLAttribute( prc.featuredImageAlt ?: '' )#"
+                     class="img-fluid"
+                     style="max-height: 85vh;">
+            </div>
+        </div>
+    </div>
+</div>
+</bx:output>

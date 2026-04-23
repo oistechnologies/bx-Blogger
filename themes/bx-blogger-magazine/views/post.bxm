@@ -1,29 +1,51 @@
 <bx:output>
 <bx:if structKeyExists( prc, "post" ) && !isNull( prc.post )>
-    <header class="mb-4 text-center">
-        <p class="text-uppercase small text-muted mb-2 letter-spaced">Article</p>
-        <h1 class="display-5 mb-3 fw-semibold">#encodeForHTML( prc.post.getTitle() )#</h1>
-        <p class="text-muted small mb-0">
-            <bx:if len( prc.authorName ?: "" )>
-                By <strong class="text-body">#encodeForHTML( prc.authorName )#</strong>
-            </bx:if>
-            <bx:if !isNull( prc.post.getPublishedAt() )>
-                <bx:if len( prc.authorName ?: "" )>&middot;</bx:if>
-                <time datetime="#dateTimeFormat( prc.post.getPublishedAt(), 'yyyy-mm-dd' )#">
-                    #dateFormat( prc.post.getPublishedAt(), "mmm d, yyyy" )#
-                </time>
-            </bx:if>
-            <bx:if ( prc.post.getReadingTimeMinutes() ?: 0 ) gt 0>
-                &middot; #prc.post.getReadingTimeMinutes()# min read
-            </bx:if>
-        </p>
-    </header>
+    <bx:set featured   = resolveFeaturedImage( prc.post )>
+    <bx:set hasFeatured = len( featured.url ) gt 0>
+    <bx:set prc.featuredImageUrl = featured.url>
+    <bx:set prc.featuredImageAlt = featured.alt ?: prc.post.getTitle()>
 
-    <bx:if len( prc.post.getExcerpt() ?: "" )>
-        <p class="lead fst-italic text-secondary-emphasis text-center mb-4">
-            #encodeForHTML( prc.post.getExcerpt() )#
-        </p>
-    </bx:if>
+    <header class="mb-5">
+        <div class="row g-4 align-items-start">
+            <bx:if hasFeatured>
+                <div class="col-md-5">
+                    <button type="button"
+                            class="border-0 bg-transparent p-0 w-100 d-block"
+                            data-bs-toggle="modal"
+                            data-bs-target="##postFeaturedLightbox"
+                            aria-label="View featured image at full size">
+                        <img src="#encodeForHTMLAttribute( featured.url )#"
+                             alt="#encodeForHTMLAttribute( featured.alt ?: prc.post.getTitle() )#"
+                             class="img-fluid rounded shadow-sm"
+                             style="cursor: zoom-in; width: 100%; object-fit: cover;"
+                             loading="lazy">
+                    </button>
+                </div>
+            </bx:if>
+            <div class="#( hasFeatured ? 'col-md-7' : 'col-12' )#">
+                <h1 class="h2 mb-3 fw-semibold">#encodeForHTML( prc.post.getTitle() )#</h1>
+                <p class="text-muted small mb-3 text-uppercase letter-spaced">
+                    <bx:if len( prc.authorName ?: "" )>
+                        By <strong class="text-body">#encodeForHTML( prc.authorName )#</strong>
+                    </bx:if>
+                    <bx:if !isNull( prc.post.getPublishedAt() )>
+                        <bx:if len( prc.authorName ?: "" )>&middot;</bx:if>
+                        <time datetime="#dateTimeFormat( prc.post.getPublishedAt(), 'yyyy-mm-dd' )#">
+                            #dateFormat( prc.post.getPublishedAt(), "mmm d, yyyy" )#
+                        </time>
+                    </bx:if>
+                    <bx:if ( prc.post.getReadingTimeMinutes() ?: 0 ) gt 0>
+                        &middot; #prc.post.getReadingTimeMinutes()# min
+                    </bx:if>
+                </p>
+                <bx:if len( prc.post.getExcerpt() ?: "" )>
+                    <p class="lead fst-italic text-secondary-emphasis mb-0">
+                        #encodeForHTML( prc.post.getExcerpt() )#
+                    </p>
+                </bx:if>
+            </div>
+        </div>
+    </header>
 
     <div class="post-body">
         #( prc.post.getBodyHtml() ?: "" )#
@@ -31,6 +53,10 @@
 
     #view( view = "bx-blogger-magazine/partials/post-taxonomy" )#
     #view( view = "bx-blogger-magazine/partials/related-posts" )#
+
+    <bx:if hasFeatured>
+        #view( view = "bx-blogger-magazine/partials/featured-lightbox" )#
+    </bx:if>
 <bx:else>
     <p class="text-secondary">Post unavailable.</p>
 </bx:if>
