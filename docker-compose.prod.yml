@@ -12,7 +12,18 @@
 # network that NPM is also attached to, and NPM's dashboard points a proxy
 # host at container:port `bx-blogger-app:8080`.
 #
-# See DEV-NOTES/OPS-NGINX-PROXY-MANAGER.md for the step-by-step NPM setup.
+# See docs/operators/NGINX-PROXY-MANAGER.md for the step-by-step NPM setup.
+#
+# Multi-instance on one Docker host
+# ---------------------------------
+# To run more than one bx-Blogger stack on the same host, give each stack
+# its own directory and set `COMPOSE_PROJECT_NAME` in that stack's `.env`
+# (e.g., COMPOSE_PROJECT_NAME=blog-site1). Every container_name + volume
+# name below templates on that variable, so sites don't clash. Each stack
+# attaches to the same external proxy network; NPM points a separate
+# proxy host at each stack's app container by its unique name.
+#
+# See docs/operators/MULTI-INSTANCE.md for the full pattern.
 #
 # For deployments that want a self-contained nginx in the stack (e.g.,
 # bare-metal VPS with no pre-existing proxy), see the historical
@@ -23,13 +34,13 @@
 services:
   app:
     image: ghcr.io/mrigsby/bx-blogger:${RELEASE_TAG:-latest}
-    container_name: bx-blogger-app
+    container_name: ${COMPOSE_PROJECT_NAME:-bx-blogger}-app
     env_file: .env
     environment:
       ENVIRONMENT: production
     # No `ports:` block — the app is not published to the host. NPM reaches
     # it via the shared `proxy` network below using container DNS:
-    #     scheme=http, host=bx-blogger-app, port=8080
+    #     scheme=http, host=${COMPOSE_PROJECT_NAME:-bx-blogger}-app, port=8080
     depends_on:
       mysql:
         condition: service_healthy
@@ -40,7 +51,7 @@ services:
 
   worker:
     image: ghcr.io/mrigsby/bx-blogger:${RELEASE_TAG:-latest}
-    container_name: bx-blogger-worker
+    container_name: ${COMPOSE_PROJECT_NAME:-bx-blogger}-worker
     env_file: .env
     environment:
       ENVIRONMENT: production
@@ -58,7 +69,7 @@ services:
     # Containerized by default. Delete this block and set DB_HOST in prod .env
     # to use external managed MySQL.
     image: mysql:8.4
-    container_name: bx-blogger-mysql
+    container_name: ${COMPOSE_PROJECT_NAME:-bx-blogger}-mysql
     environment:
       MYSQL_DATABASE: ${DB_DATABASE}
       MYSQL_USER: ${DB_USERNAME}
@@ -78,9 +89,9 @@ services:
 
 volumes:
   mysql-data:
-    name: bx-blogger-mysql-prod
+    name: ${COMPOSE_PROJECT_NAME:-bx-blogger}-mysql-prod
   backup-data:
-    name: bx-blogger-backups-prod
+    name: ${COMPOSE_PROJECT_NAME:-bx-blogger}-backups-prod
 
 networks:
   bx-blogger:
