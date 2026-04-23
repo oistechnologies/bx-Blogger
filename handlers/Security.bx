@@ -78,6 +78,20 @@ class extends="coldbox.system.EventHandler" {
         // All good — establish the cbauth session
         cbauth.login( user );
         userService.recordSuccessfulLogin( user = user, ip = ip, userAgent = userAgent );
+        // Phase 8.C.1 — mirror into the unified audit log so the
+        // admin viewer surfaces logins alongside post / redirect
+        // activity. `login_audit` stays as the specific surface
+        // for the login-failure-reason tracking + Phase-1 security
+        // views; `audit_log` is for cross-entity "who did what"
+        // reports.
+        getInstance( "AuditLogService" ).record(
+            action    = "user.login",
+            userId    = user.getId(),
+            entityType = "user",
+            entityId  = user.getId(),
+            ip        = ip,
+            userAgent = userAgent
+        );
 
         // Safe redirect: only allow same-origin relative paths for returnTo
         var dest = ( left( rc.returnTo, 1 ) == "/" && find( "//", rc.returnTo ) == 0 )

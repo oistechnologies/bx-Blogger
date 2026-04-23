@@ -27,7 +27,7 @@ function publishPost( required id ) {
     }
     var post = getInstance( "Post" ).find( arguments.id );
     if ( isNull( post ) ) return;
-    postService.publish( post );
+    postService.publish( post = post, actorId = user.getId() );
     data.flashOk = "Published '" & post.getTitle() & "'.";
 }
 

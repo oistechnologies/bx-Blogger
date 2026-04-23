@@ -1,0 +1,264 @@
+/**
+ * bx-Blogger — AuditLogServiceSpec (Phase 8.C.1)
+ *
+ * Covers the generic audit log service:
+ *
+ *   - record() writes a row with user + entity + metadata +
+ *     ip/user-agent; absent values come back as NULL
+ *   - list() filters by userId / action (exact + namespace) /
+ *     entityType / entityId / date range
+ *   - list() pagination metadata is correct
+ *   - distinctActions() returns sorted set of action slugs in
+ *     the log
+ *   - exportCsv() emits a header row + one row per match,
+ *     correctly quotes values that contain commas / quotes
+ *   - redactForUser() blanks ip / user_agent for the user's
+ *     rows without deleting them
+ *
+ * Also exercises the Phase-8.C.1 wire-in points indirectly:
+ *   - PostService.publish writes a `post.publish` audit row
+ *   - (login integration is covered live by the
+ *     `user.login` row that each spec session produces via
+ *     its admin auth; not asserted here to keep the spec
+ *     independent of test-harness auth state)
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc     = getInstance( "AuditLogService" );
+        variables.postSvc = getInstance( "PostService" );
+        variables.auditBoundary = maxId( "audit_log" );
+    }
+
+    function afterAll() {
+        try {
+            getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "audit_log" )
+                .where( "id", ">", variables.auditBoundary ?: 0 )
+                .delete();
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "AuditLogServiceSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "AuditLogService", function() {
+
+            describe( "record()", function() {
+                it( "writes a row with all fields populated", function() {
+                    var actor = createTestUser();
+                    svc.record(
+                        action     = "spec.test",
+                        userId     = actor.getId(),
+                        entityType = "spec",
+                        entityId   = 42,
+                        metadata   = { "note" : "hello", "count" : 7 },
+                        ip         = "10.0.0.1",
+                        userAgent  = "SpecUA/1.0"
+                    );
+                    var rows = latestRows();
+                    expect( arrayLen( rows ) ).toBeGTE( 1 );
+                    var row = rows[ 1 ];
+                    expect( row.action ).toBe( "spec.test" );
+                    expect( val( row.user_id ) ).toBe( actor.getId() );
+                    expect( row.entity_type ).toBe( "spec" );
+                    expect( val( row.entity_id ) ).toBe( 42 );
+                    expect( row.ip_address ).toBe( "10.0.0.1" );
+                    expect( row.user_agent ).toBe( "SpecUA/1.0" );
+                    var meta = jsonDeserialize( row.metadata ?: "{}" );
+                    expect( meta.note  ).toBe( "hello" );
+                    expect( meta.count ).toBe( 7 );
+                } );
+
+                it( "leaves optional fields NULL when absent", function() {
+                    svc.record( action = "spec.empty" );
+                    var rows = rowsByAction( "spec.empty" );
+                    expect( arrayLen( rows ) ).toBe( 1 );
+                    var row = rows[ 1 ];
+                    expect( isNull( row.user_id    ) || !len( row.user_id    ?: "" ) ).toBeTrue();
+                    expect( isNull( row.entity_id  ) || !len( row.entity_id  ?: "" ) ).toBeTrue();
+                    expect( isNull( row.entity_type) || !len( row.entity_type?: "" ) ).toBeTrue();
+                } );
+            } );
+
+            describe( "list() filters", function() {
+                beforeEach( function() {
+                    // One-off fixtures per describe block; boundary cleanup handles removal.
+                    variables.actorA = createTestUser();
+                    variables.actorB = createTestUser();
+                    svc.record( action = "post.publish",  userId = variables.actorA.getId(), entityType = "post",     entityId = 100 );
+                    svc.record( action = "post.trash",    userId = variables.actorA.getId(), entityType = "post",     entityId = 100 );
+                    svc.record( action = "redirect.delete", userId = variables.actorB.getId(), entityType = "redirect", entityId = 7 );
+                    svc.record( action = "user.login",    userId = variables.actorB.getId(), entityType = "user",     entityId = variables.actorB.getId() );
+                } );
+
+                it( "filters by userId", function() {
+                    var out = svc.list( filters = { "userId" : variables.actorA.getId() } );
+                    for ( var r in out.rows ) {
+                        expect( val( r.user_id ) ).toBe( variables.actorA.getId() );
+                    }
+                    // The spec created 2 rows for actorA in beforeEach.
+                    expect( out.total ).toBeGTE( 2 );
+                } );
+
+                it( "filters by exact action", function() {
+                    var out = svc.list( filters = { "action" : "post.publish" } );
+                    for ( var r in out.rows ) expect( r.action ).toBe( "post.publish" );
+                } );
+
+                it( "filters by action namespace (trailing dot)", function() {
+                    var out = svc.list( filters = { "action" : "post." } );
+                    for ( var r in out.rows ) expect( left( r.action, 5 ) ).toBe( "post." );
+                    // Must include both post.publish and post.trash.
+                    var actions = [];
+                    for ( var r in out.rows ) actions.append( r.action );
+                    expect( actions ).toInclude( "post.publish" );
+                    expect( actions ).toInclude( "post.trash" );
+                } );
+
+                it( "filters by entityType + entityId together (object history)", function() {
+                    var out = svc.list( filters = { "entityType" : "post", "entityId" : 100 } );
+                    for ( var r in out.rows ) {
+                        expect( r.entity_type ).toBe( "post" );
+                        expect( val( r.entity_id ) ).toBe( 100 );
+                    }
+                    expect( out.total ).toBeGTE( 2 );
+                } );
+
+                it( "returns pagination metadata", function() {
+                    var out = svc.list( perPage = 2 );
+                    expect( out.perPage ).toBe( 2 );
+                    expect( arrayLen( out.rows ) ).toBeLTE( 2 );
+                    expect( structKeyExists( out, "total"      ) ).toBeTrue();
+                    expect( structKeyExists( out, "totalPages" ) ).toBeTrue();
+                } );
+
+                it( "joins in actor display_name + email", function() {
+                    var out = svc.list( filters = { "userId" : variables.actorA.getId() }, perPage = 1 );
+                    expect( structKeyExists( out.rows[ 1 ], "actor_display_name" ) ).toBeTrue();
+                    expect( structKeyExists( out.rows[ 1 ], "actor_email"        ) ).toBeTrue();
+                } );
+            } );
+
+            describe( "distinctActions()", function() {
+                it( "returns every distinct action in sorted order", function() {
+                    svc.record( action = "z.action" );
+                    svc.record( action = "a.action" );
+                    var actions = svc.distinctActions();
+                    expect( actions ).toInclude( "a.action" );
+                    expect( actions ).toInclude( "z.action" );
+                    // Sorted ascending — a.* comes before z.*
+                    expect( actions.find( "a.action" ) ).toBeLT( actions.find( "z.action" ) );
+                } );
+            } );
+
+            describe( "exportCsv()", function() {
+                it( "emits a header row + one row per match", function() {
+                    var actor = createTestUser();
+                    svc.record(
+                        action     = "spec.csv",
+                        userId     = actor.getId(),
+                        metadata   = { "key" : "value" },
+                        ip         = "1.2.3.4"
+                    );
+                    var csv = svc.exportCsv( filters = { "action" : "spec.csv" } );
+                    var lines = listToArray( csv, char( 10 ), true );
+                    // Header + at least one data row.
+                    expect( arrayLen( lines ) ).toBeGTE( 2 );
+                    expect( lines[ 1 ] ).toInclude( "action" );
+                    expect( lines[ 1 ] ).toInclude( "metadata" );
+                    expect( csv ).toInclude( "spec.csv" );
+                    expect( csv ).toInclude( "1.2.3.4" );
+                } );
+
+                it( "quotes values that contain a comma or quote", function() {
+                    svc.record(
+                        action    = "spec.csv.quoting",
+                        userAgent = 'Mozilla/5.0 "tricky", comma ua'
+                    );
+                    var csv = svc.exportCsv( filters = { "action" : "spec.csv.quoting" } );
+                    // The user_agent cell appears quoted, with doubled inner quotes.
+                    expect( csv ).toInclude( '"Mozilla/5.0 ""tricky"", comma ua"' );
+                } );
+            } );
+
+            describe( "redactForUser() — Phase-8.D prep", function() {
+                it( "blanks ip + user_agent without deleting the rows", function() {
+                    var actor = createTestUser();
+                    svc.record( action = "spec.redact", userId = actor.getId(), ip = "8.8.8.8", userAgent = "SecretUA" );
+                    svc.record( action = "spec.redact.2", userId = actor.getId(), ip = "8.8.4.4" );
+
+                    svc.redactForUser( actor.getId() );
+
+                    var rows = getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "audit_log" )
+                        .where( "user_id", actor.getId() )
+                        .get();
+                    expect( arrayLen( rows ) ).toBeGTE( 2, "rows not deleted" );
+                    for ( var r in rows ) {
+                        expect( r.ip_address ).toBe( "" );
+                        expect( r.user_agent ).toBe( "" );
+                    }
+                } );
+            } );
+
+            describe( "PostService.publish integration", function() {
+                it( "writes a post.publish audit row with actor + entity id", function() {
+                    var actor = createTestUser();
+                    var post  = postSvc.create( {
+                        "authorId"     : actor.getId(),
+                        "title"        : "Audit target",
+                        "slug"         : "aud-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                        "bodyMarkdown" : "body"
+                    } );
+                    postSvc.publish( post = post, actorId = actor.getId() );
+
+                    var rows = svc.list( filters = {
+                        "action"     : "post.publish",
+                        "entityType" : "post",
+                        "entityId"   : post.getId()
+                    } );
+                    expect( rows.total ).toBe( 1 );
+                    expect( val( rows.rows[ 1 ].user_id ) ).toBe( actor.getId() );
+                } );
+            } );
+
+        } );
+    }
+
+    // --------------------------------------------------------------------
+    // Helpers
+    // --------------------------------------------------------------------
+
+    private array function latestRows() {
+        return getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "audit_log" )
+            .where( "id", ">", variables.auditBoundary ?: 0 )
+            .orderBy( "id", "desc" )
+            .get();
+    }
+
+    private array function rowsByAction( required string action ) {
+        return getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "audit_log" )
+            .where( "action", arguments.action )
+            .get();
+    }
+
+    private numeric function maxId( required string table ) {
+        try {
+            var row = getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( arguments.table )
+                .selectRaw( "COALESCE(MAX(id), 0) AS max_id" )
+                .first();
+            return val( row.max_id ?: 0 );
+        }
+        catch ( any e ) {
+            return 0;
+        }
+    }
+
+}

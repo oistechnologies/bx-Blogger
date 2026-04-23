@@ -1,0 +1,317 @@
+/**
+ * bx-Blogger — AuditLogService (Phase 8.C.1)
+ *
+ * Records and queries the general-purpose audit log. Consumers:
+ *
+ *   - `Security.doLogin`     → records `user.login`
+ *   - `PostService.publish`  → records `post.publish`
+ *     (more wire-in points land in 8.C.2 alongside the viewer UI)
+ *   - Phase 8.C.2 viewer     → filtered reads + CSV export
+ *   - Phase 8.D GDPR purge   → redacts ip/user_agent for a
+ *     right-to-be-forgotten user's rows
+ *
+ * Design notes:
+ *
+ * Write path is best-effort + fully swallowed — an audit-log
+ * failure MUST NOT take down the action it's recording. The
+ * Phase-7.G broken-links hit-recording set the precedent
+ * (writeLog on failure, continue). Same applies here.
+ *
+ * `action` strings are dot-namespaced slugs ("post.publish",
+ * "user.deactivate", "redirect.delete"). Consumers pass them as
+ * string literals — the service doesn't enforce a fixed
+ * vocabulary so new actions can be added without a schema
+ * change. Downstream queries (admin filter dropdown) will read
+ * the distinct-set at runtime.
+ *
+ * `metadata` accepts a struct; the service serializes to JSON on
+ * write and deserializes on read. Callers should keep the struct
+ * small and scalar-ish — don't shove a full post entity in here.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox" inject="wirebox";
+    property name="log"     inject="logbox:logger:{this}";
+
+    // --------------------------------------------------------------------
+    // Write
+    // --------------------------------------------------------------------
+
+    /**
+     * Record an audit-log row.
+     *
+     * @action       Required dot-slug ("post.publish", "user.login").
+     * @userId       Acting user's id; null for system events.
+     * @entityType   e.g. "post", "redirect", "user". Optional.
+     * @entityId     Id of the affected row. Optional.
+     * @metadata     Struct of context (old/new values, affected
+     *               slug, etc.); serialized to JSON.
+     * @ip           Request IP. Optional; Phase-10 B15 trusted-
+     *               proxy extraction will plug the real client
+     *               IP in automatically.
+     * @userAgent    Request User-Agent. Optional.
+     */
+    function record(
+        required string  action,
+                 any     userId     = javaCast( "null", "" ),
+                 string  entityType = "",
+                 any     entityId   = javaCast( "null", "" ),
+                 struct  metadata   = {},
+                 string  ip         = "",
+                 string  userAgent  = ""
+    ) {
+        try {
+            var row = {
+                "action"     : arguments.action,
+                "created_at" : nowForDb()
+            };
+            if ( !isNull( arguments.userId ) && val( arguments.userId ) > 0 ) {
+                row[ "user_id" ] = val( arguments.userId );
+            }
+            if ( len( arguments.entityType ) ) row[ "entity_type" ] = arguments.entityType;
+            if ( !isNull( arguments.entityId ) && val( arguments.entityId ) > 0 ) {
+                row[ "entity_id" ] = val( arguments.entityId );
+            }
+            if ( isStruct( arguments.metadata ) && !structIsEmpty( arguments.metadata ) ) {
+                row[ "metadata" ] = jsonSerialize( arguments.metadata );
+            }
+            if ( len( arguments.ip )        ) row[ "ip_address" ] = left( arguments.ip,        45  );
+            if ( len( arguments.userAgent ) ) row[ "user_agent" ] = left( arguments.userAgent, 512 );
+
+            freshQb().from( "audit_log" ).insert( row );
+        }
+        catch ( any e ) {
+            // Audit-log writes are best-effort. Log the failure
+            // itself but don't throw; callers are doing real work
+            // and a metrics-style side effect mustn't derail it.
+            log.warn( "AuditLogService.record failed action=" & arguments.action & ": " & e.message );
+        }
+    }
+
+    /**
+     * Phase 8.D prep — redact identifiable fields for a given
+     * user's audit rows without deleting the rows (compliance
+     * still wants "admin X did Y on this content", just not "…
+     * from this IP"). The actual GDPR purge wires this into
+     * `UserService.purge()` in Phase 8.D.
+     */
+    function redactForUser( required numeric userId ) {
+        freshQb().from( "audit_log" )
+            .where( "user_id", arguments.userId )
+            .update( {
+                "ip_address" : "",
+                "user_agent" : ""
+            } );
+    }
+
+    // --------------------------------------------------------------------
+    // Read
+    // --------------------------------------------------------------------
+
+    /**
+     * Paginated read. Filters are all optional:
+     *
+     *   userId       — exact match
+     *   action       — exact slug (e.g. "post.publish") OR an
+     *                  action prefix ending with `.` to match a
+     *                  namespace (e.g. "post." → post.*)
+     *   entityType   — exact ("post", "redirect")
+     *   entityId     — exact
+     *   dateFrom     — inclusive ISO-8601 date or datetime
+     *   dateTo       — inclusive; date-only values get the end-
+     *                  of-day treatment for forgiving UX
+     *   page         — 1-indexed; defaults to 1
+     *   perPage      — default 50
+     *
+     * Returns { rows, total, page, perPage, totalPages }. Rows
+     * are structs, joined with `users.display_name` for
+     * rendering.
+     */
+    struct function list( struct filters = {}, numeric page = 1, numeric perPage = 50 ) {
+        var base = baseQuery( arguments.filters );
+        // Count first — reusing the same closure keeps the WHEREs
+        // in sync between the count and the main fetch.
+        var totalCount = baseQuery( arguments.filters ).count();
+
+        var offset = ( arguments.page - 1 ) * arguments.perPage;
+        if ( offset < 0 ) offset = 0;
+
+        var rows = base
+            .select( [
+                "audit_log.id AS id",
+                "audit_log.user_id AS user_id",
+                "audit_log.action AS action",
+                "audit_log.entity_type AS entity_type",
+                "audit_log.entity_id AS entity_id",
+                "audit_log.metadata AS metadata",
+                "audit_log.ip_address AS ip_address",
+                "audit_log.user_agent AS user_agent",
+                "audit_log.created_at AS created_at",
+                "users.display_name AS actor_display_name",
+                "users.email AS actor_email"
+            ] )
+            .orderBy( "audit_log.created_at", "desc" )
+            .orderBy( "audit_log.id", "desc" )
+            .limit( arguments.perPage )
+            .offset( offset )
+            .get();
+
+        return {
+            "rows"       : rows,
+            "total"      : totalCount,
+            "page"       : arguments.page,
+            "perPage"    : arguments.perPage,
+            "totalPages" : ceiling( totalCount / arguments.perPage )
+        };
+    }
+
+    /**
+     * Distinct action slugs currently in the log. Used by the
+     * 8.C.2 filter dropdown. Cheap — the index on `action`
+     * backs it.
+     */
+    array function distinctActions() {
+        var rows = freshQb().from( "audit_log" )
+            .select( "action" )
+            .distinct()
+            .orderBy( "action", "asc" )
+            .get();
+        var out = [];
+        for ( var r in rows ) out.append( r.action );
+        return out;
+    }
+
+    /**
+     * Render a filtered slice of the log as CSV. Returns the
+     * full string; a Phase-10 streamed-body variant can land if
+     * a big-site export OOMs the render. Headers:
+     *
+     *   id, created_at, action, entity_type, entity_id,
+     *   actor_id, actor_display_name, actor_email,
+     *   ip_address, user_agent, metadata
+     *
+     * `metadata` is emitted as JSON-inside-CSV-quoted-string —
+     * the dump/re-load cycle stays lossless.
+     */
+    string function exportCsv( struct filters = {} ) {
+        // No pagination — export is the whole filtered set. For
+        // very large installs (>100k rows) we'd add a date-range
+        // requirement in the handler. For MVP, trust the admin
+        // to filter before hitting Export.
+        var rows = baseQuery( arguments.filters )
+            .select( [
+                "audit_log.id AS id",
+                "audit_log.user_id AS user_id",
+                "audit_log.action AS action",
+                "audit_log.entity_type AS entity_type",
+                "audit_log.entity_id AS entity_id",
+                "audit_log.metadata AS metadata",
+                "audit_log.ip_address AS ip_address",
+                "audit_log.user_agent AS user_agent",
+                "audit_log.created_at AS created_at",
+                "users.display_name AS actor_display_name",
+                "users.email AS actor_email"
+            ] )
+            .orderBy( "audit_log.created_at", "desc" )
+            .orderBy( "audit_log.id", "desc" )
+            .get();
+
+        var headers = [
+            "id", "created_at", "action", "entity_type", "entity_id",
+            "actor_id", "actor_display_name", "actor_email",
+            "ip_address", "user_agent", "metadata"
+        ];
+        var buf = createObject( "java", "java.lang.StringBuilder" ).init();
+        buf.append( headers.toList( "," ) ).append( char( 13 ) & char( 10 ) );
+        for ( var r in rows ) {
+            var cells = [
+                val( r.id ),
+                csvEscape( dateTimeFormat( r.created_at, "yyyy-mm-dd HH:nn:ss" ) ),
+                csvEscape( r.action ),
+                csvEscape( r.entity_type ?: "" ),
+                ( !isNull( r.entity_id ) ? val( r.entity_id ) : "" ),
+                ( !isNull( r.user_id )   ? val( r.user_id )   : "" ),
+                csvEscape( r.actor_display_name ?: "" ),
+                csvEscape( r.actor_email ?: "" ),
+                csvEscape( r.ip_address ?: "" ),
+                csvEscape( r.user_agent ?: "" ),
+                csvEscape( r.metadata   ?: "" )
+            ];
+            buf.append( cells.toList( "," ) ).append( char( 13 ) & char( 10 ) );
+        }
+        return buf.toString();
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    /**
+     * Build the qb chain shared by `list()`, `count()`, and
+     * `exportCsv()` — WHERE clauses only. Callers attach
+     * select / orderBy / limit / offset.
+     */
+    private any function baseQuery( required struct filters ) {
+        var q = freshQb().from( "audit_log" )
+            .leftJoin( "users", "users.id", "audit_log.user_id" );
+
+        var f = arguments.filters;
+
+        if ( structKeyExists( f, "userId" ) && val( f.userId ) > 0 ) {
+            q.where( "audit_log.user_id", val( f.userId ) );
+        }
+        if ( structKeyExists( f, "action" ) && len( f.action ?: "" ) ) {
+            // Trailing `.` means a namespace match ("post." → post.*).
+            if ( right( f.action, 1 ) == "." ) {
+                q.where( "audit_log.action", "like", f.action & "%" );
+            }
+            else {
+                q.where( "audit_log.action", f.action );
+            }
+        }
+        if ( structKeyExists( f, "entityType" ) && len( f.entityType ?: "" ) ) {
+            q.where( "audit_log.entity_type", f.entityType );
+        }
+        if ( structKeyExists( f, "entityId" ) && val( f.entityId ) > 0 ) {
+            q.where( "audit_log.entity_id", val( f.entityId ) );
+        }
+        if ( structKeyExists( f, "dateFrom" ) && len( f.dateFrom ?: "" ) ) {
+            q.where( "audit_log.created_at", ">=", f.dateFrom );
+        }
+        if ( structKeyExists( f, "dateTo" ) && len( f.dateTo ?: "" ) ) {
+            // Forgive date-only inputs by pushing to end-of-day.
+            var to = f.dateTo;
+            if ( !( to contains ":" ) ) to &= " 23:59:59";
+            q.where( "audit_log.created_at", "<=", to );
+        }
+
+        return q;
+    }
+
+    /**
+     * CSV cell escape — double any embedded quotes and wrap in
+     * quotes if the value contains a comma, quote, CR, or LF.
+     * Numeric-only strings pass through unquoted for legibility.
+     */
+    private string function csvEscape( required string value ) {
+        var s = arguments.value;
+        if ( !len( s ) ) return "";
+        // Always quote if any CSV-reserved char is present.
+        var needsQuoting = s contains "," || s contains chr34() || s contains char( 13 ) || s contains char( 10 );
+        if ( !needsQuoting ) return s;
+        return chr34() & replace( s, chr34(), chr34() & chr34(), "all" ) & chr34();
+    }
+
+    private string function chr34() {
+        return char( 34 );
+    }
+
+    private any function freshQb() {
+        return variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery();
+    }
+
+    private string function nowForDb() {
+        return dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+    }
+
+}

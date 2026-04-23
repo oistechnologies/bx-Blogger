@@ -208,7 +208,7 @@ function publish() {
         // includes/helpers/ApplicationHelper.bxm.
         data.flashOk = "Scheduled for " & dateTimeFormat( data.scheduledAt, "mmm. d, yyyy h:nn tt" ) & ".";
     } else {
-        postService.publish( post );
+        postService.publish( post = post, actorId = cbauth.getUser().getId() );
         data.flashOk = "Published.";
     }
     loadFromDb( data.postId );

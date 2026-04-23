@@ -39,6 +39,7 @@ class accessors="true" singleton {
     property name="pageCacheService"   inject="PageCacheService";
     property name="redirectService"    inject="RedirectService";
     property name="oembedService"      inject="OembedService";
+    property name="auditLogService"    inject="AuditLogService";
     property name="log"                inject="logbox:logger:{this}";
 
     variables.autosaveKeep = 20;   // B5: prune autosave revisions beyond this per post
@@ -191,7 +192,7 @@ class accessors="true" singleton {
      * preserves the original publish timestamp — `scheduled_at` stays
      * informational). Caller owns the permission check.
      */
-    function publish( required any post ) {
+    function publish( required any post, any actorId = javaCast( "null", "" ) ) {
         variables.interceptorService.announce(
             state = "prePostPublish",
             data  = { "post" : arguments.post }
@@ -202,6 +203,21 @@ class accessors="true" singleton {
             arguments.post.setPublishedAt( now() );
         }
         arguments.post.save();
+
+        // Phase 8.C.1 — record the publish in the unified audit log.
+        // `actorId` is optional so legacy callers (the sample-post
+        // seed, scheduled-publish cron) stay working; when absent,
+        // user_id lands as NULL which the viewer renders as "system".
+        variables.auditLogService.record(
+            action     = "post.publish",
+            userId     = arguments.actorId,
+            entityType = "post",
+            entityId   = arguments.post.getId(),
+            metadata   = {
+                "title" : arguments.post.getTitle() ?: "",
+                "slug"  : arguments.post.getSlug() ?: ""
+            }
+        );
         // 5.A — freshly-published posts should appear on the public
         // site immediately; flush the rendered-HTML cache.
         variables.pageCacheService.invalidateAll();
