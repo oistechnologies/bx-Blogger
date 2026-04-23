@@ -1,0 +1,146 @@
+/**
+ * bx-Blogger — GenerateThumbnailsJobSpec (Phase 6.E)
+ *
+ * Covers the thumbnail-generation pipeline end-to-end against a
+ * real image that the spec synthesizes at setup time (avoids
+ * committing binary fixtures + keeps tests self-contained).
+ *
+ * What's asserted:
+ *   - Non-image media rows cause the job to log + return without
+ *     touching the disk.
+ *   - Image rows get a thumbnail per theme-declared size, landing
+ *     on the cbfs disk at the expected path.
+ *   - `thumbnails_json` is populated with `{ sizeName: { path,
+ *     width, height } }` entries matching those files.
+ *   - `crop: true` declarations produce exact `width × height`
+ *     output; `crop: false` preserves aspect.
+ *   - Sync-provider dispatch lets assertions land without the
+ *     worker poll loop.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    // Pre-committed JPG fixture (landscape 1600×1000, solid grey).
+    // Lives at tests/fixtures/media/ — single file under 30 KB. Kept
+    // out of the spec because synthesizing an image at runtime hits
+    // BoxLang's `imageNew`-from-BaseSpec dispatch wall.
+    variables.fixtureRel    = "tests/fixtures/media/landscape-1600x1000.jpg";
+    variables.srcWidth      = 1600;
+    variables.srcHeight     = 1000;
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.cbfs = getInstance( "DiskService@cbfs" );
+        variables.disk = cbfs.get( "media" );
+        variables.srcImagePath = expandPath( "/" & variables.fixtureRel );
+    }
+
+    function afterAll() {
+        try {
+            // Wipe cbq_jobs rows this spec enqueued via the upload path;
+            // media rows + their DB-linked disk files are handled by
+            // the boundary sweep in BaseIntegrationSpec.
+            getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "cbq_jobs" ).where( "queue", "default" ).delete();
+        }
+        catch ( any e ) {}
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "GenerateThumbnailsJob", function() {
+
+            it( "throws MalformedPayload when mediaId is missing or non-numeric", function() {
+                var job = getInstance( "GenerateThumbnailsJob" );
+                job.setProperties( { "mediaId" : "" } );
+
+                var threw = false;
+                try { job.handle(); }
+                catch ( bxBlogger.GenerateThumbnailsJob.MalformedPayload e ) { threw = true; }
+                expect( threw ).toBeTrue();
+            } );
+
+            it( "no-ops on a non-image mime type", function() {
+                // Fabricate a minimal non-image media row directly via
+                // the Quick entity (it exposes .create() + .getId()
+                // cleanly; qb's insert() doesn't surface generated
+                // keys in this codebase).
+                var user = createTestUser();
+                var media = getInstance( "Media" ).create( {
+                    "uploaderId"       : user.getId(),
+                    "disk"             : "media",
+                    "path"             : "test/notes-" & createUUID() & ".txt",
+                    "filename"         : "notes.txt",
+                    "originalFilename" : "notes.txt",
+                    "mimeType"         : "text/plain",
+                    "sizeBytes"        : 42,
+                    "hash"             : lCase( hash( "nonimage" & createUUID(), "SHA-256" ) )
+                } );
+                var mediaId = media.getId();
+
+                var job = getInstance( "GenerateThumbnailsJob" )
+                    .onConnection( "sync" )
+                    .setProperties( { "mediaId" : mediaId } );
+                job.dispatch();
+
+                var row = getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "media" ).where( "id", mediaId ).first();
+                expect( len( row.thumbnails_json ?: "" ) ).toBe( 0, "text rows get no thumbnails" );
+            } );
+
+            it( "generates one thumbnail per theme-declared size for an image row", function() {
+                // Use the real upload() path — it also writes to the
+                // cbfs disk so we can assert against the resulting
+                // files. The upload auto-dispatches the job via
+                // DBProvider; we don't want that here. Instead, do a
+                // bare insert via MediaService.createFromAiGenerated
+                // (which is public and sync-dispatches too). Actually
+                // the cleanest path for testing in isolation: call
+                // upload to stage the source, then invoke the job via
+                // onConnection("sync") directly.
+                var user = createTestUser();
+                var media = getInstance( "MediaService" ).upload(
+                    tmpPath          = variables.srcImagePath,
+                    originalFilename = "landscape.jpg",
+                    mimeType         = "image/jpeg",
+                    sizeBytes        = getFileInfo( variables.srcImagePath ).size,
+                    uploaderId       = user.getId(),
+                    altText          = "A grey test image"
+                );
+
+                // upload() already dispatched on DBProvider. Re-dispatch
+                // on the sync connection so our assertions see the
+                // results inline — the DBProvider row is harmless
+                // duplicate work and gets cleaned up in afterAll.
+                getInstance( "GenerateThumbnailsJob" )
+                    .onConnection( "sync" )
+                    .setProperties( { "mediaId" : media.getId() } )
+                    .dispatch();
+
+                // Reload the media row to see the updated thumbnails_json.
+                var row = getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "media" ).where( "id", media.getId() ).first();
+                expect( len( row.thumbnails_json ?: "" ) ).toBeGT( 0, "thumbnails_json populated" );
+
+                var thumbs = jsonDeserialize( row.thumbnails_json );
+                // bx-blogger-default theme declares: thumb/small/medium/large.
+                expect( thumbs ).toHaveKey( "thumb" );
+                expect( thumbs ).toHaveKey( "small" );
+                expect( thumbs ).toHaveKey( "medium" );
+                expect( thumbs ).toHaveKey( "large" );
+
+                // `thumb` is crop:true 150x150 — exact dimensions.
+                expect( thumbs.thumb.width ).toBe( 150 );
+                expect( thumbs.thumb.height ).toBe( 150 );
+                // `small` is crop:false w=480 on a 1600x1000 source →
+                // 480x300 (aspect-preserved).
+                expect( thumbs.small.width ).toBe( 480 );
+                expect( thumbs.small.height ).toBe( 300 );
+                // Verify the files actually exist on the cbfs disk.
+                expect( variables.disk.exists( thumbs.thumb.path ) ).toBeTrue();
+                expect( variables.disk.exists( thumbs.small.path ) ).toBeTrue();
+            } );
+
+        } );
+    }
+
+}

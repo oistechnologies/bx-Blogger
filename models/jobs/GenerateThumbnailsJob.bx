@@ -1,0 +1,328 @@
+/**
+ * bx-Blogger — GenerateThumbnailsJob (Phase 6.E / B9)
+ *
+ * For an uploaded image, emit one resized variant for every size
+ * declared in the active theme's `theme.json` `thumbnails[]` block.
+ * Results land on the same cbfs disk as the original and the
+ * media row's `thumbnails_json` column is updated with a map of
+ * `{ sizeName: { path, width, height } }` so `MediaService
+ * .responsiveImage()` can assemble srcset without re-computing.
+ *
+ * Scope note: 6.E handles the sized-in-original-format pass only.
+ * WebP variants are a separate `WebpConvertJob` per the PLAN —
+ * bundling WebP generation here would mean juggling two writes
+ * per size + a format-capability probe every time the job runs,
+ * and the dedicated job can also backfill pre-existing media
+ * when a theme flips a new flag on.
+ *
+ * Sizing rules (from theme.json shape):
+ *   - `crop: true`  → hard crop to `width × height`. Focal point
+ *     from the media row biases the crop origin; default focal
+ *     (0.5, 0.5) is center-crop.
+ *   - `crop: false` → scale the longest edge to `width`,
+ *     preserving aspect. `height` in the manifest is ignored in
+ *     this branch — we derive it from the source aspect.
+ *
+ * Fail-quiet contract: if imageNew() or imageWrite() throws on a
+ * single size, the job logs + skips that size and continues with
+ * the rest. Total failure (source unreadable, theme unresolvable)
+ * throws — cbq retries the job per `maxAttempts`.
+ *
+ * Non-request thread note: see global CLAUDE.md. Uses `writeLog()`
+ * (not an injected LogBox logger) and resolves services lazily
+ * via `application.wireBox` inside handle() rather than
+ * property-injecting them. Has been reliable in 6.B but the
+ * defensive pattern stays.
+ */
+class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
+
+    function handle() {
+        // cbq hands us `variables.properties` as the rehydrated memento.
+        // Guard every access with structKeyExists — BoxLang's strict
+        // struct dereferencing throws before the elvis fallback on a
+        // missing key.
+        var props = variables.properties ?: {};
+
+        var mediaId = structKeyExists( props, "mediaId" ) ? props.mediaId : 0;
+        if ( !isNumeric( mediaId ) || int( mediaId ) <= 0 ) {
+            throw(
+                type    = "bxBlogger.GenerateThumbnailsJob.MalformedPayload",
+                message = "GenerateThumbnailsJob requires a positive numeric mediaId property."
+            );
+        }
+
+        var wirebox      = application.wireBox;
+        var mediaEntity  = wirebox.getInstance( "Media" ).find( mediaId );
+        if ( isNull( mediaEntity ) ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "GenerateThumbnailsJob: media row " & mediaId & " no longer exists — skipping."
+            );
+            return;
+        }
+
+        if ( left( mediaEntity.getMimeType() ?: "", 6 ) != "image/" ) {
+            writeLog(
+                file = "bxblogger",
+                type = "information",
+                text = "GenerateThumbnailsJob: media=" & mediaId & " mime=" & mediaEntity.getMimeType() & " is not an image — skipping."
+            );
+            return;
+        }
+
+        var themeService  = wirebox.getInstance( "ThemeService" );
+        var activeTheme   = themeService.resolveActive();
+        var manifest      = activeTheme.getManifest();
+        var declaredSizes = ( isStruct( manifest ) && structKeyExists( manifest, "thumbnails" ) && isArray( manifest.thumbnails ) )
+            ? manifest.thumbnails
+            : [];
+        if ( !declaredSizes.len() ) {
+            writeLog(
+                file = "bxblogger",
+                type = "information",
+                text = "GenerateThumbnailsJob: active theme declares no thumbnails — nothing to do."
+            );
+            return;
+        }
+
+        var cbfs     = wirebox.getInstance( "DiskService@cbfs" );
+        var diskName = mediaEntity.getDisk();
+        var disk     = cbfs.get( diskName );
+
+        var sourcePath  = mediaEntity.getPath();
+        var sourceBytes = disk.getAsBinary( sourcePath );
+
+        // Materialize to a temp file — BoxLang's imageNew reads from
+        // byte arrays directly on some paths but not all, and temp-
+        // file IO is cheap next to the decode.
+        var srcTmp = getTempFile( getTempDirectory(), "thumb-src-" );
+        fileWrite( srcTmp, sourceBytes );
+
+        try {
+            var focalX = mediaEntity.getFocalX() ?: 0.5;
+            var focalY = mediaEntity.getFocalY() ?: 0.5;
+
+            // Resolve the destination filename stem ONCE — each thumb
+            // lands at `{stem}-{sizeName}.{ext}`.
+            var ext  = lCase( listLast( sourcePath, "." ) );
+            var stem = reReplace( sourcePath, "\.[^.]+$", "" );
+
+            var thumbsMap = {};
+
+            // Read the source ONCE via Java ImageIO. CFML's `imageNew`
+            // BIF doesn't resolve reliably from inside a WireBox-
+            // managed job class (dispatches as a method on `this` and
+            // throws "No method [imageNew] found"). Java
+            // java.awt.image + javax.imageio is portable, predictable,
+            // and bypasses the whole BIF-dispatch quirk.
+            var ImageIO       = createObject( "java", "javax.imageio.ImageIO" );
+            var JFile         = createObject( "java", "java.io.File" );
+            var BufferedImage = createObject( "java", "java.awt.image.BufferedImage" );
+            var JImage        = createObject( "java", "java.awt.Image" );
+
+            var srcBuffered = ImageIO.read( JFile.init( srcTmp ) );
+            if ( isNull( srcBuffered ) ) {
+                throw(
+                    type    = "bxBlogger.GenerateThumbnailsJob.UnreadableImage",
+                    message = "ImageIO.read returned null — the source bytes aren't decodable as an image."
+                );
+            }
+            var srcW = srcBuffered.getWidth();
+            var srcH = srcBuffered.getHeight();
+
+            for ( var decl in declaredSizes ) {
+                // BoxLang strict struct access: `decl.height ?: 0` on a
+                // struct that doesn't have `height` throws
+                // `KeyNotFoundException` before the elvis fallback runs.
+                // Guard every optional field with `structKeyExists`.
+                if ( !isStruct( decl ) ) continue;
+                if ( !structKeyExists( decl, "name"  ) || !len( decl.name  ) ) continue;
+                if ( !structKeyExists( decl, "width" ) || !isNumeric( decl.width ) ) continue;
+
+                var sizeName = decl.name;
+                var targetW  = int( decl.width );
+                var targetH  = ( structKeyExists( decl, "height" ) && isNumeric( decl.height ) )
+                    ? int( decl.height ) : 0;
+                var cropFlag = structKeyExists( decl, "crop" ) ? decl.crop : false;
+                var doCrop   = cropFlag == true && targetW > 0 && targetH > 0;
+
+                try {
+                    var outBuffered = "";
+                    if ( doCrop ) {
+                        outBuffered = cropForThumb(
+                            src      = srcBuffered,
+                            srcW     = srcW,
+                            srcH     = srcH,
+                            targetW  = targetW,
+                            targetH  = targetH,
+                            focalX   = focalX,
+                            focalY   = focalY
+                        );
+                    }
+                    else {
+                        outBuffered = scaleWithinWidth(
+                            src     = srcBuffered,
+                            srcW    = srcW,
+                            srcH    = srcH,
+                            targetW = targetW,
+                            targetH = targetH
+                        );
+                    }
+
+                    var outPath = stem & "-" & sizeName & "." & ext;
+                    var outTmp  = getTempFile( getTempDirectory(), "thumb-out-" );
+                    ImageIO.write( outBuffered, imageIoFormat( ext ), JFile.init( outTmp ) );
+
+                    disk.create(
+                        path      = outPath,
+                        contents  = fileReadBinary( outTmp ),
+                        overwrite = true
+                    );
+
+                    fileDelete( outTmp );
+
+                    thumbsMap[ sizeName ] = {
+                        "path"   : outPath,
+                        "width"  : outBuffered.getWidth(),
+                        "height" : outBuffered.getHeight()
+                    };
+                }
+                catch ( any sizeErr ) {
+                    writeLog(
+                        file = "bxblogger",
+                        type = "warning",
+                        text = "GenerateThumbnailsJob: size '" & sizeName & "' failed for media=" & mediaId & ": " & sizeErr.message & " / " & sizeErr.detail
+                    );
+                }
+            }
+
+            // Persist the new thumbnails_json. Use qb for the update —
+            // entity.save() would rewrite every field and we only want
+            // this one column bumped.
+            wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "media" )
+                .where( "id", mediaId )
+                .update( { "thumbnails_json" : jsonSerialize( thumbsMap ) } );
+
+            writeLog(
+                file = "bxblogger",
+                type = "information",
+                text = "GenerateThumbnailsJob: media=" & mediaId & " generated " & structCount( thumbsMap ) & " thumbnails."
+            );
+
+            // Fire `thumbnailsGenerated` for future subscribers (e.g.,
+            // WebpConvertJob dispatcher). Payload carries the media id
+            // and the map so the subscriber doesn't need to re-query.
+            wirebox.getInstance( "coldbox:InterceptorService" ).announce(
+                state = "postThumbnailGenerate",
+                data  = { "mediaId" : mediaId, "thumbnails" : thumbsMap }
+            );
+        }
+        finally {
+            try { fileDelete( srcTmp ); } catch ( any e ) {}
+        }
+    }
+
+    // --------------------------------------------------------------------
+    // Private resize helpers — pulled out for readability, not reuse.
+    // --------------------------------------------------------------------
+
+    /**
+     * Hard crop to `targetW × targetH`, picking the crop window so the
+     * focal point stays in frame. Returns a fresh BufferedImage.
+     */
+    private any function cropForThumb(
+        required any     src,
+        required numeric srcW,
+        required numeric srcH,
+        required numeric targetW,
+        required numeric targetH,
+        required numeric focalX,
+        required numeric focalY
+    ) {
+        // Scale so the smaller scaled dimension still covers the target —
+        // i.e., scale by the MAX of the two ratios, then crop to the
+        // target rectangle.
+        var scale    = max( arguments.targetW / arguments.srcW, arguments.targetH / arguments.srcH );
+        var scaledW  = ceiling( arguments.srcW * scale );
+        var scaledH  = ceiling( arguments.srcH * scale );
+        var scaledImg = smoothResize( arguments.src, scaledW, scaledH );
+
+        // Crop origin: center on the focal point, clamped inside the
+        // scaled bounds so the crop window doesn't fall off an edge.
+        var cx = int( ( arguments.focalX * scaledW ) - ( arguments.targetW / 2 ) );
+        var cy = int( ( arguments.focalY * scaledH ) - ( arguments.targetH / 2 ) );
+        if ( cx < 0 ) cx = 0;
+        if ( cy < 0 ) cy = 0;
+        if ( cx + arguments.targetW > scaledW ) cx = scaledW - arguments.targetW;
+        if ( cy + arguments.targetH > scaledH ) cy = scaledH - arguments.targetH;
+
+        return scaledImg.getSubimage( cx, cy, arguments.targetW, arguments.targetH );
+    }
+
+    /**
+     * Scale the image so its width matches `targetW`, preserving
+     * aspect. If a `targetH` was also given and the aspect-derived
+     * height exceeds it, clamp instead — lets the manifest cap
+     * portrait variants without explicitly declaring crop.
+     */
+    private any function scaleWithinWidth(
+        required any     src,
+        required numeric srcW,
+        required numeric srcH,
+        required numeric targetW,
+        required numeric targetH
+    ) {
+        if ( arguments.srcW <= 0 || arguments.srcH <= 0 ) return arguments.src;
+
+        // Source already smaller than the target? Leave it alone — we
+        // don't upscale. Browsers handle undersized srcset candidates
+        // fine.
+        if ( arguments.srcW <= arguments.targetW && !( arguments.targetH > 0 && arguments.srcH > arguments.targetH ) ) {
+            return arguments.src;
+        }
+
+        var derivedH = int( arguments.srcH * ( arguments.targetW / arguments.srcW ) );
+        if ( arguments.targetH > 0 && derivedH > arguments.targetH ) {
+            var altW = int( arguments.srcW * ( arguments.targetH / arguments.srcH ) );
+            return smoothResize( arguments.src, altW, arguments.targetH );
+        }
+        return smoothResize( arguments.src, arguments.targetW, derivedH );
+    }
+
+    /**
+     * Smooth-scaled copy of `src` at (w × h). Uses Graphics2D with
+     * `VALUE_INTERPOLATION_BICUBIC` — noticeably better than the
+     * nearest-neighbor default for downscales. Always produces
+     * TYPE_INT_RGB — strips any alpha channel; our theme thumbs ship
+     * as JPG / PNG in source format, and JPG can't carry alpha
+     * anyway. A future WebpConvertJob will preserve alpha when that
+     * land.
+     */
+    private any function smoothResize( required any src, required numeric w, required numeric h ) {
+        var BufferedImage = createObject( "java", "java.awt.image.BufferedImage" );
+        var RenderingHints = createObject( "java", "java.awt.RenderingHints" );
+        var dst = BufferedImage.init( arguments.w, arguments.h, BufferedImage.TYPE_INT_RGB );
+        var g   = dst.createGraphics();
+        g.setRenderingHint( RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC );
+        g.setRenderingHint( RenderingHints.KEY_RENDERING,     RenderingHints.VALUE_RENDER_QUALITY );
+        g.setRenderingHint( RenderingHints.KEY_ANTIALIASING,  RenderingHints.VALUE_ANTIALIAS_ON );
+        g.drawImage( arguments.src, 0, 0, arguments.w, arguments.h, javaCast( "null", "" ) );
+        g.dispose();
+        return dst;
+    }
+
+    /**
+     * ImageIO expects format names like "jpg" / "png" / "gif". Our
+     * source extensions are already those; this helper exists so
+     * we can map edge cases (e.g. "jpeg" source extension) in one
+     * spot.
+     */
+    private string function imageIoFormat( required string ext ) {
+        var e = lCase( arguments.ext );
+        if ( e == "jpeg" ) return "jpg";
+        return e;
+    }
+
+}

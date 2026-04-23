@@ -150,6 +150,13 @@ class accessors="true" singleton {
 
         var media = variables.wirebox.getInstance( "Media" ).create( row );
         log.info( "MediaService.upload: stored media=" & media.getId() & " path=" & diskPath & " size=" & arguments.sizeBytes );
+
+        // 6.E — dispatch thumbnail generation for any image upload.
+        // Non-image mimes skip the job via its own handle() guard,
+        // but we only enqueue when it matters to keep `cbq_jobs`
+        // tidy.
+        if ( isImage ) dispatchThumbnailsFor( media.getId() );
+
         return media;
     }
 
@@ -227,6 +234,12 @@ class accessors="true" singleton {
 
         var media = variables.wirebox.getInstance( "Media" ).create( row );
         log.info( "MediaService.createFromAiGenerated: media=" & media.getId() & " provider=" & arguments.aiProvider & " model=" & arguments.aiModel );
+
+        // 6.E — AI-generated media always has an image mime, so
+        // always enqueue. (No isImage branch like the upload path
+        // because the provider contract guarantees image output.)
+        dispatchThumbnailsFor( media.getId() );
+
         return media;
     }
 
@@ -287,6 +300,21 @@ class accessors="true" singleton {
     // --------------------------------------------------------------------
     // Query helpers
     // --------------------------------------------------------------------
+
+    /**
+     * Enqueue a `GenerateThumbnailsJob` for `mediaId`. Called
+     * automatically after upload() + createFromAiGenerated() for
+     * image rows; exposed publicly so admin tooling can trigger a
+     * re-generate on demand (new theme activated with different
+     * thumbnail sizes, operator wants to backfill old media, etc.).
+     * Caller owns the permission check — assumes the caller is
+     * authorized to touch the media in question.
+     */
+    void function dispatchThumbnailsFor( required numeric mediaId ) {
+        variables.wirebox.getInstance( "GenerateThumbnailsJob" )
+            .setProperties( { "mediaId" : int( arguments.mediaId ) } )
+            .dispatch();
+    }
 
     /**
      * Returns the public URL for a media row. In dev the file lives

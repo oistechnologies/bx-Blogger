@@ -43,6 +43,20 @@ class {
             .onQueue( "default" )
             .timeout( 60 )
             .maxAttempts( 3 );
+
+        // SyncProvider.push short-circuits when `variables.pool` is
+        // null, and that field is only populated by `startWorker()`,
+        // which WorkerPool.startWorkers() only calls when quantity > 0.
+        // So `quantity(1)` is *required* even though sync executes
+        // inline (SyncProvider.startWorker is a no-op except for the
+        // pool assignment). Without this, `.onConnection("sync")
+        // .dispatch()` silently does nothing — specs that rely on
+        // sync behavior pass for the wrong reason.
+        newWorkerPool( "sync", "sync" )
+            .quantity( 1 )
+            .onQueue( "default" )
+            .timeout( 60 )
+            .maxAttempts( 1 );
     }
 
 }
