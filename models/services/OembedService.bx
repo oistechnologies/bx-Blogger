@@ -1,0 +1,322 @@
+/**
+ * bx-Blogger — OembedService (Phase 7.E, B19)
+ *
+ * Turns a bare URL into an embeddable HTML fragment. Supported
+ * providers and how they resolve:
+ *
+ *   - YouTube / youtu.be / Vimeo / Spotify / CodePen — oEmbed JSON
+ *     endpoint; the `html` field from the response is returned
+ *     verbatim.
+ *   - GitHub Gist — pure URL rewrite (`.../USER/ID` →
+ *     `<script src=".../USER/ID.js">`). No HTTP call; the remote
+ *     script is referenced at render time by the browser.
+ *   - Twitter / X — publish.twitter.com/oembed (best-effort; when
+ *     the endpoint changes upstream, Phase-7.E degrades cleanly
+ *     to a plain link rather than throwing).
+ *
+ * Consumed by `PostService.compileBody`'s preprocessor: bare URLs
+ * on their own line are replaced with placeholder comments before
+ * markdown + antisamy run, then restored to embed HTML on the way
+ * out. That ordering lets trusted-provider HTML bypass AntiSamy
+ * (iframes, scripts) without loosening the policy for author-
+ * authored body HTML.
+ *
+ * Cache: cachebox default cache, keyed `oembed:{md5(url)}`, 24h
+ * positive TTL and 5min negative (on HTTP failure) so the service
+ * doesn't hammer a temporarily-unreachable endpoint on every
+ * render.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox" inject="wirebox";
+    property name="cache"   inject="cachebox:default";
+    property name="log"     inject="logbox:logger:{this}";
+
+    variables.positiveTtlMinutes = 24 * 60;
+    variables.negativeTtlMinutes = 5;
+    variables.httpTimeoutSeconds = 4;
+
+    // Provider registry. Each entry:
+    //   name          — provider slug (identifies the embed origin)
+    //   hostPatterns  — lowercase substrings of URL that identify
+    //                   the provider (matched case-insensitively
+    //                   against the lowercased URL after stripping
+    //                   scheme)
+    //   type          — "oembed" (fetch JSON, return `html`) or
+    //                   "template" (no HTTP; pure URL rewrite)
+    //   endpoint      — required for `oembed`; the `?url=<url>`
+    //                   query is appended
+    //
+    // Order matters only for ambiguous matches (none exist today).
+    variables.providers = [
+        {
+            name         : "youtube",
+            hostPatterns : [ "youtube.com/watch", "youtu.be/" ],
+            type         : "oembed",
+            endpoint     : "https://www.youtube.com/oembed?format=json"
+        },
+        {
+            name         : "vimeo",
+            hostPatterns : [ "vimeo.com/" ],
+            type         : "oembed",
+            endpoint     : "https://vimeo.com/api/oembed.json"
+        },
+        {
+            name         : "spotify",
+            hostPatterns : [ "open.spotify.com/" ],
+            type         : "oembed",
+            endpoint     : "https://open.spotify.com/oembed"
+        },
+        {
+            name         : "codepen",
+            hostPatterns : [ "codepen.io/" ],
+            type         : "oembed",
+            endpoint     : "https://codepen.io/api/oembed?format=json"
+        },
+        {
+            name         : "twitter",
+            hostPatterns : [ "twitter.com/", "x.com/" ],
+            type         : "oembed",
+            endpoint     : "https://publish.twitter.com/oembed"
+        },
+        {
+            name         : "gist",
+            hostPatterns : [ "gist.github.com/" ],
+            type         : "template"
+        }
+    ];
+
+    // --------------------------------------------------------------------
+    // Public
+    // --------------------------------------------------------------------
+
+    /**
+     * Return the provider record whose hostPatterns match `url`, or
+     * an empty struct when nothing matches. Public so callers (the
+     * markdown preprocessor, specs) can ask "is this URL
+     * embeddable?" without committing to a fetch.
+     */
+    struct function providerFor( required string url ) {
+        var lc = lCase( arguments.url );
+        for ( var p in variables.providers ) {
+            for ( var pattern in p.hostPatterns ) {
+                if ( lc contains pattern ) return p;
+            }
+        }
+        return {};
+    }
+
+    /**
+     * Build the embed HTML for `url`. Returns empty string when no
+     * provider matches OR when the provider errored (bad HTTP,
+     * malformed JSON, etc.) — callers treat empty as "fall through
+     * to plain-link rendering".
+     *
+     * Cache-first: a hit returns in O(ms). Cache miss delegates to
+     * the provider type.
+     */
+    string function embed( required string url ) {
+        var target = trim( arguments.url );
+        if ( !len( target ) ) return "";
+
+        var cacheK = cacheKey( target );
+        var cached = variables.cache.get( cacheK );
+        if ( !isNull( cached ) ) return cached;
+
+        var provider = providerFor( target );
+        if ( structIsEmpty( provider ) ) {
+            // Don't cache non-matches — they're cheap to recompute
+            // and cluttering the cache with every unknown URL a
+            // post might reference isn't worth it.
+            return "";
+        }
+
+        var html = "";
+        try {
+            switch ( provider.type ) {
+                case "template":
+                    html = renderTemplate( provider, target );
+                    break;
+                case "oembed":
+                default:
+                    html = fetchOembedHtml( provider, target );
+                    break;
+            }
+        }
+        catch ( any e ) {
+            log.warn( "OembedService: " & provider.name & " fetch failed for " & target & " — " & e.message );
+            html = "";
+        }
+
+        // Cache both positive and negative results; negative for a
+        // shorter window so a temporarily-broken provider recovers
+        // quickly.
+        var ttl = len( html ) ? variables.positiveTtlMinutes : variables.negativeTtlMinutes;
+        variables.cache.set( cacheK, html, ttl, 0 );
+        return html;
+    }
+
+    /**
+     * Preprocess markdown: any line that is ONLY a bare URL from a
+     * known provider is replaced with a unique `{{OEMBED:token}}`
+     * marker. Returns `{ markdown: "…", placeholders: { token: url } }`
+     * so the caller can restore the markers after markdown +
+     * AntiSamy have run.
+     *
+     * "Bare URL on its own line" means: a line whose trimmed
+     * content starts with `http://` or `https://`, contains no
+     * whitespace, and whose provider matches. Inline URLs
+     * (`Check out https://… in this paragraph`) pass through
+     * untouched — markdown linkifies them normally.
+     */
+    struct function preprocessMarkdown( required string markdown ) {
+        var placeholders = {};
+        if ( !len( trim( arguments.markdown ) ) ) {
+            return { "markdown" : arguments.markdown, "placeholders" : placeholders };
+        }
+
+        var nl    = char( 10 );
+        var lines = listToArray( arguments.markdown, nl, true );
+        var out   = [];
+        var idx   = 0;
+
+        for ( var line in lines ) {
+            var stripped = trim( line );
+            if ( isBareEmbeddableUrl( stripped ) ) {
+                idx++;
+                var token = "oembed-" & idx & "-" & lCase( replace( createUUID(), "-", "", "all" ) );
+                placeholders[ token ] = stripped;
+                out.append( "{{OEMBED:" & token & "}}" );
+            }
+            else {
+                out.append( line );
+            }
+        }
+        return { "markdown" : arrayToList( out, nl ), "placeholders" : placeholders };
+    }
+
+    /**
+     * Replace `{{OEMBED:token}}` markers in `html` with the real
+     * embed HTML (via `embed()` for each placeholder URL). Markers
+     * whose provider renders empty fall through to a plain
+     * `<a href="…">…</a>` — matches what markdown would have
+     * produced for the URL had we not intercepted it.
+     *
+     * Called after markdown compile + AntiSamy clean; safe because
+     * trusted-provider HTML is known at insert time and wasn't
+     * contributed by the author.
+     */
+    string function restoreEmbeds( required string html, required struct placeholders ) {
+        var out = arguments.html;
+        for ( var token in arguments.placeholders ) {
+            var target = arguments.placeholders[ token ];
+            var embedHtml = embed( target );
+            var marker = "{{OEMBED:" & token & "}}";
+            // Markdown may have wrapped the marker in its own
+            // `<p>` — replace the `<p>{{...}}</p>` form first so
+            // the embed sits at block level, then fall through to
+            // the bare-marker replacement for edge cases.
+            out = replace( out, "<p>" & marker & "</p>", len( embedHtml ) ? embedHtml : plainLink( target ), "all" );
+            out = replace( out, marker, len( embedHtml ) ? embedHtml : plainLink( target ), "all" );
+        }
+        return out;
+    }
+
+    function invalidate( required string url ) {
+        variables.cache.clear( cacheKey( arguments.url ) );
+    }
+
+    // --------------------------------------------------------------------
+    // Provider implementations (private)
+    // --------------------------------------------------------------------
+
+    /**
+     * GitHub Gist — deterministic rewrite to the script embed form.
+     * URL shape: `https://gist.github.com/{user}/{id}` (optional
+     * trailing path / hash is dropped).
+     */
+    private string function renderTemplate( required struct provider, required string url ) {
+        if ( arguments.provider.name != "gist" ) return "";
+
+        var u = trim( arguments.url );
+        // Strip scheme + query + fragment
+        u = reReplace( u, "^https?://", "", "one" );
+        if ( u contains "?" ) u = listFirst( u, "?" );
+        if ( u contains "##" ) u = listFirst( u, "##" );
+        // Expect `gist.github.com/{user}/{id}` — require both segments
+        if ( !reFindNoCase( "^gist\.github\.com/[^/]+/[0-9a-f]+", u ) ) return "";
+        // Trim anything after the id (gist allows ...#file-...).
+        var m = reFindNoCase( "^gist\.github\.com/[^/]+/[0-9a-f]+", u, 1, true );
+        if ( !m.len[ 1 ] ) return "";
+        var path = mid( u, m.pos[ 1 ], m.len[ 1 ] );
+        return '<script src="https://' & path & '.js"></script>';
+    }
+
+    /**
+     * Hit the provider's oEmbed endpoint with `?url=<target>` and
+     * return the `html` field of the JSON response. Empty string
+     * on any failure path (bad status, malformed JSON, network
+     * timeout) — callers already handle empty as "fall through".
+     */
+    private string function fetchOembedHtml( required struct provider, required string url ) {
+        var HttpClient   = createObject( "java", "java.net.http.HttpClient" );
+        var HttpRequest  = createObject( "java", "java.net.http.HttpRequest" );
+        var URI          = createObject( "java", "java.net.URI" );
+        var Duration     = createObject( "java", "java.time.Duration" );
+        var BodyHandlers = createObject( "java", "java.net.http.HttpResponse$BodyHandlers" );
+
+        var endpoint = arguments.provider.endpoint;
+        var joiner   = endpoint contains "?" ? "&" : "?";
+        var target   = endpoint & joiner & "url=" & urlEncodedFormat( arguments.url );
+
+        var client = HttpClient.newBuilder()
+            .connectTimeout( Duration.ofSeconds( javaCast( "long", variables.httpTimeoutSeconds ) ) )
+            .build();
+        var req = HttpRequest.newBuilder()
+            .uri( URI.init( target ) )
+            .timeout( Duration.ofSeconds( javaCast( "long", variables.httpTimeoutSeconds ) ) )
+            .header( "Accept",     "application/json" )
+            .header( "User-Agent", "bx-Blogger/1.0 (+OembedService)" )
+            .GET()
+            .build();
+        var res = client.send( req, BodyHandlers.ofString() );
+
+        var status = res.statusCode();
+        if ( status < 200 || status >= 300 ) {
+            log.warn( "OembedService: " & arguments.provider.name & " returned HTTP " & status & " for " & arguments.url );
+            return "";
+        }
+
+        var body = res.body();
+        if ( !len( trim( body ) ) ) return "";
+
+        var parsed = jsonDeserialize( body );
+        if ( !isStruct( parsed ) ) return "";
+        return parsed.html ?: "";
+    }
+
+    // --------------------------------------------------------------------
+    // Private helpers
+    // --------------------------------------------------------------------
+
+    private boolean function isBareEmbeddableUrl( required string line ) {
+        if ( !len( arguments.line ) ) return false;
+        // Must be a URL (http:// or https://)
+        if ( !reFindNoCase( "^https?://", arguments.line ) ) return false;
+        // Must be ONLY a URL (no whitespace anywhere in the line)
+        if ( reFind( "\s", arguments.line ) ) return false;
+        // Must match a known provider
+        return !structIsEmpty( providerFor( arguments.line ) );
+    }
+
+    private string function cacheKey( required string url ) {
+        return "oembed:" & lCase( hash( arguments.url, "MD5" ) );
+    }
+
+    private string function plainLink( required string url ) {
+        var safe = encodeForHTMLAttribute( arguments.url );
+        var text = encodeForHTML( arguments.url );
+        return '<p><a href="' & safe & '" rel="nofollow noopener">' & text & '</a></p>';
+    }
+
+}

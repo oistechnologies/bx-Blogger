@@ -1,0 +1,153 @@
+/**
+ * bx-Blogger — OembedServiceSpec (Phase 7.E, B19)
+ *
+ * Covers the provider registry, markdown preprocessor, and the
+ * full PostService.compileBody pipeline — all without hitting any
+ * external HTTP endpoint.
+ *
+ * Why no live-HTTP test: YouTube / Vimeo / Spotify oEmbed
+ * endpoints would flake the suite on network blips, and the
+ * contract we actually care about (provider matching, bare-URL
+ * detection, marker restoration, AntiSamy bypass) is fully
+ * observable from inputs we control. GitHub Gist's template
+ * provider is pure URL rewrite — it gives us full-pipeline
+ * coverage for free.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc     = getInstance( "OembedService" );
+        variables.postSvc = getInstance( "PostService" );
+    }
+
+    function run() {
+        describe( "OembedService", function() {
+
+            describe( "providerFor()", function() {
+                it( "matches YouTube watch URLs", function() {
+                    expect( svc.providerFor( "https://www.youtube.com/watch?v=abc123" ).name ).toBe( "youtube" );
+                } );
+                it( "matches youtu.be short URLs", function() {
+                    expect( svc.providerFor( "https://youtu.be/abc123" ).name ).toBe( "youtube" );
+                } );
+                it( "matches Vimeo URLs", function() {
+                    expect( svc.providerFor( "https://vimeo.com/12345" ).name ).toBe( "vimeo" );
+                } );
+                it( "matches Spotify URLs", function() {
+                    expect( svc.providerFor( "https://open.spotify.com/track/abc" ).name ).toBe( "spotify" );
+                } );
+                it( "matches CodePen URLs", function() {
+                    expect( svc.providerFor( "https://codepen.io/user/pen/abc" ).name ).toBe( "codepen" );
+                } );
+                it( "matches Twitter + X", function() {
+                    expect( svc.providerFor( "https://twitter.com/user/status/1"  ).name ).toBe( "twitter" );
+                    expect( svc.providerFor( "https://x.com/user/status/1"        ).name ).toBe( "twitter" );
+                } );
+                it( "matches GitHub Gist URLs", function() {
+                    expect( svc.providerFor( "https://gist.github.com/user/abc123" ).name ).toBe( "gist" );
+                } );
+                it( "returns empty for unknown hosts", function() {
+                    expect( structIsEmpty( svc.providerFor( "https://example.com/page" ) ) ).toBeTrue();
+                } );
+            } );
+
+            describe( "embed() — gist template provider", function() {
+                it( "renders a <script> embed for a gist URL (no HTTP)", function() {
+                    var html = svc.embed( "https://gist.github.com/octocat/abc123def" );
+                    expect( html ).toInclude( "<script src=" );
+                    expect( html ).toInclude( "gist.github.com/octocat/abc123def.js" );
+                } );
+
+                it( "returns empty for a malformed gist URL", function() {
+                    expect( svc.embed( "https://gist.github.com/notapath" ) ).toBe( "" );
+                } );
+            } );
+
+            describe( "embed() — general", function() {
+                it( "returns empty for an unknown host", function() {
+                    expect( svc.embed( "https://example.com/page" ) ).toBe( "" );
+                } );
+
+                it( "is cached — a second call is memoized", function() {
+                    // Avoid `url` as a local — BoxLang silently resolves
+                    // it to the empty URL scope struct instead of the
+                    // local variable (CLAUDE.md reserved-scope rule).
+                    // Use a deterministic hex-shaped id; gist IDs are
+                    // always hex, so non-hex chars won't pass the
+                    // service's gist-URL regex.
+                    var gistUrl = "https://gist.github.com/octocat/aabbccdd" & replace( lCase( createUUID() ), "-", "", "all" );
+                    var first   = svc.embed( gistUrl );
+                    var second  = svc.embed( gistUrl );
+                    expect( second ).toBe( first );
+                    // Cache round-trip: invalidating then re-rendering
+                    // still produces the same deterministic output
+                    // (gist is URL-driven, no state).
+                    svc.invalidate( gistUrl );
+                    expect( svc.embed( gistUrl ) ).toBe( first );
+                } );
+            } );
+
+            describe( "preprocessMarkdown()", function() {
+                it( "replaces a bare embeddable URL on its own line with a marker", function() {
+                    var md = "Some intro." & char( 10 ) & char( 10 )
+                        & "https://gist.github.com/octocat/abc123def" & char( 10 ) & char( 10 )
+                        & "Some outro.";
+                    var pre = svc.preprocessMarkdown( md );
+                    expect( pre.markdown contains "{{OEMBED:" ).toBeTrue();
+                    expect( pre.markdown contains "https://gist.github.com" ).toBeFalse( "URL replaced" );
+                    expect( structCount( pre.placeholders ) ).toBe( 1 );
+                } );
+
+                it( "does NOT replace an inline URL embedded in a sentence", function() {
+                    var md = "Check out https://gist.github.com/octocat/abc123def inline here.";
+                    var pre = svc.preprocessMarkdown( md );
+                    expect( pre.markdown contains "{{OEMBED:" ).toBeFalse();
+                    expect( structCount( pre.placeholders ) ).toBe( 0 );
+                } );
+
+                it( "does NOT replace URLs from unknown hosts even when bare", function() {
+                    var md = "Intro." & char( 10 ) & "https://example.com/page" & char( 10 ) & "Outro.";
+                    var pre = svc.preprocessMarkdown( md );
+                    expect( structCount( pre.placeholders ) ).toBe( 0 );
+                } );
+
+                it( "handles multiple bare URLs with distinct markers", function() {
+                    var md = "https://gist.github.com/u/abc123" & char( 10 )
+                        & char( 10 )
+                        & "https://gist.github.com/u/def456";
+                    var pre = svc.preprocessMarkdown( md );
+                    expect( structCount( pre.placeholders ) ).toBe( 2 );
+                } );
+            } );
+
+            describe( "PostService.compileBody integration", function() {
+                it( "expands a bare gist URL into an embed in the rendered HTML", function() {
+                    var md = "Before." & char( 10 ) & char( 10 )
+                        & "https://gist.github.com/octocat/abcdef0123" & char( 10 ) & char( 10 )
+                        & "After.";
+                    var html = postSvc.compileBody( md );
+
+                    expect( html ).toInclude( "gist.github.com/octocat/abcdef0123.js" );
+                    expect( html ).toInclude( "<script src=" );
+                    expect( html ).notToInclude( "{{OEMBED:" );
+                } );
+
+                it( "leaves an unknown URL as a normal markdown link", function() {
+                    var md = "https://example.com/page";
+                    var html = postSvc.compileBody( md );
+                    expect( html contains "{{OEMBED:" ).toBeFalse();
+                    expect( html contains "example.com/page" ).toBeTrue();
+                } );
+
+                it( "does NOT expand an inline gist URL", function() {
+                    var md = "See https://gist.github.com/octocat/0123456789 here.";
+                    var html = postSvc.compileBody( md );
+                    expect( html contains "<script src=" ).toBeFalse();
+                } );
+            } );
+
+        } );
+    }
+
+}

@@ -38,6 +38,7 @@ class accessors="true" singleton {
     property name="interceptorService" inject="coldbox:InterceptorService";
     property name="pageCacheService"   inject="PageCacheService";
     property name="redirectService"    inject="RedirectService";
+    property name="oembedService"      inject="OembedService";
     property name="log"                inject="logbox:logger:{this}";
 
     variables.autosaveKeep = 20;   // B5: prune autosave revisions beyond this per post
@@ -524,8 +525,19 @@ class accessors="true" singleton {
      */
     string function compileBody( required string markdown ) {
         if ( !len( trim( arguments.markdown ) ) ) return "";
-        var rawHtml = markdown( arguments.markdown );
-        return variables.antisamy.clean( rawHtml );
+
+        // Phase 7.E — extract bare-URL-on-their-own-line embeds BEFORE
+        // markdown + antisamy run. The preprocessor swaps each
+        // embeddable URL for a `{{OEMBED:token}}` marker; markdown
+        // treats the marker as plain text and antisamy leaves it
+        // alone. After sanitization we swap the markers back in for
+        // the real embed HTML (iframe / script / blockquote) — which
+        // lets trusted-provider embeds bypass the AntiSamy policy
+        // without loosening it for author-authored body HTML.
+        var pre = variables.oembedService.preprocessMarkdown( arguments.markdown );
+        var rawHtml = markdown( pre.markdown );
+        var cleaned = variables.antisamy.clean( rawHtml );
+        return variables.oembedService.restoreEmbeds( cleaned, pre.placeholders );
     }
 
     /**
