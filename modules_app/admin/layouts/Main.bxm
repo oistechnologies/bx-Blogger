@@ -79,8 +79,8 @@
 	<nav class="navbar navbar-expand-md navbar-dark bg-dark">
 		<div class="container-fluid">
 			<a class="navbar-brand app-brand py-0" href="#event.buildLink( 'admin' )#">
-				<img src="/includes/public/branding/logo-light.png"
-				     srcset="/includes/public/branding/logo-light.png 1x, /includes/public/branding/logo-light@2x.png 2x"
+				<img src="/includes/public/branding/logo-dark.png"
+				     srcset="/includes/public/branding/logo-dark.png 1x, /includes/public/branding/logo-dark@2x.png 2x"
 				     alt="#encodeForHTMLAttribute( getSetting( "AppName" ) )#"
 				     height="32"
 				     style="width:auto;">
