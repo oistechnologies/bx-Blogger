@@ -1,0 +1,29 @@
+/**
+ * bx-Blogger — OptimizeTablesJobSpec (Phase 6.I)
+ *
+ * OPTIMIZE TABLE against real MySQL shouldn't fail on any of
+ * the tables we care about — they all exist by the time
+ * migrations run. Just assert the job returns a results struct
+ * where each target table has an "ok" entry.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function run() {
+        describe( "OptimizeTablesJob", function() {
+
+            it( "runs OPTIMIZE on each target table without throwing", function() {
+                var job = getInstance( "OptimizeTablesJob" );
+                var results = job.handle();
+
+                expect( results ).toBeStruct();
+                // Every expected table is present, with an `ok` status.
+                for ( var t in [ "posts", "post_revisions", "login_audit", "page_views", "notifications" ] ) {
+                    expect( results ).toHaveKey( t );
+                    expect( results[ t ] ).toBe( "ok", t & " optimized successfully" );
+                }
+            } );
+
+        } );
+    }
+
+}

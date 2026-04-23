@@ -1,0 +1,97 @@
+/**
+ * bx-Blogger — SendNotificationDigestJob (Phase 6.I / B7)
+ *
+ * Daily roll-up email of unread `notifications` rows per admin
+ * user. Runs at 06:00 per the Scheduler (operator morning
+ * briefing slot). Skips users with zero unread — no "0 new
+ * notifications" emails clogging inboxes.
+ *
+ * Design:
+ *   - For each user holding super_admin / admin / editor role,
+ *     query `notifications WHERE user_id = X AND read_at IS NULL`.
+ *   - If any, enqueue a `SendEmailJob` with the full list.
+ *   - DON'T mark-read as a side effect — the user's bell-icon
+ *     interaction is the source of truth for read/unread; the
+ *     email is a reminder, not a consumer.
+ *
+ * Addressing:
+ *   - Email lands at the user's `users.email` (not the
+ *     `notifications.email_to` setting — that's for critical-
+ *     alert broadcasts). The digest is a per-user briefing, so
+ *     it goes to whichever address that user actually logs in
+ *     with.
+ *
+ * Batch size: unbounded. Blog-scale operator counts are in the
+ * single digits; scanning every admin-role user once per day is
+ * negligible. If a future multi-tenant install changes that,
+ * the query's user-role filter is the place to paginate.
+ */
+class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
+
+    variables.adminRoles = [ "super_admin", "admin", "editor" ];
+
+    function handle() {
+        var wirebox = application.wireBox;
+
+        var admins = wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "users" )
+            .select( [ "users.id", "users.email", "users.display_name" ] )
+            .distinct()
+            .join( "user_roles", "user_roles.user_id", "users.id" )
+            .join( "roles", "roles.id", "user_roles.role_id" )
+            .whereIn( "roles.slug", variables.adminRoles )
+            .where( "users.is_active", 1 )
+            .get();
+
+        var emailService = wirebox.getInstance( "EmailService" );
+        var siteName     = wirebox.getInstance( "coldbox" ).getSetting( "AppName" );
+        var sentFor      = 0;
+
+        for ( var admin in admins ) {
+            var unread = wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "notifications" )
+                .where( "user_id", admin.id )
+                .whereNull( "read_at" )
+                .orderBy( "created_at", "desc" )
+                .get();
+
+            if ( !unread.len() ) continue;
+
+            // Build the template data. Keep the notifications struct
+            // shape minimal — the template just reads title / body /
+            // severity / link / created_at.
+            var items = [];
+            for ( var n in unread ) {
+                items.append( {
+                    "title"      : n.title ?: "",
+                    "body"       : n.body  ?: "",
+                    "link"       : n.link  ?: "",
+                    "severity"   : n.severity ?: "info",
+                    "created_at" : n.created_at ?: ""
+                } );
+            }
+
+            emailService.sendAsync(
+                to       = admin.email,
+                subject  = "Your bx-Blogger digest — " & unread.len() & " unread notification" & ( unread.len() == 1 ? "" : "s" ),
+                template = "notification-digest",
+                data     = {
+                    "displayName" : admin.display_name ?: "",
+                    "siteName"    : siteName,
+                    "count"       : unread.len(),
+                    "items"       : items
+                }
+            );
+            sentFor++;
+        }
+
+        writeLog(
+            file = "bxblogger",
+            type = "information",
+            text = "SendNotificationDigestJob: dispatched digests for " & sentFor & " admins (of " & admins.len() & " eligible)"
+        );
+
+        return { "sentFor" : sentFor, "eligible" : admins.len() };
+    }
+
+}

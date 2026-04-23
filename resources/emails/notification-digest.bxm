@@ -1,0 +1,44 @@
+<bx:output>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Your #encodeForHTML( data.siteName ?: "bx-Blogger" )# digest</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; color: ##222; line-height: 1.55;">
+
+	<h1 style="font-size: 1.4rem; margin-bottom: 0.3rem;">Your daily digest</h1>
+	<p style="color: ##666; margin-top: 0;">
+		<bx:if len( data.displayName ?: "" )>Hi #encodeForHTML( data.displayName )#,</bx:if>
+		you have <strong>#data.count#</strong> unread notification<bx:if data.count neq 1>s</bx:if>
+		on <strong>#encodeForHTML( data.siteName ?: "bx-Blogger" )#</strong>.
+	</p>
+
+	<hr style="border: 0; border-top: 1px solid ##eee; margin: 1.5rem 0;">
+
+	<bx:loop array="#data.items#" item="n">
+		<bx:script>
+			severity = lCase( n.severity ?: "info" );
+			accent   = "##2c5aa0";
+			if ( severity == "warning" ) accent = "##b0671a";
+			if ( severity == "error"   ) accent = "##b02a37";
+			badge = severity == "warning" ? "Warning" : ( severity == "error" ? "Alert" : "Info" );
+		</bx:script>
+		<div style="border-left: 3px solid #accent#; padding: 0.1rem 0 0.1rem 1rem; margin: 0 0 1.5rem 0;">
+			<div style="display: inline-block; background: #accent#; color: ##fff; padding: 0.1rem 0.5rem; border-radius: 3px; font-size: 0.7rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; margin-bottom: 0.35rem;">#badge#</div>
+			<h3 style="font-size: 1rem; margin: 0.2rem 0;">#encodeForHTML( n.title ?: "Notification" )#</h3>
+			<bx:if len( n.body ?: "" )>
+				<p style="margin: 0.3rem 0; color: ##444;">#encodeForHTML( n.body )#</p>
+			</bx:if>
+			<bx:if len( n.link ?: "" )>
+				<p style="margin: 0.3rem 0;"><a href="#encodeForHTMLAttribute( n.link )#" style="color: #accent#; text-decoration: none;">Open in admin &rarr;</a></p>
+			</bx:if>
+		</div>
+	</bx:loop>
+
+	<p style="color: ##999; font-size: 0.8em; margin-top: 2rem; border-top: 1px solid ##eee; padding-top: 1rem;">
+		This digest is sent daily whenever you have unread notifications. Visit your admin notification bell to mark them read.
+	</p>
+</body>
+</html>
+</bx:output>

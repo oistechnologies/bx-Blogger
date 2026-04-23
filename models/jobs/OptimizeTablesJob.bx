@@ -1,0 +1,74 @@
+/**
+ * bx-Blogger — OptimizeTablesJob (Phase 6.I)
+ *
+ * Weekly `OPTIMIZE TABLE` on the append-heavy tables that
+ * accumulate free-space fragmentation over time. Runs Sunday
+ * 04:00 per the Scheduler — Sundays at 4am is the common
+ * low-traffic slot for English-language blogs.
+ *
+ * OPTIMIZE TABLE on MySQL 8.x/InnoDB is effectively a no-lock
+ * rebuild: it copies rows to a fresh tablespace and swaps. Takes
+ * a few seconds per table for most blogs; the row write-lock
+ * window during the swap is ~ms.
+ *
+ * What we optimize:
+ *   - `posts`          — primary content table, indexed on many
+ *                        columns, feels fragmentation after many
+ *                        status transitions / updates.
+ *   - `post_revisions` — high insert/delete churn (every autosave
+ *                        + PruneOldDataJob's daily drop).
+ *   - `login_audit`    — similar churn pattern.
+ *   - `page_views`     — highest row count on any table in the
+ *                        schema; daily prune deletes ~1 day's
+ *                        worth.
+ *   - `notifications`  — moderate churn from the daily read-row
+ *                        prune.
+ *
+ * Running OPTIMIZE on tables that haven't had enough churn is
+ * cheap but wasteful — MySQL logs a warning and skips the rebuild.
+ * Not worth prefiltering; the warnings are informational.
+ */
+class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
+
+    variables.tablesToOptimize = [
+        "posts",
+        "post_revisions",
+        "login_audit",
+        "page_views",
+        "notifications"
+    ];
+
+    function handle() {
+        var wirebox = application.wireBox;
+        var qb      = wirebox.getInstance( "QueryBuilder@qb" );
+
+        var results = {};
+        for ( var t in variables.tablesToOptimize ) {
+            try {
+                // Run the OPTIMIZE via raw queryExecute — qb doesn't
+                // have first-class support for the statement. No
+                // bind parameters to worry about; the table name is
+                // whitelisted in variables.tablesToOptimize.
+                queryExecute( "OPTIMIZE TABLE " & t );
+                results[ t ] = "ok";
+            }
+            catch ( any e ) {
+                results[ t ] = "failed: " & ( e.Message ?: "" );
+                writeLog(
+                    file = "bxblogger",
+                    type = "warning",
+                    text = "OptimizeTablesJob: OPTIMIZE " & t & " failed: " & ( e.Message ?: "" )
+                );
+            }
+        }
+
+        writeLog(
+            file = "bxblogger",
+            type = "information",
+            text = "OptimizeTablesJob: " & jsonSerialize( results )
+        );
+
+        return results;
+    }
+
+}

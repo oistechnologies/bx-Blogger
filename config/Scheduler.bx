@@ -5,16 +5,18 @@
  * recurring executor that fires on the declared schedule (server
  * local time — set via `setTimezone()` below).
  *
- * Phase 6.G tasks (this iteration):
+ * Phase 6 tasks (as of 6.I):
+ *   - every minute   → publish scheduled posts
  *   - hourly         → rebuild sitemap + warm top-N page cache
  *   - daily 02:00    → mysqldump backup
+ *   - daily 03:00    → prune old rows (page_views, login_audit,
+ *                      tokens, autosave revisions, read notifications)
+ *   - daily 06:00    → notification digest email per admin
+ *   - Sundays 04:00  → OPTIMIZE TABLE sweep
  *
  * Later phases fill in the rest:
- *   - Phase 6.H      → RecordPostViewJob flush, SendNotificationDigestJob
  *   - Phase 7 (B20)  → OG image refresh + per-year sitemap rebuild
  *   - Phase 11       → NewsletterDigestTask
- *   - Phase 8        → retention prune (audit_log, page_views, revisions)
- *   - Phase 9        → weekly OPTIMIZE TABLE on heavy-write tables
  *
  * Tasks here dispatch a cbq job rather than doing real work inline —
  * keeps the scheduler thread responsive (it's shared across tasks)
@@ -33,30 +35,77 @@ class {
         // host's preferred TZ (usually UTC — revisit if that changes).
         setTimezone( "UTC" );
 
-        // Hourly: rebuild the sitemap + warm the top-10 public URLs.
-        // Two separate tasks rather than a composite one so a failure
-        // in one doesn't block the other — cbq retries each job on its
-        // own attempt-counter.
+        // IMPORTANT: do NOT call `job.dispatch()` from inside a
+        // scheduled-task closure. cbq's AbstractJob has a
+        // `provider:` WireBox injection for its dispatcher, and
+        // on scheduler threads the provider wrapper is passed
+        // through to `.dispatch(job)` as if it were the
+        // dispatcher itself — Dispatcher's own `variables.config`
+        // access then throws "The key [CONFIG] was not found".
+        //
+        // Instead, resolve the Dispatcher directly via
+        // `application.wireBox.getInstance("Dispatcher@cbq")` and
+        // pass the job in. Same contract, no provider-unwrap
+        // shenanigans. `dispatchJob()` below encapsulates it so
+        // the task closures stay readable.
+
         task( "rebuild-sitemap-hourly" )
-            .call( function() {
-                getInstance( "RebuildSitemapJob" ).dispatch();
-            } )
+            .call( function() { dispatchJob( "RebuildSitemapJob" ); } )
             .everyHour();
 
         task( "warm-page-cache-hourly" )
-            .call( function() {
-                getInstance( "WarmPageCacheJob" ).dispatch();
-            } )
+            .call( function() { dispatchJob( "WarmPageCacheJob" ); } )
             .everyHour();
 
         // Daily 02:00 — mysqldump backup. 2am is the common low-
         // traffic slot on English-language blogs; adjust if the
         // install's audience is elsewhere.
         task( "backup-database-daily" )
-            .call( function() {
-                getInstance( "BackupDatabaseJob" ).dispatch();
-            } )
+            .call( function() { dispatchJob( "BackupDatabaseJob" ); } )
             .everyDayAt( "02:00" );
+
+        // Every minute — promote any posts whose `scheduled_at`
+        // has arrived. Direct call rather than enqueuing a job —
+        // PostService.promoteScheduledPosts is idempotent and
+        // short-running; queuing it adds latency + worker hops
+        // for no benefit.
+        task( "publish-scheduled-posts" )
+            .call( function() {
+                application.wireBox.getInstance( "PostService" ).promoteScheduledPosts();
+            } )
+            .everyMinute();
+
+        // Daily 03:00 — prune expired/stale rows. Runs an hour after
+        // the backup so the dump captures the pre-prune state.
+        task( "prune-old-data-daily" )
+            .call( function() { dispatchJob( "PruneOldDataJob" ); } )
+            .everyDayAt( "03:00" );
+
+        // Daily 06:00 — notification digest to admins. Morning
+        // briefing slot — anything that queued up overnight hits
+        // before the first human scan of the day.
+        task( "notification-digest-daily" )
+            .call( function() { dispatchJob( "SendNotificationDigestJob" ); } )
+            .everyDayAt( "06:00" );
+
+        // Weekly Sunday 04:00 — OPTIMIZE TABLE on churn-heavy tables.
+        task( "optimize-tables-weekly" )
+            .call( function() { dispatchJob( "OptimizeTablesJob" ); } )
+            .onSundays( "04:00" );
+    }
+
+    /**
+     * Resolve the named job + the cbq Dispatcher via the live
+     * container (not the task scope's `getInstance` shim), then
+     * ask the dispatcher to push the job. Works around the
+     * provider-wrapper dereference issue that hits any
+     * `job.dispatch()` call made from a scheduler thread.
+     */
+    private void function dispatchJob( required string jobName ) {
+        var wirebox    = application.wireBox;
+        var job        = wirebox.getInstance( arguments.jobName );
+        var dispatcher = wirebox.getInstance( "Dispatcher@cbq" );
+        dispatcher.dispatch( job );
     }
 
     function onShutdown() {}
@@ -70,7 +119,7 @@ class {
      */
     function onAnyTaskError( required task, required exception ) {
         try {
-            getInstance( "NotificationService" ).notifyAllAdmins(
+            application.wireBox.getInstance( "NotificationService" ).notifyAllAdmins(
                 type     = "scheduled_task_failed",
                 title    = "Scheduled task failed: " & arguments.task.getName(),
                 body     = arguments.exception.message & char( 10 ) & ( arguments.exception.detail ?: "" ),

@@ -1,0 +1,116 @@
+/**
+ * bx-Blogger — SendNotificationDigestJobSpec (Phase 6.I)
+ *
+ * Covers: admin-role users with unread notifications get one
+ * SendEmailJob enqueued; users with zero unread are skipped;
+ * users with only read rows are skipped.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        try {
+            getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "cbq_jobs" ).where( "queue", "default" ).delete();
+        }
+        catch ( any e ) {}
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "SendNotificationDigestJob", function() {
+
+            beforeEach( function() {
+                // Wipe any jobs from earlier tests in this suite so
+                // the "enqueued one SendEmailJob per admin" count is
+                // scoped to this test.
+                getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "cbq_jobs" ).where( "queue", "default" ).delete();
+            } );
+
+            it( "enqueues one SendEmailJob per admin with unread notifications", function() {
+                // Two fresh admins; give one an unread notification,
+                // the other zero.
+                var busyAdmin = createTestUser( roleSlug = "admin" );
+                var quietAdmin = createTestUser( roleSlug = "admin" );
+
+                getInstance( "NotificationService" ).notify(
+                    userId   = busyAdmin.getId(),
+                    type     = "digest.test",
+                    title    = "Unread item",
+                    body     = "Something happened",
+                    severity = "info"
+                );
+
+                // The digest job itself dispatches EMAILS (via cbq).
+                // We care about how many of those were enqueued.
+                var beforeCount = getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "cbq_jobs" )
+                    .where( "queue", "default" )
+                    .count();
+
+                var job = getInstance( "SendNotificationDigestJob" );
+                var summary = job.handle();
+
+                // Summary reflects who got a digest — at least the
+                // busy admin. The spec fixtures include the seeded
+                // super_admin (id=1) too; they show up in `eligible`
+                // but only get a digest if they also have unread.
+                expect( summary.sentFor ).toBeGTE( 1, "at least one digest dispatched" );
+                expect( summary.eligible ).toBeGTE( 2 );
+
+                var afterCount = getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "cbq_jobs" )
+                    .where( "queue", "default" )
+                    .count();
+                expect( afterCount - beforeCount ).toBe( summary.sentFor );
+
+                // Quiet admin should not have generated any email.
+                // Assert by looking at no payload mentioning their
+                // email.
+                var rows = getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "cbq_jobs" )
+                    .where( "queue", "default" )
+                    .get();
+                var quietEmail = quietAdmin.getEmail();
+                var foundForQuiet = false;
+                for ( var r in rows ) {
+                    if ( r.payload contains quietEmail ) {
+                        foundForQuiet = true;
+                        break;
+                    }
+                }
+                expect( foundForQuiet ).toBeFalse( "admin with zero unread gets no digest" );
+            } );
+
+            it( "skips admins whose only notifications are read", function() {
+                var admin = createTestUser( roleSlug = "admin" );
+
+                // Notify, then mark read.
+                var notifications = getInstance( "NotificationService" );
+                var id = notifications.notify(
+                    userId = admin.getId(),
+                    type   = "digest.already-read",
+                    title  = "Already read"
+                );
+                notifications.markRead( notificationId = id, userId = admin.getId() );
+
+                var job = getInstance( "SendNotificationDigestJob" );
+                var summary = job.handle();
+
+                // Nothing queued for this admin.
+                var rows = getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "cbq_jobs" )
+                    .where( "queue", "default" )
+                    .get();
+                var adminEmail = admin.getEmail();
+                var found = false;
+                for ( var r in rows ) {
+                    if ( r.payload contains adminEmail ) { found = true; break; }
+                }
+                expect( found ).toBeFalse( "read-only admin gets no digest" );
+            } );
+
+        } );
+    }
+
+}

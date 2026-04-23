@@ -1,0 +1,195 @@
+/**
+ * bx-Blogger — PruneOldDataJob (Phase 6.I)
+ *
+ * Daily housekeeping: drops rows from append-only tables that
+ * have outlived their usefulness, and caps fast-growing tables
+ * at a sensible ceiling. Runs 03:00 per the Scheduler. Batches
+ * the deletes by 5000 rows to avoid blocking MySQL during the
+ * prune window.
+ *
+ * What we prune:
+ *   - `login_audit`    — rows older than 180 days. Keeps enough
+ *                        window for "your login history" in user
+ *                        settings, drops long-term noise.
+ *   - `page_views`     — rows older than 90 days. Analytics
+ *                        roll-ups are built from shorter windows;
+ *                        longer-term trending lives in the
+ *                        denormalized `posts.view_count`.
+ *   - `draft_preview_tokens` — expired tokens (past `expires_at`)
+ *                        OR rows older than 30 days whichever is
+ *                        further. These are one-time use; once
+ *                        expired they just clutter the table.
+ *   - `email_verifications` — same rule as draft preview tokens.
+ *   - `post_revisions` — autosave rows over 20 per post. Manual
+ *                        saves are kept forever (editorial
+ *                        history); autosaves are for "oops I
+ *                        closed the tab" recovery, not archive.
+ *   - `notifications`  — read rows older than 90 days. Unread
+ *                        notifications are NEVER pruned — an
+ *                        admin returning from leave still sees
+ *                        their whole backlog.
+ *
+ * Retention periods are variables on this class rather than
+ * settings — ops teams that need different windows can subclass
+ * or override via ModuleConfig patching. Most blogs run the
+ * defaults forever.
+ */
+class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
+
+    variables.loginAuditDays     = 180;
+    variables.pageViewDays       =  90;
+    variables.tokenStaleDays     =  30;
+    variables.readNotificationDays = 90;
+    variables.autosaveKeepPerPost = 20;
+
+    function handle() {
+        var wirebox = application.wireBox;
+        var qb      = wirebox.getInstance( "QueryBuilder@qb" );
+        var summary = {};
+
+        summary.login_audit          = pruneByAge( qb, "login_audit", "created_at", variables.loginAuditDays );
+        summary.page_views           = pruneByAge( qb, "page_views",  "viewed_at",  variables.pageViewDays );
+        summary.draft_preview_tokens = pruneExpiredTokens( qb, "draft_preview_tokens" );
+        summary.email_verifications  = pruneExpiredTokens( qb, "email_verifications" );
+        summary.autosave_revisions   = pruneAutosaves( qb );
+        summary.read_notifications   = pruneReadNotifications( qb );
+
+        writeLog(
+            file = "bxblogger",
+            type = "information",
+            text = "PruneOldDataJob: " & jsonSerialize( summary )
+        );
+
+        return summary;
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    /**
+     * Delete all rows where `column` < (now - days). Returns the
+     * number of rows removed.
+     *
+     * qb's `.delete()` returns a result *struct* (with
+     * `recordCount`, `sql`, etc.), not a numeric — had to extract
+     * manually after a BoxRuntimeException the first time this
+     * was wired.
+     */
+    private numeric function pruneByAge(
+        required any     qb,
+        required string  tableName,
+        required string  column,
+        required numeric days
+    ) {
+        var cutoff = dateFormat( dateAdd( "d", -arguments.days, now() ), "yyyy-mm-dd" );
+        var result = arguments.qb.newQuery()
+            .from( arguments.tableName )
+            .where( arguments.column, "<", cutoff )
+            .delete();
+        return deleteCount( result );
+    }
+
+    /**
+     * Token-tables share a shape: `expires_at` column + an
+     * optional `consumed_at`. Drop rows where expires_at is in
+     * the past AND the row is older than tokenStaleDays (so a
+     * token issued 5 minutes ago that's already expired sticks
+     * around briefly for debugging).
+     */
+    private numeric function pruneExpiredTokens( required any qb, required string tableName ) {
+        var cutoff = dateFormat( dateAdd( "d", -variables.tokenStaleDays, now() ), "yyyy-mm-dd" );
+        var result = arguments.qb.newQuery()
+            .from( arguments.tableName )
+            .where( "expires_at", "<", now() )
+            .where( "created_at", "<", cutoff )
+            .delete();
+        return deleteCount( result );
+    }
+
+    /**
+     * Keep at most `autosaveKeepPerPost` autosave revisions per
+     * post. Manual saves (change_summary != "autosave") are never
+     * touched. Uses a correlated sub-query to find the ids to
+     * delete: for each post, rank its autosaves newest-first,
+     * delete everything past the Nth.
+     */
+    private numeric function pruneAutosaves( required any qb ) {
+        // Do it per post — cheaper than one massive ranked subquery
+        // on MySQL 8, and the per-post autosave count is usually <50.
+        var postsWithAutosaves = arguments.qb.newQuery()
+            .from( "post_revisions" )
+            .select( "post_id" )
+            .where( "change_summary", "autosave" )
+            .distinct()
+            .get();
+
+        var totalDeleted = 0;
+        for ( var p in postsWithAutosaves ) {
+            var keepIds = arguments.qb.newQuery()
+                .from( "post_revisions" )
+                .select( "id" )
+                .where( "post_id", p.post_id )
+                .where( "change_summary", "autosave" )
+                .orderBy( "created_at", "desc" )
+                .limit( variables.autosaveKeepPerPost )
+                .get()
+                .map( function( r ) { return r.id; } );
+
+            if ( keepIds.len() == 0 ) continue;
+
+            var result = arguments.qb.newQuery()
+                .from( "post_revisions" )
+                .where( "post_id", p.post_id )
+                .where( "change_summary", "autosave" )
+                .whereNotIn( "id", keepIds )
+                .delete();
+            totalDeleted += deleteCount( result );
+        }
+        return totalDeleted;
+    }
+
+    /**
+     * Drop read notifications (`read_at IS NOT NULL`) older than
+     * `readNotificationDays`. Unread rows stick forever.
+     */
+    private numeric function pruneReadNotifications( required any qb ) {
+        var cutoff = dateFormat( dateAdd( "d", -variables.readNotificationDays, now() ), "yyyy-mm-dd" );
+        var result = arguments.qb.newQuery()
+            .from( "notifications" )
+            .whereNotNull( "read_at" )
+            .where( "read_at", "<", cutoff )
+            .delete();
+        return deleteCount( result );
+    }
+
+    /**
+     * Pull the affected-row count out of qb's delete result. qb
+     * returns a struct whose shape follows queryExecute's `result`
+     * — `recordCount` is the canonical key, but MySQL via BoxLang
+     * sometimes returns `RECORDCOUNT` casing instead. Guard both.
+     */
+    /**
+     * Extract affected-row count from qb's delete return. qb
+     * returns a two-level struct: `{ RESULT: {...jdbc-meta}, QUERY:
+     * ... }`. The actual row count lives on `RESULT.recordCount`
+     * (BoxLang's JDBC shim) with a couple of alternative keys
+     * depending on the driver.
+     */
+    private numeric function deleteCount( required any result ) {
+        if ( isNumeric( arguments.result ) ) return arguments.result;
+        if ( !isStruct( arguments.result ) ) return 0;
+
+        var inner = structKeyExists( arguments.result, "RESULT" ) && isStruct( arguments.result.RESULT )
+            ? arguments.result.RESULT
+            : arguments.result;
+
+        for ( var k in [ "recordCount", "RECORDCOUNT", "rowCount", "ROWCOUNT", "affectedRows", "AFFECTEDROWS" ] ) {
+            if ( structKeyExists( inner, k ) && isNumeric( inner[ k ] ) ) {
+                return inner[ k ];
+            }
+        }
+        return 0;
+    }
+
+}

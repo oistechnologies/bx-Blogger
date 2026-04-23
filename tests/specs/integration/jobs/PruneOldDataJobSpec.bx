@@ -1,0 +1,162 @@
+/**
+ * bx-Blogger — PruneOldDataJobSpec (Phase 6.I)
+ *
+ * Seeds representative rows that should + shouldn't be pruned,
+ * runs the job, and asserts on the delete counts. Uses qb
+ * directly to insert with backdated timestamps — simpler than
+ * manipulating `now()` mocks, which BoxLang doesn't cleanly
+ * support inside singleton services.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        try {
+            getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "cbq_jobs" ).where( "queue", "default" ).delete();
+        }
+        catch ( any e ) {}
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "PruneOldDataJob", function() {
+
+            it( "deletes page_views older than 90 days, keeps newer rows", function() {
+                // Need a published post to FK against.
+                var author = createTestUser();
+                var postService = getInstance( "PostService" );
+                var post = postService.create( {
+                    "authorId"     : author.getId(),
+                    "title"        : "Prune spec",
+                    "slug"         : "prune-spec-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                    "bodyMarkdown" : "body"
+                } );
+                postService.publish( post );
+
+                // Use MySQL's own DATE_SUB server-side so the
+                // backdated timestamp is computed before the row
+                // is inserted — client-driver timestamp bindings
+                // get normalized to NOW() on this stack. Split
+                // into three queryExecute calls: reusing the
+                // same named parameter (`:pid`) across multi-
+                // row VALUES trips BoxLang's parameter parser.
+                var postId = post.getId();
+                var pidBind = { "pid" : { value : postId, cfsqltype : "bigint" } };
+                queryExecute( "INSERT INTO page_views (post_id, viewed_at) VALUES (:pid, DATE_SUB(NOW(), INTERVAL 100 DAY))", pidBind );
+                queryExecute( "INSERT INTO page_views (post_id, viewed_at) VALUES (:pid, DATE_SUB(NOW(), INTERVAL  10 DAY))", pidBind );
+                queryExecute( "INSERT INTO page_views (post_id, viewed_at) VALUES (:pid, NOW())", pidBind );
+
+                var qb = getInstance( "QueryBuilder@qb" );
+                var beforeCount = qb.newQuery().from( "page_views" )
+                    .where( "post_id", post.getId() ).count();
+                expect( beforeCount ).toBe( 3 );
+
+                var summary = getInstance( "PruneOldDataJob" ).handle();
+                expect( summary.page_views ).toBeGTE( 1, "at least the 100-day-old row got pruned" );
+
+                var afterCount = qb.newQuery().from( "page_views" )
+                    .where( "post_id", post.getId() ).count();
+                expect( afterCount ).toBe( 2, "keeps the two recent rows" );
+            } );
+
+            it( "caps autosave revisions to N per post, keeps manual saves forever", function() {
+                var author = createTestUser();
+                var postService = getInstance( "PostService" );
+                var post = postService.create( {
+                    "authorId"     : author.getId(),
+                    "title"        : "Autosave prune spec",
+                    "slug"         : "autosave-prune-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                    "bodyMarkdown" : "body"
+                } );
+
+                var qb = getInstance( "QueryBuilder@qb" );
+
+                // Same server-side-DATE_SUB trick as the
+                // page_views test — client-driver timestamp
+                // binding drops backdated values.
+                for ( var i = 1; i <= 25; i++ ) {
+                    queryExecute(
+                        "INSERT INTO post_revisions
+                           (post_id, editor_id, change_summary, body_markdown, body_html, title, created_at)
+                         VALUES (:pid, :eid, 'autosave', :body, :html, :title, DATE_SUB(NOW(), INTERVAL :mins MINUTE))",
+                        {
+                            "pid"   : { value : post.getId(),   cfsqltype : "bigint" },
+                            "eid"   : { value : author.getId(), cfsqltype : "integer" },
+                            "body"  : { value : "autosave " & i, cfsqltype : "clob" },
+                            "html"  : { value : "<p>autosave " & i & "</p>", cfsqltype : "clob" },
+                            "title" : { value : post.getTitle(), cfsqltype : "varchar" },
+                            "mins"  : { value : i, cfsqltype : "integer" }
+                        }
+                    );
+                }
+                for ( var j = 1; j <= 2; j++ ) {
+                    queryExecute(
+                        "INSERT INTO post_revisions
+                           (post_id, editor_id, change_summary, body_markdown, body_html, title, created_at)
+                         VALUES (:pid, :eid, 'manual', :body, :html, :title, DATE_SUB(NOW(), INTERVAL 10 DAY))",
+                        {
+                            "pid"   : { value : post.getId(),   cfsqltype : "bigint" },
+                            "eid"   : { value : author.getId(), cfsqltype : "integer" },
+                            "body"  : { value : "manual " & j, cfsqltype : "clob" },
+                            "html"  : { value : "<p>manual " & j & "</p>", cfsqltype : "clob" },
+                            "title" : { value : post.getTitle(), cfsqltype : "varchar" }
+                        }
+                    );
+                }
+
+                var summary = getInstance( "PruneOldDataJob" ).handle();
+                expect( summary.autosave_revisions ).toBeGTE( 5, "trimmed excess autosaves" );
+
+                var autosaveCount = qb.newQuery().from( "post_revisions" )
+                    .where( "post_id", post.getId() )
+                    .where( "change_summary", "autosave" )
+                    .count();
+                expect( autosaveCount ).toBeLTE( 20, "at most 20 autosaves remain" );
+
+                var manualCount = qb.newQuery().from( "post_revisions" )
+                    .where( "post_id", post.getId() )
+                    .where( "change_summary", "manual" )
+                    .count();
+                expect( manualCount ).toBe( 2, "manual revisions untouched" );
+            } );
+
+            it( "prunes read notifications but never unread ones", function() {
+                var user = createTestUser();
+                var qb = getInstance( "QueryBuilder@qb" );
+
+                // Old, read → should prune. Use DATE_SUB server-side
+                // (see page_views test comment).
+                queryExecute(
+                    "INSERT INTO notifications (user_id, type, title, severity, read_at, created_at)
+                     VALUES (:uid, 'prune.test', 'Ancient read', 'info',
+                             DATE_SUB(NOW(), INTERVAL 100 DAY),
+                             DATE_SUB(NOW(), INTERVAL 100 DAY))",
+                    { "uid" : { value : user.getId(), cfsqltype : "integer" } }
+                );
+                // Old, UNREAD → MUST keep.
+                queryExecute(
+                    "INSERT INTO notifications (user_id, type, title, severity, created_at)
+                     VALUES (:uid, 'prune.test', 'Ancient unread', 'info',
+                             DATE_SUB(NOW(), INTERVAL 100 DAY))",
+                    { "uid" : { value : user.getId(), cfsqltype : "integer" } }
+                );
+
+                getInstance( "PruneOldDataJob" ).handle();
+
+                var unreadKept = qb.newQuery().from( "notifications" )
+                    .where( "user_id", user.getId() )
+                    .whereNull( "read_at" )
+                    .count();
+                expect( unreadKept ).toBe( 1, "old unread notification survives prune" );
+
+                var readKept = qb.newQuery().from( "notifications" )
+                    .where( "user_id", user.getId() )
+                    .whereNotNull( "read_at" )
+                    .count();
+                expect( readKept ).toBe( 0, "old read notification was pruned" );
+            } );
+
+        } );
+    }
+
+}

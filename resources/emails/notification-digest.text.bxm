@@ -1,0 +1,15 @@
+<bx:output>Your daily digest
+<bx:if len( data.displayName ?: "" )>Hi #data.displayName#,</bx:if>
+You have #data.count# unread notification<bx:if data.count neq 1>s</bx:if> on #data.siteName#.
+
+<bx:loop array="#data.items#" item="n"><bx:script>
+    severity = uCase( n.severity ?: "INFO" );
+</bx:script>
+[#severity#] #n.title#
+<bx:if len( n.body ?: "" )>#n.body#
+</bx:if><bx:if len( n.link ?: "" )>Open: #n.link#
+</bx:if>
+</bx:loop>
+---
+Visit your admin notification bell to mark them read.
+</bx:output>
