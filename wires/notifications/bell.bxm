@@ -1,0 +1,104 @@
+<bx:script>
+// @startWire
+/**
+ * notifications.bell — admin top-bar notification dropdown (Phase 6.C).
+ *
+ * Renders a bell icon with an unread-count badge and a dropdown of the
+ * 10 most recent unread notifications for the current admin user.
+ * Rebuilds its state from NotificationService on every mount, so
+ * navigating between admin pages keeps the badge fresh without a
+ * polling interval.
+ *
+ * Interaction model in 6.C:
+ *   - Click a notification → browser follows the row's `link` normally.
+ *     We *don't* mark the row read on click; the user has to explicitly
+ *     hit "Mark all read" or revisit the bell to clear the badge.
+ *     Auto-mark-on-click is a likely 6.D follow-up.
+ *   - "Mark all read" → clears every unread row for this user + refreshes.
+ *
+ * Template scope note: `variables.data` is auto-copied into the render
+ * context on mount, which gives us `args.unreadCount`, `args.recent`,
+ * etc. below.
+ */
+
+property name="notificationService" inject="NotificationService";
+property name="cbauth"              inject="AuthenticationService@cbauth";
+
+data = {
+    "unreadCount" : 0,
+    "recent"      : [],
+    "userId"      : 0
+};
+
+function onMount( event, rc, prc, params ) {
+    if ( !cbauth.isLoggedIn() ) return;
+    data.userId = cbauth.getUser().getId();
+    refresh();
+}
+
+function refresh() {
+    if ( data.userId == 0 ) return;
+    data.unreadCount = notificationService.unreadCountFor( data.userId );
+    data.recent      = notificationService.listFor( userId = data.userId, limit = 10 );
+}
+
+function markAllRead() {
+    if ( data.userId == 0 ) return;
+    notificationService.markAllReadFor( data.userId );
+    refresh();
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<li class="nav-item dropdown">
+    <a class="nav-link position-relative"
+       href="##"
+       role="button"
+       data-bs-toggle="dropdown"
+       aria-expanded="false"
+       aria-label="Notifications"
+       data-bs-auto-close="outside">
+        <i class="bi bi-bell" style="font-size: 1.1rem;" aria-hidden="true"></i>
+        <bx:if ( args.unreadCount ?: 0 ) gt 0>
+            <span class="position-absolute translate-middle badge rounded-pill bg-danger"
+                  style="font-size: .65rem; top: 12px; right: -4px; left: auto;">
+                #args.unreadCount#
+                <span class="visually-hidden">unread notifications</span>
+            </span>
+        </bx:if>
+    </a>
+    <div class="dropdown-menu dropdown-menu-end shadow"
+         style="width: 360px; max-height: 480px; overflow-y: auto;"
+         wire:ignore.self>
+        <div class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom">
+            <strong class="small">Notifications</strong>
+            <bx:if ( args.unreadCount ?: 0 ) gt 0>
+                <button type="button" class="btn btn-sm btn-link p-0" wire:click="markAllRead">Mark all read</button>
+            </bx:if>
+        </div>
+        <bx:if !args.recent.len()>
+            <div class="px-3 py-4 text-center text-muted small">No new notifications.</div>
+        <bx:else>
+            <bx:loop array="#args.recent#" item="n">
+                <bx:set severityClass = "text-muted">
+                <bx:if ( n.severity ?: "" ) == "warning">
+                    <bx:set severityClass = "text-warning">
+                <bx:elseif ( n.severity ?: "" ) == "error">
+                    <bx:set severityClass = "text-danger">
+                </bx:if>
+                <a class="dropdown-item py-2 d-block text-wrap text-reset text-decoration-none border-bottom"
+                   href="#len( n.link ?: '' ) ? encodeForHTMLAttribute( n.link ) : '##'#">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <strong class="small #severityClass#">#encodeForHTML( n.title )#</strong>
+                        <small class="text-muted ms-2 flex-shrink-0">#fmtDateTimeShort( n.created_at )#</small>
+                    </div>
+                    <bx:if len( n.body ?: "" )>
+                        <div class="small text-muted" style="white-space: normal;">#encodeForHTML( n.body )#</div>
+                    </bx:if>
+                </a>
+            </bx:loop>
+        </bx:if>
+    </div>
+</li>
+</bx:output>

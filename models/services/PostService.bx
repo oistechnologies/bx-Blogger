@@ -152,6 +152,11 @@ class accessors="true" singleton {
      * informational). Caller owns the permission check.
      */
     function publish( required any post ) {
+        variables.interceptorService.announce(
+            state = "bxBlogger.prePostPublish",
+            data  = { "post" : arguments.post }
+        );
+
         arguments.post.setStatus( "published" );
         if ( isNull( arguments.post.getPublishedAt() ) || !len( arguments.post.getPublishedAt() ?: "" ) ) {
             arguments.post.setPublishedAt( now() );
@@ -160,6 +165,37 @@ class accessors="true" singleton {
         // 5.A — freshly-published posts should appear on the public
         // site immediately; flush the rendered-HTML cache.
         variables.pageCacheService.invalidateAll();
+
+        // 6.C — notify the author that their post is live. Direct call
+        // rather than the `bxBlogger.postPostPublish` interception
+        // route: ColdBox's auto-wiring can't match a method name to a
+        // dot-prefixed state name (method names can't contain `.`),
+        // and rewriting every `bxBlogger.*` point to the unprefixed
+        // form is a bigger refactor than this chunk warrants. The
+        // `interceptorService.announce` below still fires so future
+        // subscribers (email channel, search-engine ping, etc.) that
+        // go through a different registration route can listen.
+        try {
+            var notifications = variables.wirebox.getInstance( "NotificationService" );
+            notifications.notify(
+                userId   = int( arguments.post.getAuthorId() ),
+                type     = "post_published",
+                title    = "Your post is live",
+                body     = "‘" & arguments.post.getTitle() & "’ was published successfully.",
+                link     = "/admin/posts/editor?id=" & arguments.post.getId(),
+                severity = "info",
+                channels = [ "db" ]
+            );
+        }
+        catch ( any e ) {
+            variables.log.warn( "PostService.publish: notify failed: " & e.message, e );
+        }
+
+        variables.interceptorService.announce(
+            state = "bxBlogger.postPostPublish",
+            data  = { "post" : arguments.post }
+        );
+
         return arguments.post;
     }
 

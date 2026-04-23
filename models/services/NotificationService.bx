@@ -1,0 +1,261 @@
+/**
+ * bx-Blogger — NotificationService (Phase 6.C / B7)
+ *
+ * Writes rows to the `notifications` table and announces the
+ * `bxBlogger.notificationCreated` interception event so other
+ * channels (email in 6.D, push in a future iteration) can fan
+ * out without coupling into this service. DB is the source of
+ * truth; every notification lives here whether or not any other
+ * channel also fires.
+ *
+ * The `channels` argument is accepted but ignored in 6.C — 6.D
+ * reads it on the `notificationCreated` interception event to
+ * decide whether to also dispatch a SendEmailJob. Callers should
+ * pass `["db"]` for routine notifications and `["db","email"]`
+ * for critical ones (failed jobs, security alerts); the email
+ * channel will ignore anything without it.
+ *
+ * All writes flush only the specific user's notification cache
+ * (unread count, recent list). No pageCache invalidation — public
+ * pages don't render notifications, so cached HTML isn't affected.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox"            inject="wirebox";
+    property name="cache"              inject="cachebox:default";
+    property name="interceptorService" inject="coldbox:InterceptorService";
+    property name="log"                inject="logbox:logger:{this}";
+
+    variables.cacheTtlMinutes = 15;
+    variables.validSeverities = [ "info", "warning", "error" ];
+    variables.bellLimit       = 10;
+
+    // --------------------------------------------------------------------
+    // Write
+    // --------------------------------------------------------------------
+
+    /**
+     * Create a single notification row. `userId` null means the
+     * notification is system-level (visible to any admin). Current
+     * readers only surface rows scoped to a specific user — the
+     * null-user path is plumbed for future role-based readers.
+     *
+     * Returns the numeric id of the inserted row.
+     */
+    numeric function notify(
+                 any     userId       = javaCast( "null", "" ),
+        required string  type,
+        required string  title,
+                 string  body         = "",
+                 string  link         = "",
+                 string  severity     = "info",
+                 array   channels     = [ "db" ]
+    ) {
+        var resolvedSeverity = variables.validSeverities.findNoCase( arguments.severity )
+            ? arguments.severity
+            : "info";
+
+        // `queryExecute` gives us `result.generatedKey` natively (MySQL's
+        // LAST_INSERT_ID under the hood). qb's `.insert()` doesn't surface
+        // that directly and no other service in the codebase captures it,
+        // so drop to raw SQL here rather than bolt a helper onto qb.
+        var hasUser = !isNull( arguments.userId )
+            && len( arguments.userId ?: "" )
+            && isNumeric( arguments.userId );
+
+        var params = {
+            "type"     : { value : arguments.type,     cfsqltype : "varchar" },
+            "title"    : { value : arguments.title,    cfsqltype : "varchar" },
+            "severity" : { value : resolvedSeverity,   cfsqltype : "varchar" }
+        };
+        var insertCols = "type, title, severity";
+        var insertVals = ":type, :title, :severity";
+
+        if ( hasUser ) {
+            params[ "user_id" ] = { value : int( arguments.userId ), cfsqltype : "bigint" };
+            insertCols &= ", user_id";
+            insertVals &= ", :user_id";
+        }
+        if ( len( arguments.body ) ) {
+            // BoxLang JDBC doesn't recognize "longtext" — `clob` maps to
+            // TEXT / MEDIUMTEXT / LONGTEXT on MySQL without size limits
+            // and the driver figures it out from the column.
+            params[ "body" ] = { value : arguments.body, cfsqltype : "clob" };
+            insertCols &= ", body";
+            insertVals &= ", :body";
+        }
+        if ( len( arguments.link ) ) {
+            params[ "link" ] = { value : arguments.link, cfsqltype : "varchar" };
+            insertCols &= ", link";
+            insertVals &= ", :link";
+        }
+
+        var qr = queryExecute(
+            "INSERT INTO notifications (" & insertCols & ") VALUES (" & insertVals & ")",
+            params,
+            { result : "qResult" }
+        );
+
+        var id = qResult.generatedKey ?: qResult.generated_key ?: qResult.GENERATEDKEY ?: 0;
+
+        invalidateFor( arguments.userId ?: "" );
+
+        // Announce so downstream channels (6.D email, future push) can
+        // react. Callers pass the channels[] they want; the interceptor
+        // decides whether it's relevant.
+        variables.interceptorService.announce(
+            state = "bxBlogger.notificationCreated",
+            data  = {
+                "notificationId" : id,
+                "userId"         : arguments.userId ?: "",
+                "type"           : arguments.type,
+                "title"          : arguments.title,
+                "body"           : arguments.body,
+                "link"           : arguments.link,
+                "severity"       : resolvedSeverity,
+                "channels"       : arguments.channels
+            }
+        );
+
+        return id;
+    }
+
+    /**
+     * Fan-out helper — writes one row per active admin user. Used
+     * for events where every admin should see the alert regardless
+     * of who triggered it (failed background job, sustained rate-
+     * limit hit). "Admin" is any user attached to the `admin`,
+     * `editor`, or `super_admin` role.
+     */
+    array function notifyAllAdmins(
+        required string type,
+        required string title,
+                 string body     = "",
+                 string link     = "",
+                 string severity = "info",
+                 array  channels = [ "db" ]
+    ) {
+        var adminIds = freshQb()
+            .from( "users" )
+            .distinct()
+            .select( "users.id" )
+            .join( "user_roles", "user_roles.user_id", "users.id" )
+            .join( "roles", "roles.id", "user_roles.role_id" )
+            .whereIn( "roles.slug", [ "super_admin", "admin", "editor" ] )
+            .where( "users.is_active", 1 )
+            .get()
+            .map( function( r ) { return r.id; } );
+
+        var ids = [];
+        for ( var adminId in adminIds ) {
+            var id = notify(
+                userId   = adminId,
+                type     = arguments.type,
+                title    = arguments.title,
+                body     = arguments.body,
+                link     = arguments.link,
+                severity = arguments.severity,
+                channels = arguments.channels
+            );
+            ids.append( id );
+        }
+        return ids;
+    }
+
+    /**
+     * Mark a single notification read. Silently no-ops if the row
+     * doesn't belong to `userId` — caller doesn't need a permission
+     * check, but also can't flip someone else's bell count by
+     * probing ids.
+     */
+    function markRead( required numeric notificationId, required numeric userId ) {
+        freshQb().from( "notifications" )
+            .where( "id", arguments.notificationId )
+            .where( "user_id", arguments.userId )
+            .update( { "read_at" : nowForDb() } );
+        invalidateFor( arguments.userId );
+    }
+
+    function markAllReadFor( required numeric userId ) {
+        freshQb().from( "notifications" )
+            .where( "user_id", arguments.userId )
+            .whereNull( "read_at" )
+            .update( { "read_at" : nowForDb() } );
+        invalidateFor( arguments.userId );
+    }
+
+    function deleteFor( required numeric notificationId, required numeric userId ) {
+        freshQb().from( "notifications" )
+            .where( "id", arguments.notificationId )
+            .where( "user_id", arguments.userId )
+            .delete();
+        invalidateFor( arguments.userId );
+    }
+
+    // --------------------------------------------------------------------
+    // Read
+    // --------------------------------------------------------------------
+
+    /**
+     * Number of unread rows for `userId`. Cached per user for
+     * `cacheTtlMinutes` — the bell icon re-queries this on every
+     * admin page render, so cache matters. Writes invalidate.
+     */
+    numeric function unreadCountFor( required numeric userId ) {
+        var key = unreadCacheKey( arguments.userId );
+        var cached = variables.cache.get( key );
+        if ( !isNull( cached ) && isNumeric( cached ) ) return cached;
+
+        var count = freshQb().from( "notifications" )
+            .where( "user_id", arguments.userId )
+            .whereNull( "read_at" )
+            .count();
+
+        variables.cache.set( key, count, variables.cacheTtlMinutes, 0 );
+        return count;
+    }
+
+    /**
+     * Recent notifications for a user, newest first. `limit` defaults
+     * to the bell-dropdown count; pass a larger value for a full
+     * list view. `includeRead=false` (default) trims the read rows.
+     */
+    array function listFor(
+        required numeric userId,
+                 numeric limit       = variables.bellLimit,
+                 boolean includeRead = false
+    ) {
+        // Order by id (not created_at) because created_at resolves to
+        // the second; two rows inserted in the same second otherwise
+        // tie-break non-deterministically. id correlates with insertion
+        // order and is strictly monotonic.
+        var q = freshQb().from( "notifications" )
+            .where( "user_id", arguments.userId )
+            .orderBy( "id", "desc" )
+            .limit( arguments.limit );
+        if ( !arguments.includeRead ) q.whereNull( "read_at" );
+        return q.get();
+    }
+
+    function invalidateFor( any userId = "" ) {
+        if ( !len( arguments.userId ?: "" ) ) return;
+        variables.cache.clear( unreadCacheKey( arguments.userId ) );
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    private string function unreadCacheKey( required any userId ) {
+        return "notifications.unread:" & arguments.userId;
+    }
+
+    private any function freshQb() {
+        return variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery();
+    }
+
+    private string function nowForDb() {
+        return dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+    }
+
+}
