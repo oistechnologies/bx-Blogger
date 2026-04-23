@@ -29,6 +29,38 @@
     }
 
     /**
+     * Resolve a post's featured image to `{ url, alt }` for theme
+     * rendering. Returns empty strings when no featured media is set
+     * (or when the referenced row is gone), so callers can branch on
+     * `len( info.url )` without additional null guards.
+     *
+     * One DB hit per post that has a featured image; with typical
+     * listing pages of <20 posts, well under the cost of doing this
+     * work in the handler (where we'd have to pass the struct into
+     * every partial call explicitly).
+     */
+    struct function resolveFeaturedImage( required any post ) {
+        var mediaId = 0;
+        try {
+            mediaId = arguments.post.getFeaturedMediaId() ?: 0;
+        } catch ( any e ) {
+            return { "url" : "", "alt" : "" };
+        }
+        if ( !val( mediaId ) ) return { "url" : "", "alt" : "" };
+
+        try {
+            var m = getInstance( "Media" ).find( mediaId );
+            if ( isNull( m ) ) return { "url" : "", "alt" : "" };
+            return {
+                "url" : getInstance( "MediaService" ).urlFor( m ),
+                "alt" : m.getAltText() ?: ( arguments.post.getTitle() ?: "" )
+            };
+        } catch ( any e ) {
+            return { "url" : "", "alt" : "" };
+        }
+    }
+
+    /**
      * Build a pagination struct for the theme's pagination partial.
      * Called from public handlers after a PublicPostService.list* call.
      *

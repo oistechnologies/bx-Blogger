@@ -1,37 +1,47 @@
 <bx:output>
 <bx:if structKeyExists( args, "post" ) && !isNull( args.post )>
-    <article class="card h-100 shadow-sm">
-        <bx:if !isNull( args.post.getFeaturedMediaId() ) && structKeyExists( args, "featuredUrl" ) && len( args.featuredUrl )>
-            <a href="/blog/#encodeForHTMLAttribute( args.post.getSlug() )#" class="d-block">
-                <img
-                    src="#encodeForHTMLAttribute( args.featuredUrl )#"
-                    alt="#encodeForHTMLAttribute( args.featuredAlt ?: args.post.getTitle() )#"
-                    class="card-img-top"
-                    loading="lazy">
-            </a>
-        </bx:if>
-        <div class="card-body d-flex flex-column">
-            <h2 class="h5 card-title mb-2">
-                <a class="text-decoration-none link-body-emphasis"
-                   href="/blog/#encodeForHTMLAttribute( args.post.getSlug() )#">
-                    #encodeForHTML( args.post.getTitle() )#
-                </a>
-            </h2>
-            <bx:if len( args.post.getExcerpt() ?: "" )>
-                <p class="card-text text-muted small flex-grow-1">
-                    #encodeForHTML( args.post.getExcerpt() )#
-                </p>
+    <bx:set featured = resolveFeaturedImage( args.post )>
+    <bx:set hasFeatured = len( featured.url ) gt 0>
+    <article class="card h-100 shadow-sm post-card">
+        <div class="row g-0 h-100">
+            <bx:if hasFeatured>
+                <div class="col-sm-5">
+                    <a href="/blog/#encodeForHTMLAttribute( args.post.getSlug() )#"
+                       class="d-block h-100 post-card-thumb">
+                        <img
+                            src="#encodeForHTMLAttribute( featured.url )#"
+                            alt="#encodeForHTMLAttribute( featured.alt ?: args.post.getTitle() )#"
+                            class="rounded-start w-100 h-100"
+                            style="object-fit: cover; min-height: 180px;"
+                            loading="lazy">
+                    </a>
+                </div>
             </bx:if>
-            <p class="text-muted small mb-0 mt-2">
-                <bx:if !isNull( args.post.getPublishedAt() )>
-                    <time datetime="#dateTimeFormat( args.post.getPublishedAt(), 'yyyy-mm-dd' )#">
-                        #dateFormat( args.post.getPublishedAt(), "mmm d, yyyy" )#
-                    </time>
-                </bx:if>
-                <bx:if ( args.post.getReadingTimeMinutes() ?: 0 ) gt 0>
-                    &middot; #args.post.getReadingTimeMinutes()# min read
-                </bx:if>
-            </p>
+            <div class="#( hasFeatured ? 'col-sm-7' : 'col-12' )#">
+                <div class="card-body d-flex flex-column h-100">
+                    <h2 class="h5 card-title mb-2">
+                        <a class="text-decoration-none link-body-emphasis"
+                           href="/blog/#encodeForHTMLAttribute( args.post.getSlug() )#">
+                            #encodeForHTML( args.post.getTitle() )#
+                        </a>
+                    </h2>
+                    <bx:if len( args.post.getExcerpt() ?: "" )>
+                        <p class="card-text text-muted small flex-grow-1">
+                            #encodeForHTML( args.post.getExcerpt() )#
+                        </p>
+                    </bx:if>
+                    <p class="text-muted small mb-0 mt-2">
+                        <bx:if !isNull( args.post.getPublishedAt() )>
+                            <time datetime="#dateTimeFormat( args.post.getPublishedAt(), 'yyyy-mm-dd' )#">
+                                #dateFormat( args.post.getPublishedAt(), "mmm d, yyyy" )#
+                            </time>
+                        </bx:if>
+                        <bx:if ( args.post.getReadingTimeMinutes() ?: 0 ) gt 0>
+                            &middot; #args.post.getReadingTimeMinutes()# min read
+                        </bx:if>
+                    </p>
+                </div>
+            </div>
         </div>
     </article>
 </bx:if>

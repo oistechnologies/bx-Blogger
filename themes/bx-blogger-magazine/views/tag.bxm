@@ -7,7 +7,7 @@
 <bx:if ( prc.posts ?: [] ).len()>
     <section class="row g-4 more-posts mb-4">
         <bx:loop array="#prc.posts#" item="post">
-            <div class="col-md-6 col-lg-4">
+            <div class="col-md-6">
                 #view( view = "bx-blogger-magazine/partials/post-card", args = { "post" : post } )#
             </div>
         </bx:loop>
