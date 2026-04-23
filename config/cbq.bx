@@ -30,6 +30,14 @@ class {
             .setProvider( "DBProvider@cbq" )
             .markAsDefault( true );
 
+        // Always-available sync connection. Dispatching via
+        // `.onConnection("sync")` executes the job's `handle()`
+        // inline in the caller's thread — used by specs that need
+        // deterministic assertions and by any future caller that
+        // explicitly wants blocking semantics for a specific send.
+        newConnection( "sync" )
+            .setProvider( "SyncProvider@cbq" );
+
         newWorkerPool( "default", "default" )
             .quantity( 1 )
             .onQueue( "default" )

@@ -1,0 +1,82 @@
+/**
+ * bx-Blogger — SendEmailJob (Phase 6.B)
+ *
+ * First real cbq job — renders an email from a resources/emails/
+ * template and dispatches through cbmailservices. Replaces the
+ * sync `EmailService.send()` pattern for flows where the user
+ * shouldn't be blocked by SMTP latency (password reset, email
+ * verification, notifications).
+ *
+ * Expected `variables.properties` shape (set via `setProperties`
+ * before dispatch — cbq serializes the struct to `cbq_jobs.payload`
+ * and rehydrates it on the worker side):
+ *
+ *   {
+ *     "to"       : "user@example.com",
+ *     "subject"  : "Reset your password",
+ *     "template" : "password-reset",      // resources/emails/<slug>.bxm
+ *     "data"     : { displayName: "...", resetUrl: "...", ... }
+ *   }
+ *
+ * Thread-safety notes (per global CLAUDE.md "CFML Logging From
+ * Non-Request JVM Threads"):
+ *   - Worker threads run outside the request context. Property
+ *     injections declared on AbstractJob (wirebox, log, etc.) resolve
+ *     fine because cbq's scheduler sets up the CFML context when
+ *     invoking `handle()` — confirmed empirically in 6.B. Risky BIFs
+ *     like `log.xxx()` on a WireBox-resolved LogBox logger are still
+ *     avoided here in favor of `writeLog()`, which doesn't go through
+ *     WireBox and is safe everywhere.
+ *   - `getInstance()` is used inside handle() rather than relying on
+ *     a property injection for `EmailService` so the resolution
+ *     happens at handle-time rather than job-deserialization time.
+ *     If the app restarts between dispatch and execution, this
+ *     guarantees a freshly-wired service.
+ */
+class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
+
+    function handle() {
+        var props = variables.properties;
+
+        var to       = props.to       ?: "";
+        var subject  = props.subject  ?: "";
+        var template = props.template ?: "";
+        var data     = props.data     ?: {};
+
+        if ( !len( to ) || !len( subject ) || !len( template ) ) {
+            // Malformed payload — bail fast so retries don't make things
+            // worse. Throw forces cbq to record this as a failed job
+            // (lands in cbq_failed_jobs with logFailedJobs=true).
+            throw(
+                type    = "bxBlogger.SendEmailJob.MalformedPayload",
+                message = "SendEmailJob requires non-empty to / subject / template properties."
+            );
+        }
+
+        var emailService = application.wireBox.getInstance( "EmailService" );
+        var result = emailService.send(
+            to       = to,
+            subject  = subject,
+            template = template,
+            data     = data
+        );
+
+        if ( result.error ) {
+            // Let cbq retry per the worker pool's maxAttempts (3 today —
+            // set in config/cbq.bx). After the final attempt this job
+            // lands in cbq_failed_jobs.
+            throw(
+                type    = "bxBlogger.SendEmailJob.DeliveryFailed",
+                message = "EmailService reported delivery failure to [" & to & "]: " &
+                    result.messages.toList( "; " )
+            );
+        }
+
+        writeLog(
+            file = "cbq",
+            type = "information",
+            text = "SendEmailJob: delivered to=" & to & " subject=[" & subject & "] template=" & template
+        );
+    }
+
+}

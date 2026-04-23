@@ -16,6 +16,7 @@
 class accessors="true" singleton {
 
     property name="mailService" inject="MailService@cbmailservices";
+    property name="wirebox"     inject="wirebox";
     property name="log"         inject="logbox:logger:{this}";
 
     /**
@@ -60,6 +61,32 @@ class accessors="true" singleton {
         }
         log.info( "EmailService: sent to=#arguments.to# subject=[#arguments.subject#]" );
         return { "error" : false, "messages" : [] };
+    }
+
+    /**
+     * Dispatch an email send through cbq (Phase 6.B). Enqueues a
+     * `SendEmailJob` that, when a worker picks it up, calls back
+     * into `send()` with the same arguments. Use this for any send
+     * where blocking the request thread on SMTP latency would be
+     * bad UX (password reset, verification, notifications).
+     *
+     * Arguments mirror `send()` so callers swap by renaming the
+     * method — no shape change.
+     */
+    function sendAsync(
+        required any    to,
+        required string subject,
+        required string template,
+                 struct data = {}
+    ) {
+        variables.wirebox.getInstance( "SendEmailJob" )
+            .setProperties( {
+                "to"       : arguments.to,
+                "subject"  : arguments.subject,
+                "template" : arguments.template,
+                "data"     : arguments.data
+            } )
+            .dispatch();
     }
 
     /**

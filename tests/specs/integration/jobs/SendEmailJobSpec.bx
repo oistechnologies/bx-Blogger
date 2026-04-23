@@ -1,0 +1,151 @@
+/**
+ * bx-Blogger — SendEmailJobSpec (Phase 6.B)
+ *
+ * Covers the first real cbq job end-to-end:
+ *   - Dispatch via `EmailService.sendAsync()` lands a row in `cbq_jobs`
+ *     on the DB-backed connection (async path — the in-process worker
+ *     pool picks it up within its poll cadence).
+ *   - Dispatch with `.onConnection("sync")` executes `handle()` inline,
+ *     letting specs assert delivery without polling.
+ *   - `handle()` with a malformed payload throws a typed exception so
+ *     cbq can record a failed job (and maxAttempts doesn't just mask
+ *     the bug).
+ *
+ * The sync-connection path is the one that actually validates email
+ * template rendering + cbmailservices invocation. We don't assert on
+ * MailHog here — cbmailservices' own error-reporting (via
+ * `mail.hasErrors()`) is what `handle()` checks, and `EmailService`
+ * surfaces it as a thrown exception. Integration against a real
+ * SMTP sink is 6.B follow-up territory if we decide we want it.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        try {
+            // Wipe any cbq_jobs rows this spec enqueued. The async test
+            // below pushes to `default` queue; clean both default + sync
+            // to be thorough (SyncProvider never touches the table but
+            // belt + suspenders).
+            getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "cbq_jobs" )
+                .where( "queue", "default" )
+                .delete();
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "SendEmailJobSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "SendEmailJob", function() {
+
+            beforeEach( function() {
+                // Clear the queue before each test so "rows added" assertions
+                // are scoped to just this test's dispatch.
+                getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "cbq_jobs" )
+                    .where( "queue", "default" )
+                    .delete();
+            } );
+
+            describe( "EmailService.sendAsync()", function() {
+                it( "enqueues a SendEmailJob on the default DB-backed connection", function() {
+                    var svc = getInstance( "EmailService" );
+                    svc.sendAsync(
+                        to       = "queue-test-#createUUID()#@bx-blogger.local",
+                        subject  = "Async send test",
+                        template = "password-reset",
+                        data     = {
+                            "displayName" : "Queue Tester",
+                            "siteName"    : "bx-Blogger",
+                            "resetUrl"    : "http://localhost:8080/reset/fake",
+                            "expiresIn"   : "60 minutes"
+                        }
+                    );
+
+                    var count = getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "cbq_jobs" )
+                        .where( "queue", "default" )
+                        .count();
+                    expect( count ).toBe( 1, "one row in cbq_jobs after one async send" );
+                } );
+
+                it( "serializes the job payload as JSON readable by the worker", function() {
+                    var svc = getInstance( "EmailService" );
+                    svc.sendAsync(
+                        to       = "queue-test-#createUUID()#@bx-blogger.local",
+                        subject  = "Payload readable test",
+                        template = "password-reset",
+                        data     = { "displayName" : "ShouldRoundTrip" }
+                    );
+
+                    var row = getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "cbq_jobs" )
+                        .where( "queue", "default" )
+                        .first();
+                    expect( row ).toBeStruct();
+                    expect( len( row.payload ?: "" ) ).toBeGT( 0, "payload column populated" );
+                    // Payload should contain our distinctive display name —
+                    // don't deserialize here (cbq's payload shape is its own
+                    // contract), just verify the round-trip string made it.
+                    expect( row.payload contains "ShouldRoundTrip" ).toBeTrue(
+                        "dispatched data struct appears in the persisted payload"
+                    );
+                } );
+            } );
+
+            describe( "SendEmailJob.handle()", function() {
+                it( "throws MalformedPayload when required properties are missing", function() {
+                    var job = getInstance( "SendEmailJob" );
+                    job.setProperties( {
+                        "to"       : "",   // blank — invalid
+                        "subject"  : "doesn't matter",
+                        "template" : "password-reset"
+                    } );
+
+                    var threw = false;
+                    try { job.handle(); }
+                    catch ( bxBlogger.SendEmailJob.MalformedPayload e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+                it( "renders + dispatches the email when run inline via the sync connection", function() {
+                    // SyncProvider executes the job's handle() on dispatch
+                    // in the caller's thread. If EmailService + cbmailservices
+                    // chain together cleanly, no exception fires.
+                    var job = getInstance( "SendEmailJob" )
+                        .onConnection( "sync" )
+                        .setProperties( {
+                            "to"       : "sync-exec-#createUUID()#@bx-blogger.local",
+                            "subject"  : "Sync dispatch test",
+                            "template" : "password-reset",
+                            "data"     : {
+                                "displayName" : "Sync Tester",
+                                "siteName"    : "bx-Blogger",
+                                "resetUrl"    : "http://localhost:8080/reset/fake",
+                                "expiresIn"   : "60 minutes"
+                            }
+                        } );
+
+                    var threw = false;
+                    try { job.dispatch(); }
+                    catch ( any e ) {
+                        threw = true;
+                        debug( "Sync dispatch threw: " & e.message );
+                    }
+                    expect( threw ).toBeFalse();
+
+                    // Sync path bypasses cbq_jobs entirely — no row should land.
+                    var count = getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "cbq_jobs" )
+                        .where( "queue", "default" )
+                        .count();
+                    expect( count ).toBe( 0, "sync dispatch skips the DB queue" );
+                } );
+            } );
+
+        } );
+    }
+
+}
