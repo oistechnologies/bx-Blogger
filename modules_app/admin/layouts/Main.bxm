@@ -146,8 +146,26 @@
 		</div>
 	</div>
 
-	<footer class="py-3 text-center text-muted small">
-		bx-Blogger · Phase 2
+	<footer class="border-top bg-white py-3 mt-4">
+		<div class="container-fluid d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2">
+			<div class="d-flex align-items-center gap-2">
+				<a href="#event.buildLink( 'admin' )#" class="d-inline-block">
+					<img src="/includes/public/branding/logo-light.png"
+					     srcset="/includes/public/branding/logo-light.png 1x, /includes/public/branding/logo-light@2x.png 2x"
+					     alt="#encodeForHTMLAttribute( getSetting( "AppName" ) )#"
+					     height="28"
+					     style="width:auto;">
+				</a>
+				<span class="text-muted small">
+					&copy; #dateFormat( now(), "yyyy" )# #encodeForHTML( getSetting( "AppName" ) )#
+				</span>
+			</div>
+			<div class="text-muted small">
+				v#encodeForHTML( getSetting( "app.version" ) )#
+				&middot;
+				<a class="link-secondary" href="/" title="Open the public site">Site home</a>
+			</div>
+		</div>
 	</footer>
 
 	<!--- Bootstrap JS bundle — Modal, Dropdown, Tooltip, Collapse. The
