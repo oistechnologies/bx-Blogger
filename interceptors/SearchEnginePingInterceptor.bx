@@ -1,0 +1,65 @@
+/**
+ * bx-Blogger — SearchEnginePingInterceptor (Phase 6.H)
+ *
+ * Subscribes to `postPostPublish` and dispatches a
+ * `PingSearchEnginesJob` for the freshly-published post's
+ * canonical URL. The job itself no-ops when the IndexNow key
+ * isn't configured, so sites that don't care about IndexNow
+ * never see any network traffic — the interceptor stays wired
+ * regardless.
+ *
+ * Only fires for `post_type = "post"`. Pages don't get
+ * submitted to IndexNow by convention — the site owner rarely
+ * wants a "Contact" or "About" page indexed independently of
+ * their normal sitemap submission.
+ *
+ * URL construction: `APP_URL/blog/{slug}` when `APP_URL` is set
+ * (dev + prod both seed this env var). Missing `APP_URL` = skip
+ * — IndexNow needs an absolute URL and we'd rather no-op than
+ * ping with a bogus origin.
+ */
+class extends="coldbox.system.Interceptor" {
+
+    function configure() {}
+
+    /**
+     * `postPostPublish` payload (from PostService.publish):
+     *   { post: Post }
+     */
+    function postPostPublish( event, data, buffer, rc, prc ) {
+        try {
+            if ( !structKeyExists( arguments.data, "post" ) ) return;
+            var post = arguments.data.post;
+            if ( isNull( post ) ) return;
+            if ( ( post.getPostType() ?: "" ) != "post" ) return;
+
+            var appUrl = getSystemSetting( "APP_URL", "" );
+            if ( !len( appUrl ) ) {
+                writeLog(
+                    file = "bxblogger",
+                    type = "information",
+                    text = "SearchEnginePingInterceptor: APP_URL not set — skipping IndexNow ping for post=" & post.getId()
+                );
+                return;
+            }
+
+            // Trim a trailing slash on APP_URL so we don't double-
+            // slash when concatenating the post path.
+            if ( right( appUrl, 1 ) == "/" ) appUrl = left( appUrl, len( appUrl ) - 1 );
+
+            getInstance( "PingSearchEnginesJob" )
+                .setProperties( {
+                    "postUrl" : appUrl & "/blog/" & post.getSlug()
+                } )
+                .dispatch();
+        }
+        catch ( any e ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "SearchEnginePingInterceptor: " & ( e.Message ?: "(no message)" )
+            );
+        }
+    }
+
+}

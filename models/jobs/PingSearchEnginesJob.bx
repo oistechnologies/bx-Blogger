@@ -1,0 +1,142 @@
+/**
+ * bx-Blogger — PingSearchEnginesJob (Phase 6.H / B21)
+ *
+ * Announces a freshly-published post to search engines via the
+ * IndexNow protocol. Bing, Yandex, and Seznam participate
+ * directly; Google and DuckDuckGo don't yet, but the single
+ * `api.indexnow.org` endpoint fans the submission out to every
+ * participating engine, so one POST per publish is enough.
+ *
+ * IndexNow requires a key the operator publishes publicly on
+ * their site (usually at `/<key>.txt` containing just the key
+ * string). The job reads the key from the `seo.indexnow_key`
+ * setting; no-op when unset so sites that haven't set it up
+ * don't spam warnings on every publish.
+ *
+ * Payload shape:
+ *   POST https://api.indexnow.org/indexnow
+ *   Content-Type: application/json
+ *   {
+ *     "host": "example.com",
+ *     "key": "<the operator's key>",
+ *     "keyLocation": "https://example.com/<key>.txt",
+ *     "urlList": [ "https://example.com/blog/the-slug" ]
+ *   }
+ *
+ * Dispatched from `SearchEnginePingInterceptor` on
+ * `postPostPublish`. Scheduled use wouldn't work anyway —
+ * IndexNow wants individual URL notifications, not a
+ * sitemap-style list dump.
+ *
+ * Single-attempt retry: a 200-or-202 response = submitted. 400+
+ * = bad key or malformed URL, retrying won't help. cbq's
+ * `maxAttempts(1)` via `onConnection("ping-once")` would be
+ * ideal here; for now we use the default pool and let the job's
+ * own `return` on 2xx avoid the retry path.
+ */
+class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
+
+    variables.endpoint        = "https://api.indexnow.org/indexnow";
+    variables.requestTimeoutS = 10;
+
+    function handle() {
+        var props = variables.properties ?: {};
+
+        var postUrl = structKeyExists( props, "postUrl" ) && isSimpleValue( props.postUrl )
+            ? props.postUrl : "";
+        if ( !len( postUrl ) ) {
+            throw(
+                type    = "bxBlogger.PingSearchEnginesJob.MalformedPayload",
+                message = "PingSearchEnginesJob requires a non-empty postUrl property."
+            );
+        }
+
+        var settings = application.wireBox.getInstance( "SettingService" );
+        var key      = settings.get( "seo.indexnow_key", "" );
+        if ( !len( key ) ) {
+            writeLog(
+                file = "bxblogger",
+                type = "information",
+                text = "PingSearchEnginesJob: seo.indexnow_key not configured — skipping ping for " & postUrl
+            );
+            return;
+        }
+
+        var host        = extractHost( postUrl );
+        var keyLocation = "https://" & host & "/" & key & ".txt";
+
+        var payload = jsonSerialize( {
+            "host"        : host,
+            "key"         : key,
+            "keyLocation" : keyLocation,
+            "urlList"     : [ postUrl ]
+        } );
+
+        var status = postJson( variables.endpoint, payload );
+        if ( status >= 200 && status < 300 ) {
+            writeLog(
+                file = "bxblogger",
+                type = "information",
+                text = "PingSearchEnginesJob: indexed " & postUrl & " (IndexNow returned " & status & ")"
+            );
+            return;
+        }
+
+        // 4xx = bad input from our side (invalid key, malformed URL);
+        // retrying won't help. Log + bail rather than let cbq spin.
+        if ( status >= 400 && status < 500 ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "PingSearchEnginesJob: IndexNow rejected " & postUrl & " with " & status & " — not retrying."
+            );
+            return;
+        }
+
+        // 5xx = upstream problem, worth the retry.
+        throw(
+            type    = "bxBlogger.PingSearchEnginesJob.UpstreamError",
+            message = "IndexNow returned " & status & " for " & postUrl
+        );
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    private string function extractHost( required string fullUrl ) {
+        // `https://example.com/blog/foo` → `example.com`
+        var afterScheme = listRest( arguments.fullUrl, "/" );   // `/example.com/blog/foo` → `example.com/blog/foo`
+        return listFirst( afterScheme, "/" );
+    }
+
+    /**
+     * Java 11+ HttpClient POST. See WarmPageCacheJob for the
+     * rationale on using Java directly rather than hyper — same
+     * story here. Returns the numeric status code; caller branches
+     * on it.
+     */
+    private numeric function postJson( required string endpoint, required string body ) {
+        var HttpClient   = createObject( "java", "java.net.http.HttpClient" );
+        var HttpRequest  = createObject( "java", "java.net.http.HttpRequest" );
+        var BodyPubs     = createObject( "java", "java.net.http.HttpRequest$BodyPublishers" );
+        var BodyHandlers = createObject( "java", "java.net.http.HttpResponse$BodyHandlers" );
+        var URI          = createObject( "java", "java.net.URI" );
+        var Duration     = createObject( "java", "java.time.Duration" );
+
+        var client = HttpClient.newBuilder()
+            .connectTimeout( Duration.ofSeconds( javaCast( "long", variables.requestTimeoutS ) ) )
+            .build();
+
+        var req = HttpRequest.newBuilder()
+            .uri( URI.init( arguments.endpoint ) )
+            .timeout( Duration.ofSeconds( javaCast( "long", variables.requestTimeoutS ) ) )
+            .header( "Content-Type", "application/json; charset=utf-8" )
+            .POST( BodyPubs.ofString( arguments.body ) )
+            .build();
+
+        var res = client.send( req, BodyHandlers.discarding() );
+        return res.statusCode();
+    }
+
+}

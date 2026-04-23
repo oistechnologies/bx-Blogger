@@ -1,0 +1,99 @@
+/**
+ * bx-Blogger — RecordPostViewJobSpec (Phase 6.H)
+ *
+ * Exercises the core write path: INSERT into `page_views` + bump
+ * `posts.view_count`. Calls `handle()` directly via the sync
+ * connection so the assertions run after the INSERT rather than
+ * racing the DB-provider poll loop.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        try {
+            getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "cbq_jobs" ).where( "queue", "default" ).delete();
+        }
+        catch ( any e ) {}
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "RecordPostViewJob", function() {
+
+            it( "throws MalformedPayload when postId is missing or zero", function() {
+                var job = getInstance( "RecordPostViewJob" );
+                job.setProperties( { "postId" : 0 } );
+
+                var threw = false;
+                try { job.handle(); }
+                catch ( bxBlogger.RecordPostViewJob.MalformedPayload e ) { threw = true; }
+                expect( threw ).toBeTrue();
+            } );
+
+            it( "inserts a page_views row and bumps posts.view_count", function() {
+                var author = createTestUser();
+                var postService = getInstance( "PostService" );
+                var post = postService.create( {
+                    "authorId"     : author.getId(),
+                    "title"        : "View test post",
+                    "slug"         : "view-test-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                    "bodyMarkdown" : "body"
+                } );
+                postService.publish( post );
+
+                var qb = getInstance( "QueryBuilder@qb" );
+                var before = qb.newQuery()
+                    .from( "page_views" ).where( "post_id", post.getId() ).count();
+                expect( before ).toBe( 0 );
+
+                getInstance( "RecordPostViewJob" )
+                    .onConnection( "sync" )
+                    .setProperties( {
+                        "postId" : post.getId(),
+                        "ipHash" : "abc123",
+                        "uaHash" : "def456"
+                    } )
+                    .dispatch();
+
+                var after = qb.newQuery()
+                    .from( "page_views" ).where( "post_id", post.getId() ).count();
+                expect( after ).toBe( 1 );
+
+                var refreshed = qb.newQuery()
+                    .from( "posts" ).where( "id", post.getId() ).first();
+                expect( refreshed.view_count ).toBe( 1 );
+            } );
+
+            it( "accepts null hash values (unknown IP/UA)", function() {
+                var author = createTestUser();
+                var postService = getInstance( "PostService" );
+                var post = postService.create( {
+                    "authorId"     : author.getId(),
+                    "title"        : "View test no-hash",
+                    "slug"         : "view-test-no-hash-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                    "bodyMarkdown" : "body"
+                } );
+                postService.publish( post );
+
+                getInstance( "RecordPostViewJob" )
+                    .onConnection( "sync" )
+                    .setProperties( {
+                        "postId" : post.getId()
+                        // No ipHash / uaHash — job skips the columns.
+                    } )
+                    .dispatch();
+
+                var row = getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "page_views" )
+                    .where( "post_id", post.getId() )
+                    .orderBy( "id", "desc" )
+                    .first();
+                expect( isNull( row ) ).toBeFalse();
+                expect( len( row.ip_hash ?: "" ) ).toBe( 0 );
+                expect( len( row.ua_hash ?: "" ) ).toBe( 0 );
+            } );
+
+        } );
+    }
+
+}

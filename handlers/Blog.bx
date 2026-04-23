@@ -87,6 +87,20 @@ class extends="coldbox.system.EventHandler" {
         // degrades to post.bxm if the variant isn't shipped.
         event.setLayout( prc.theme.layout( "Post" ) );
         event.setView( prc.theme.templateView( "post", post.getTemplateOverride() ?: "" ) );
+
+        // 6.H — announce the render so page-view tracking +
+        // future subscribers can hook in without Blog.show knowing
+        // about them. Fires here (not inside PostViewRecorder) so
+        // the event carries the fully-resolved post entity the
+        // handler already loaded; interceptor only needs to hash +
+        // enqueue.
+        getInstance( "coldbox:InterceptorService" ).announce(
+            state = "postRenderPost",
+            data  = {
+                "post"  : post,
+                "event" : event
+            }
+        );
     }
 
     /**

@@ -1,0 +1,103 @@
+/**
+ * bx-Blogger — PostViewRecorderInterceptor (Phase 6.H)
+ *
+ * Subscribes to `postRenderPost` (announced by `Blog.show` when a
+ * public post render completes) and enqueues a `RecordPostViewJob`
+ * so the INSERT + view_count bump happen off the request thread.
+ *
+ * Hashes IP + user-agent with a daily-rotating salt before
+ * handing them to the job — `page_views` never stores raw PII.
+ * Salt rotates each calendar day (UTC), so a visitor revisiting
+ * across days produces different hashes, naturally anonymizing
+ * the data for longer-window analytics queries.
+ *
+ * Bots / crawlers / admin previews deliberately bypassed:
+ *   - Logged-in admin users (post author editing, preview) —
+ *     don't want to inflate counts with internal traffic.
+ *   - Common crawler UA substrings — the dashboard wants human-
+ *     shaped traffic. Detection is coarse by design; anti-crawler
+ *     arms race isn't in scope for 6.H.
+ *
+ * Lazy service resolution pattern same as the other
+ * interceptors — see RateLimitInterceptor for the backstory.
+ */
+class extends="coldbox.system.Interceptor" {
+
+    variables.botNeedles = [
+        "bot", "crawl", "spider", "slurp", "fetch",
+        "archive", "curl/", "wget/", "python-requests", "httpclient"
+    ];
+
+    function configure() {}
+
+    function postRenderPost( event, data, buffer, rc, prc ) {
+        try {
+            if ( !structKeyExists( arguments.data, "post" ) ) return;
+            var post = arguments.data.post;
+            if ( isNull( post ) ) return;
+
+            // Skip logged-in admin traffic so the dashboard reflects
+            // public reader activity, not the author refreshing their
+            // own preview.
+            if ( isLoggedInAdmin() ) return;
+
+            var rawUa = arguments.event.getHTTPHeader( "User-Agent", "" );
+            if ( looksLikeBot( rawUa ) ) return;
+
+            var ipAddr = arguments.event.getHTTPHeader( "X-Forwarded-For", cgi.remote_addr ?: "" );
+            // X-Forwarded-For can be a comma-separated chain; client is leftmost.
+            if ( ipAddr contains "," ) ipAddr = trim( listFirst( ipAddr, "," ) );
+
+            var salt   = todaySalt();
+            var ipHash = len( ipAddr ) ? lCase( hash( salt & "|" & ipAddr, "SHA-256" ) ) : "";
+            var uaHash = len( rawUa )  ? lCase( hash( salt & "|" & rawUa,  "SHA-256" ) ) : "";
+
+            getInstance( "RecordPostViewJob" )
+                .setProperties( {
+                    "postId" : int( post.getId() ),
+                    "ipHash" : ipHash,
+                    "uaHash" : uaHash
+                } )
+                .dispatch();
+        }
+        catch ( any e ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "PostViewRecorderInterceptor: " & ( e.Message ?: "(no message)" )
+            );
+        }
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    private string function todaySalt() {
+        // APP_KEY is set in .env; fallback keeps dev-without-env
+        // working (dedup window is still per-day even with a
+        // constant salt).
+        var appKey = getSystemSetting( "APP_KEY", "bx-blogger-dev-salt" );
+        return appKey & ":" & dateFormat( now(), "yyyy-mm-dd" );
+    }
+
+    private boolean function looksLikeBot( required string ua ) {
+        if ( !len( arguments.ua ) ) return true;   // no UA = probably a bot / curl
+        var low = lCase( arguments.ua );
+        for ( var needle in variables.botNeedles ) {
+            if ( low contains needle ) return true;
+        }
+        return false;
+    }
+
+    private boolean function isLoggedInAdmin() {
+        try {
+            var auth = getInstance( "AuthenticationService@cbauth" );
+            return auth.isLoggedIn();
+        }
+        catch ( any e ) {
+            return false;
+        }
+    }
+
+}

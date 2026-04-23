@@ -1,0 +1,63 @@
+/**
+ * bx-Blogger — RecordPostViewJob (Phase 6.H)
+ *
+ * Writes a row into `page_views` for a single post render. The
+ * interceptor on `postRenderPost` dispatches the job with the
+ * post id + hashed IP/UA identifiers; the request thread keeps
+ * moving while the worker handles the INSERT on its own
+ * cadence (cbq's DB watcher polls the queue every few seconds).
+ *
+ * One job per view is reasonable at blog scale — cbq batches
+ * DB inserts via the JDBC driver's own connection pooling and
+ * the worker loop runs dozens per poll cycle without trouble.
+ * If a future site lights up the queue badly, the natural
+ * upgrade is to buffer N pending views in CacheBox and flush
+ * every minute via a scheduled task. Design note, not scope.
+ *
+ * Also bumps `posts.view_count` for the same post — the blog
+ * template's "popular posts" query reads that column instead
+ * of scanning page_views every render. Two writes per view,
+ * both off the request path.
+ */
+class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
+
+    function handle() {
+        var props  = variables.properties ?: {};
+        var postId = structKeyExists( props, "postId" ) && isNumeric( props.postId )
+            ? int( props.postId ) : 0;
+        if ( postId <= 0 ) {
+            throw(
+                type    = "bxBlogger.RecordPostViewJob.MalformedPayload",
+                message = "RecordPostViewJob requires a positive numeric postId property."
+            );
+        }
+
+        var ipHash = structKeyExists( props, "ipHash" ) && isSimpleValue( props.ipHash )
+            ? props.ipHash : "";
+        var uaHash = structKeyExists( props, "uaHash" ) && isSimpleValue( props.uaHash )
+            ? props.uaHash : "";
+
+        var wirebox = application.wireBox;
+        var qb      = wirebox.getInstance( "QueryBuilder@qb" );
+
+        // Insert the row. Use qb rather than queryExecute — no need
+        // for the generated key here and the qb builder handles the
+        // null-hash columns correctly without a mixed-bindings
+        // dance (CLAUDE.md Quick/qb gotcha).
+        var row = { "post_id" : postId };
+        if ( len( ipHash ) ) row[ "ip_hash" ] = ipHash;
+        if ( len( uaHash ) ) row[ "ua_hash" ] = uaHash;
+        qb.newQuery().from( "page_views" ).insert( row );
+
+        // Bump the denormalized count on posts. Racy in the sense
+        // that concurrent views can cause missed increments, but the
+        // "popular posts" query doesn't need exact numbers — the
+        // ordering is what matters and that's preserved under bursts.
+        // Tight MySQL path — avoids entity load + save roundtrip.
+        qb.newQuery()
+            .from( "posts" )
+            .where( "id", postId )
+            .update( { "view_count" : qb.raw( "view_count + 1" ) } );
+    }
+
+}

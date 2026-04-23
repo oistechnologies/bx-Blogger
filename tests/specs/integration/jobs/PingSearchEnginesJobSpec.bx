@@ -1,0 +1,108 @@
+/**
+ * bx-Blogger — PingSearchEnginesJobSpec (Phase 6.H)
+ *
+ * We can't actually hit api.indexnow.org from CI, so we exercise
+ * the guard paths (no-ops) + the dispatch plumbing. The outbound
+ * HTTP call is thin enough that reading WarmPageCacheJob's
+ * HttpClient use covers it by analogy.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.settings = getInstance( "SettingService" );
+    }
+
+    function afterAll() {
+        try {
+            getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "cbq_jobs" ).where( "queue", "default" ).delete();
+            variables.settings.delete( "seo.indexnow_key" );
+        }
+        catch ( any e ) {}
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "PingSearchEnginesJob", function() {
+
+            beforeEach( function() {
+                variables.settings.delete( "seo.indexnow_key" );
+            } );
+
+            it( "throws MalformedPayload when postUrl is missing", function() {
+                var job = getInstance( "PingSearchEnginesJob" );
+                job.setProperties( { "postUrl" : "" } );
+
+                var threw = false;
+                try { job.handle(); }
+                catch ( bxBlogger.PingSearchEnginesJob.MalformedPayload e ) { threw = true; }
+                expect( threw ).toBeTrue();
+            } );
+
+            it( "no-ops cleanly when seo.indexnow_key is not configured", function() {
+                // No key = no ping. Must not throw — sites that don't
+                // use IndexNow shouldn't see job failures on every
+                // publish.
+                var threw = false;
+                try {
+                    var job = getInstance( "PingSearchEnginesJob" );
+                    job.setProperties( { "postUrl" : "https://example.com/blog/test" } );
+                    job.handle();
+                }
+                catch ( any e ) { threw = true; }
+                expect( threw ).toBeFalse();
+            } );
+
+            it( "SearchEnginePingInterceptor enqueues a job on post publish when APP_URL is set", function() {
+                // End-to-end plumbing: publish a post, verify a
+                // PingSearchEnginesJob landed in cbq_jobs with a
+                // payload carrying the canonical URL. We DON'T run
+                // handle() here — that would require a live IndexNow
+                // endpoint. The queue row is sufficient evidence the
+                // interceptor is wired.
+                getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "cbq_jobs" ).where( "queue", "default" ).delete();
+
+                var author = createTestUser();
+                var postService = getInstance( "PostService" );
+                var post = postService.create( {
+                    "authorId"     : author.getId(),
+                    "title"        : "IndexNow spec",
+                    "slug"         : "indexnow-spec-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                    "bodyMarkdown" : "body"
+                } );
+                postService.publish( post );
+
+                var jobs = getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "cbq_jobs" )
+                    .where( "queue", "default" )
+                    .get();
+
+                // The publish also triggers RecordPostViewJob... no,
+                // wait, that's only on `postRenderPost` (a view), not
+                // publish. The only queue row should be our ping job.
+                // If a fan-out grows in the future this assertion
+                // needs a filter by payload contents.
+                expect( jobs.len() ).toBeGTE( 1, "ping job enqueued" );
+
+                // Payload carries the canonical URL derived from
+                // APP_URL + /blog/{slug}. `getSystemSetting` is the
+                // same call the interceptor uses.
+                var appUrl = getSystemSetting( "APP_URL", "" );
+                if ( len( appUrl ) ) {
+                    var foundForSlug = false;
+                    for ( var j in jobs ) {
+                        if ( j.payload contains post.getSlug() ) {
+                            foundForSlug = true;
+                            break;
+                        }
+                    }
+                    expect( foundForSlug ).toBeTrue( "a queued job references the newly-published slug" );
+                }
+            } );
+
+        } );
+    }
+
+}

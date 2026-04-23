@@ -250,7 +250,18 @@ class {
 			// decoupled; admin backfill calls MediaService
 			// .dispatchWebpFor(id) directly when re-running thumbs
 			// would be wasteful.
-			{ class : "interceptors.WebpOnThumbnailsInterceptor" }
+			{ class : "interceptors.WebpOnThumbnailsInterceptor" },
+			// 6.H — listens for `postRenderPost` (fired by Blog.show)
+			// and dispatches a RecordPostViewJob so the view INSERT
+			// + view_count bump happen off the request thread. Hashes
+			// IP/UA with a daily-rotating salt; skips logged-in admin
+			// traffic + common crawler UAs.
+			{ class : "interceptors.PostViewRecorderInterceptor" },
+			// 6.H — listens for `postPostPublish` and fires an
+			// IndexNow ping via PingSearchEnginesJob. No-ops
+			// cleanly when the `seo.indexnow_key` setting or
+			// `APP_URL` env var is unset.
+			{ class : "interceptors.SearchEnginePingInterceptor" }
 		];
 
 		/**
