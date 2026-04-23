@@ -123,9 +123,22 @@ class extends="coldbox.system.Interceptor" {
         if ( !len( body ) ) return;
 
         // Only cache 200 responses — 3xx redirects, 404 / 500 pages
-        // shouldn't be served stale.
-        var status = arguments.event.getHTTPHeader( header = "Status", defaultValue = 0 );
-        if ( val( status ) != 0 && val( status ) != 200 ) return;
+        // shouldn't be served stale. `event.getHTTPHeader` reads
+        // *request* headers, so a pre-7.G check was always reading
+        // `Status` as 0 (no such request header) and caching every
+        // response regardless of status — a 404 would then serve as
+        // a cached 200 on the next hit, hiding subsequent misses
+        // from BrokenLinkService's hit counter (Phase 7.G). Read the
+        // response status via the Java servlet response instead.
+        try {
+            var servletStatus = getPageContext().getResponse().getStatus();
+            if ( val( servletStatus ) != 0 && val( servletStatus ) != 200 ) return;
+        }
+        catch ( any e ) {
+            // If we can't introspect the response for any reason,
+            // err on the side of not-caching.
+            return;
+        }
 
         var ct      = arguments.event.getHTTPHeader( header = "Content-Type", defaultValue = "text/html; charset=utf-8" );
         var etag    = svc.etagFor( body );

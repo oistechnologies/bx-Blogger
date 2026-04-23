@@ -1,0 +1,37 @@
+/**
+ * bx-Blogger — admin:BrokenLinks (Phase 7.G, B22)
+ *
+ * Thin chrome around the `broken_links.list` CBWIRE wire. Phase 7.G
+ * ships a single action (`index`); the Phase-8 Redirects Manager
+ * will add sibling actions (history export, bulk dismiss) behind
+ * the same permission gate.
+ *
+ * Permissions:
+ *   broken_links.view  — required to see the report (super_admin /
+ *                        admin / editor; seeded in 7.G migration)
+ *   redirects.manage   — checked by the wire's promote action so
+ *                        editors can view the report but only an
+ *                        admin can push a row into `redirects`
+ */
+class extends="coldbox.system.EventHandler" {
+
+    this.layouts = { "Main.bxm" : "*" };
+
+    function preHandler( event, rc, prc, action, eventArguments ) {
+        var auth = getInstance( "AuthenticationService@cbauth" );
+        if ( !auth.isLoggedIn() ) {
+            relocate( url = "/security/login" );
+            return;
+        }
+        if ( !auth.getUser().hasPermission( "broken_links.view" ) ) {
+            relocate( event = "admin:Dashboard.index" );
+            return;
+        }
+    }
+
+    function index( event, rc, prc ) {
+        prc.pageTitle = "404 Report";
+        event.setView( view = "broken_links/index" );
+    }
+
+}

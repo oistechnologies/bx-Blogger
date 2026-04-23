@@ -1,0 +1,250 @@
+/**
+ * bx-Blogger — BrokenLinkService (Phase 7.G, B22)
+ *
+ * Owns the `broken_links` table. Consumed by:
+ *
+ *   - `Blog.renderNotFound` + `Page.renderNotFound` — call
+ *     `recordHit(path, referer)` on every missing-slug 404 so the
+ *     admin can see which legacy URLs crawlers + humans are
+ *     hitting.
+ *   - Admin `BrokenLinks.list` wire — calls `list()` for the
+ *     report table and `resolveWithRedirect()` on the "Add
+ *     Redirect" button. Promotion creates a `redirects` row via
+ *     RedirectService and back-fills `created_redirect_id` +
+ *     `resolved_at` on the broken-links row.
+ *
+ * Path normalization delegates to RedirectService.normalizePath
+ * so the two tables' `from_path` / `path` columns match on the
+ * same canonical form (leading slash, no trailing slash, no
+ * query string). That means promoting a broken-links row to a
+ * redirect never requires re-normalization at the admin UI.
+ *
+ * Recording is best-effort — a broken-link write that throws
+ * must never take down the page that fired it (the user is
+ * already looking at a 404; an additional 500 would be worse).
+ * Every DB call is try/catch-swallowed with a warning log.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox"         inject="wirebox";
+    property name="redirectService" inject="RedirectService";
+    property name="log"             inject="logbox:logger:{this}";
+
+    variables.maxPathLength    = 500;
+    variables.maxRefererLength = 500;
+
+    // --------------------------------------------------------------------
+    // Write
+    // --------------------------------------------------------------------
+
+    /**
+     * UPSERT a hit on `path`. First hit inserts; subsequent hits
+     * increment `hits` + bump `last_seen_at`. Records also when
+     * the row is already resolved (admin removed the redirect,
+     * site regressed, etc.) — a resolved-then-hit-again path
+     * shows in the report with `resolved_at` set but the hit
+     * counter climbing, which is exactly the signal we want.
+     *
+     * @path     The 404'd path (will be normalized).
+     * @referer  Optional Referer header (truncated to 500 chars).
+     */
+    function recordHit( required string path, string referer = "" ) {
+        try {
+            var norm = variables.redirectService.normalizePath( arguments.path );
+            if ( !len( norm ) || len( norm ) > variables.maxPathLength ) return;
+
+            // Skip asset-style paths — these 404s are noise (a
+            // missing favicon doesn't belong in the redirects
+            // report). Lets the broken-links UI stay focused on
+            // human-facing URLs.
+            if ( isAssetPath( norm ) ) return;
+
+            var refSafe = len( arguments.referer ) > variables.maxRefererLength
+                ? left( arguments.referer, variables.maxRefererLength )
+                : arguments.referer;
+
+            var existing = freshQb().from( "broken_links" )
+                .where( "path", norm )
+                .first();
+
+            if ( isNullOrEmpty( existing ) ) {
+                var row = {
+                    "path"          : norm,
+                    "hits"          : 1,
+                    "first_seen_at" : nowForDb(),
+                    "last_seen_at"  : nowForDb()
+                };
+                if ( len( refSafe ) ) row[ "referer" ] = refSafe;
+                freshQb().from( "broken_links" ).insert( row );
+                return;
+            }
+
+            var update = {
+                "hits"         : freshQb().raw( "hits + 1" ),
+                "last_seen_at" : nowForDb()
+            };
+            // Only overwrite referer when we have a new non-empty
+            // one — empty hits shouldn't wipe a previously-captured
+            // referer that's actually useful to the admin.
+            if ( len( refSafe ) ) update[ "referer" ] = refSafe;
+            freshQb().from( "broken_links" )
+                .where( "id", existing.id )
+                .update( update );
+        }
+        catch ( any e ) {
+            log.warn( "BrokenLinkService.recordHit failed for path=" & arguments.path & ": " & e.message );
+        }
+    }
+
+    /**
+     * Promote a `broken_links` row to a `redirects` row. Creates
+     * the redirect via RedirectService.register (which handles
+     * chain-collapse + idempotency), then back-fills the
+     * broken-links row with `created_redirect_id` + `resolved_at`
+     * so it drops off the unresolved report.
+     *
+     * Returns the new redirect's id; throws whatever
+     * RedirectService.register throws on bad input (self-redirect,
+     * invalid path, etc.) — the admin UI catches + surfaces it.
+     */
+    numeric function resolveWithRedirect(
+        required numeric brokenLinkId,
+        required string  toPath,
+                 numeric statusCode = 301,
+                 any     createdBy  = javaCast( "null", "" )
+    ) {
+        var row = freshQb().from( "broken_links" )
+            .where( "id", arguments.brokenLinkId )
+            .first();
+        if ( isNullOrEmpty( row ) ) {
+            throw(
+                type    = "bxBlogger.BrokenLinkService.NotFound",
+                message = "broken_links row id=" & arguments.brokenLinkId & " not found"
+            );
+        }
+
+        var redirectId = variables.redirectService.register(
+            fromPath   = row.path,
+            toPath     = arguments.toPath,
+            statusCode = arguments.statusCode,
+            createdBy  = arguments.createdBy
+        );
+
+        freshQb().from( "broken_links" )
+            .where( "id", arguments.brokenLinkId )
+            .update( {
+                "resolved_at"         : nowForDb(),
+                "created_redirect_id" : redirectId
+            } );
+        return val( redirectId );
+    }
+
+    /**
+     * Delete a broken-links row outright. Used by the admin
+     * "Dismiss" action when a path isn't worth redirecting (one-
+     * off bad link in someone's email, scanner noise, etc.).
+     */
+    function delete( required numeric id ) {
+        freshQb().from( "broken_links" )
+            .where( "id", arguments.id )
+            .delete();
+    }
+
+    // --------------------------------------------------------------------
+    // Read
+    // --------------------------------------------------------------------
+
+    /**
+     * Paged list of broken-link rows for the admin report.
+     *
+     * @includeResolved  When false (default), omit rows where
+     *                   `resolved_at IS NOT NULL` — the admin
+     *                   report primarily wants un-promoted links.
+     *                   A toggle on the UI passes `true` to show
+     *                   history.
+     * @page / @perPage  Pagination. Defaults to first page, 50
+     *                   rows — small enough to fit one scroll of
+     *                   the admin table without paging for most
+     *                   sites.
+     */
+    struct function list(
+        boolean includeResolved = false,
+        numeric page            = 1,
+        numeric perPage         = 50
+    ) {
+        var baseQuery = freshQb().from( "broken_links" );
+        if ( !arguments.includeResolved ) baseQuery.whereNull( "resolved_at" );
+
+        // Grab total BEFORE order/limit so the caller can render
+        // pagination; count() resets column selection so we can
+        // reuse the builder for the main fetch.
+        var total = freshQb().from( "broken_links" );
+        if ( !arguments.includeResolved ) total.whereNull( "resolved_at" );
+        var totalCount = total.count();
+
+        var offset = ( arguments.page - 1 ) * arguments.perPage;
+        if ( offset < 0 ) offset = 0;
+
+        var rows = baseQuery
+            .orderBy( "hits", "desc" )
+            .orderBy( "last_seen_at", "desc" )
+            .limit( arguments.perPage )
+            .offset( offset )
+            .get();
+
+        return {
+            "rows"       : rows,
+            "total"      : totalCount,
+            "page"       : arguments.page,
+            "perPage"    : arguments.perPage,
+            "totalPages" : ceiling( totalCount / arguments.perPage )
+        };
+    }
+
+    any function find( required numeric id ) {
+        var row = freshQb().from( "broken_links" )
+            .where( "id", arguments.id )
+            .first();
+        return isNullOrEmpty( row ) ? javaCast( "null", "" ) : row;
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    /**
+     * Paths we don't bother recording. Missing static assets
+     * (favicons, old CSS/JS bundles, WordPress scanner probes)
+     * generate a lot of 404s that nobody would ever want to
+     * promote to a redirect; tracking them would bury the
+     * actually-actionable content-URL entries.
+     */
+    private boolean function isAssetPath( required string path ) {
+        var p = lCase( arguments.path );
+        // WordPress / XML-RPC scanner noise — these are automated
+        // probes, not lost legitimate traffic.
+        if ( left( p, 8  ) == "/wp-admi" || left( p, 11 ) == "/wp-content"
+          || left( p, 11 ) == "/wp-includ" || left( p, 10 ) == "/wp-login."
+          || left( p, 5  ) == "/xmlrpc" || p == "/xmlrpc.php" ) return true;
+
+        var dot = listLast( p, "." );
+        if ( dot == p ) return false;   // no extension — it's a page
+        var exts = "ico,png,jpg,jpeg,gif,svg,webp,css,js,map,woff,woff2,ttf,eot,json,txt";
+        return listFindNoCase( exts, dot ) > 0;
+    }
+
+    private boolean function isNullOrEmpty( required any value ) {
+        if ( isNull( arguments.value ) ) return true;
+        if ( isStruct( arguments.value ) && structIsEmpty( arguments.value ) ) return true;
+        return false;
+    }
+
+    private any function freshQb() {
+        return variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery();
+    }
+
+    private string function nowForDb() {
+        return dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+    }
+
+}

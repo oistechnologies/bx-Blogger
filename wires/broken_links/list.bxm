@@ -1,0 +1,259 @@
+<bx:script>
+// @startWire
+/**
+ * broken_links.list — 404 Report with "Add Redirect" promote action
+ * (Phase 7.G, B22).
+ *
+ * Rows sort by `hits DESC, last_seen_at DESC` so the admin sees the
+ * most-painful legacy URLs first. The "Add Redirect" button opens an
+ * inline `to_path` input underneath the row; submitting the form
+ * calls BrokenLinkService.resolveWithRedirect, which writes a
+ * `redirects` row via RedirectService and back-fills the
+ * broken-links row with `resolved_at` + `created_redirect_id`.
+ *
+ * Permission split:
+ *   broken_links.view   — render the page + list rows
+ *   redirects.manage    — enables the "Add Redirect" + "Dismiss"
+ *                         actions; editors can view but not write
+ */
+
+property name="brokenLinkSvc" inject="BrokenLinkService";
+property name="cbauth"        inject="AuthenticationService@cbauth";
+
+data = {
+    "includeResolved" : false,
+    "page"            : 1,
+    "perPage"         : 50,
+    "promotingId"     : 0,
+    "promoteToPath"   : "",
+    "flashOk"         : "",
+    "flashError"      : ""
+};
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function toggleResolved() {
+    data.includeResolved = !data.includeResolved;
+    data.page = 1;
+}
+
+function startPromote( required id ) {
+    clearFlashes();
+    if ( !canWrite() ) return;
+    data.promotingId   = int( arguments.id );
+    data.promoteToPath = "";
+}
+
+function cancelPromote() {
+    data.promotingId   = 0;
+    data.promoteToPath = "";
+}
+
+function confirmPromote() {
+    clearFlashes();
+    if ( !canWrite() ) return;
+    if ( data.promotingId <= 0 ) return;
+
+    var toPath = trim( data.promoteToPath ?: "" );
+    if ( !len( toPath ) ) {
+        data.flashError = "Target path is required.";
+        return;
+    }
+
+    try {
+        brokenLinkSvc.resolveWithRedirect(
+            brokenLinkId = data.promotingId,
+            toPath       = toPath,
+            createdBy    = cbauth.getUser().getId()
+        );
+        data.flashOk = "Redirect created; row marked resolved.";
+    }
+    catch ( any e ) {
+        // Surface a clean message from the typed exceptions
+        // (bxBlogger.RedirectService.*) rather than the raw Java
+        // stack. Other errors fall through to the generic message.
+        data.flashError = "Couldn't create redirect: " & ( e.message ?: "unknown error" );
+    }
+
+    data.promotingId   = 0;
+    data.promoteToPath = "";
+}
+
+function dismiss( required id ) {
+    clearFlashes();
+    if ( !canWrite() ) return;
+    brokenLinkSvc.delete( int( arguments.id ) );
+    data.flashOk = "Row dismissed.";
+}
+
+function goToPage( required pageNum ) {
+    var p = int( arguments.pageNum );
+    if ( p < 1 ) p = 1;
+    data.page = p;
+}
+
+// --------------------------------------------------------------------
+// View helpers
+// --------------------------------------------------------------------
+
+struct function paged() {
+    return brokenLinkSvc.list(
+        includeResolved = data.includeResolved,
+        page            = data.page,
+        perPage         = data.perPage
+    );
+}
+
+boolean function canWrite() {
+    return cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "redirects.manage" );
+}
+
+// --------------------------------------------------------------------
+// Private
+// --------------------------------------------------------------------
+
+private void function clearFlashes() {
+    data.flashOk    = "";
+    data.flashError = "";
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:script>
+    report   = paged();
+    writeAuth = canWrite();
+</bx:script>
+
+<div>
+    <bx:if len( args.flashOk )>
+        <div class="alert alert-success alert-dismissible">
+            #encodeForHTML( args.flashOk )#
+            <button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+        </div>
+    </bx:if>
+    <bx:if len( args.flashError )>
+        <div class="alert alert-danger alert-dismissible">
+            #encodeForHTML( args.flashError )#
+            <button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+        </div>
+    </bx:if>
+
+    <div class="card stat-card stat-card-info mb-3">
+        <div class="card-header card-header-soft card-header-soft-info d-flex justify-content-between align-items-center">
+            <span class="h6 mb-0">Missing pages &mdash; #report.total# #( args.includeResolved ? "total" : "unresolved" )#</span>
+            <div class="form-check form-switch m-0">
+                <input class="form-check-input"
+                       type="checkbox"
+                       id="toggle-include-resolved"
+                       wire:click="toggleResolved"
+                       <bx:if args.includeResolved>checked</bx:if>>
+                <label class="form-check-label small" for="toggle-include-resolved">
+                    Show resolved
+                </label>
+            </div>
+        </div>
+        <div class="card-body p-0">
+            <bx:if !arrayLen( report.rows )>
+                <p class="text-muted p-4 mb-0">No broken links to report. Crawlers aren't hitting anything that 404s.</p>
+            <bx:else>
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th scope="col">Path</th>
+                                <th scope="col" class="text-end">Hits</th>
+                                <th scope="col">Last seen</th>
+                                <th scope="col">Referer</th>
+                                <th scope="col" class="text-end" style="width: 16rem;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <bx:loop array="#report.rows#" item="row">
+                                <tr>
+                                    <td>
+                                        <code class="small">#encodeForHTML( row.path )#</code>
+                                        <bx:if !isNull( row.resolved_at ?: "" ) && len( row.resolved_at ?: "" )>
+                                            <span class="badge text-bg-success ms-2" title="Resolved by an Add Redirect action">
+                                                resolved
+                                            </span>
+                                        </bx:if>
+                                    </td>
+                                    <td class="text-end">#val( row.hits ?: 0 )#</td>
+                                    <td class="small text-muted">
+                                        #encodeForHTML( dateTimeFormat( row.last_seen_at, "yyyy-mm-dd h:nn tt" ) )#
+                                    </td>
+                                    <td class="small text-muted">
+                                        <bx:if len( row.referer ?: "" )>
+                                            <span title="#encodeForHTMLAttribute( row.referer )#">
+                                                #encodeForHTML( left( row.referer, 60 ) )##( len( row.referer ) > 60 ? "&hellip;" : "" )#
+                                            </span>
+                                        <bx:else>
+                                            &mdash;
+                                        </bx:if>
+                                    </td>
+                                    <td class="text-end">
+                                        <bx:if writeAuth && ( isNull( row.resolved_at ?: "" ) || !len( row.resolved_at ?: "" ) )>
+                                            <bx:if args.promotingId == val( row.id )>
+                                                <!--- Inline promote form --->
+                                                <form wire:submit.prevent="confirmPromote" class="d-flex gap-1 justify-content-end">
+                                                    <input type="text"
+                                                           class="form-control form-control-sm"
+                                                           placeholder="/new-path"
+                                                           wire:model.blur="promoteToPath"
+                                                           autofocus
+                                                           style="max-width: 10rem;">
+                                                    <button type="submit" class="btn btn-primary btn-sm">Save</button>
+                                                    <button type="button" class="btn btn-outline-secondary btn-sm"
+                                                            wire:click="cancelPromote">Cancel</button>
+                                                </form>
+                                            <bx:else>
+                                                <button type="button"
+                                                        class="btn btn-outline-primary btn-sm"
+                                                        wire:click="startPromote(#val( row.id )#)">
+                                                    Add Redirect
+                                                </button>
+                                                <button type="button"
+                                                        class="btn btn-outline-danger btn-sm"
+                                                        wire:click="dismiss(#val( row.id )#)"
+                                                        wire:confirm="Dismiss this broken link? It will reappear if it's hit again.">
+                                                    Dismiss
+                                                </button>
+                                            </bx:if>
+                                        <bx:elseif !writeAuth>
+                                            <span class="text-muted small">read-only</span>
+                                        <bx:else>
+                                            &mdash;
+                                        </bx:if>
+                                    </td>
+                                </tr>
+                            </bx:loop>
+                        </tbody>
+                    </table>
+                </div>
+            </bx:if>
+        </div>
+        <bx:if report.totalPages gt 1>
+            <div class="card-footer d-flex justify-content-between align-items-center">
+                <span class="small text-muted">
+                    Page #args.page# of #report.totalPages#
+                </span>
+                <div class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-secondary"
+                            wire:click="goToPage(#max( 1, args.page - 1 )#)"
+                            <bx:if args.page lte 1>disabled</bx:if>>
+                        &laquo; Prev
+                    </button>
+                    <button class="btn btn-outline-secondary"
+                            wire:click="goToPage(#min( report.totalPages, args.page + 1 )#)"
+                            <bx:if args.page gte report.totalPages>disabled</bx:if>>
+                        Next &raquo;
+                    </button>
+                </div>
+            </div>
+        </bx:if>
+    </div>
+</div>
+</bx:output>

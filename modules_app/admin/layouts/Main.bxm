@@ -176,6 +176,10 @@
 						<a class="nav-link #( currentEvent.startsWith( 'admin:Menus.' ) ? 'active' : '' )#"
 						   href="#event.buildLink( 'admin:Menus.index' )#">Menus</a>
 					</bx:if>
+					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "broken_links.view" )>
+						<a class="nav-link #( currentEvent.startsWith( 'admin:BrokenLinks.' ) ? 'active' : '' )#"
+						   href="#event.buildLink( 'admin:BrokenLinks.index' )#">404 Report</a>
+					</bx:if>
 					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "settings.manage" )>
 						<a class="nav-link #( currentEvent.startsWith( 'admin:Settings.' ) ? 'active' : '' )#"
 						   href="#event.buildLink( 'admin:Settings.index' )#">Settings</a>

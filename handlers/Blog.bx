@@ -378,6 +378,18 @@ class extends="coldbox.system.EventHandler" {
      * error card. Handlers can opt to swap the layout if they want.
      */
     private void function renderNotFound( required any event, required any prc ) {
+        // Phase 7.G — record the missing path in broken_links so
+        // the admin 404 Report can promote it to a redirect.
+        // Best-effort; a service failure must not take down the
+        // 404 render.
+        try {
+            getInstance( "BrokenLinkService" ).recordHit(
+                path    = arguments.event.getCurrentRoutedURL(),
+                referer = arguments.event.getHTTPHeader( "Referer", "" )
+            );
+        }
+        catch ( any e ) {}
+
         arguments.event.setHTTPHeader( statusCode = 404, statusText = "Not Found" );
         arguments.prc.pageTitle = "Not Found &middot; " & getSetting( "AppName" );
         arguments.event.setLayout( arguments.prc.theme.layout( "Main" ) );

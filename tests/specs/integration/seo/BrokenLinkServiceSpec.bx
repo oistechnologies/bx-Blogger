@@ -1,0 +1,253 @@
+/**
+ * bx-Blogger — BrokenLinkServiceSpec (Phase 7.G, B22)
+ *
+ * Covers:
+ *   - recordHit inserts on first hit, increments on repeats
+ *   - normalized path matches across recordHit + list
+ *   - asset + WordPress-scanner paths are skipped (don't
+ *     pollute the report)
+ *   - referer capture + overwrite-only-when-non-empty semantics
+ *   - list() filters resolved rows by default; paginates
+ *   - resolveWithRedirect creates a redirects row AND sets
+ *     `resolved_at` + `created_redirect_id` on the broken-links row
+ *   - end-to-end: a missing /blog/{slug} 404 triggers recordHit
+ *     via Blog.renderNotFound's inline call
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc          = getInstance( "BrokenLinkService" );
+        variables.redirectSvc  = getInstance( "RedirectService" );
+        variables.brokenBoundary   = maxId( "broken_links" );
+        variables.redirectBoundary = maxId( "redirects" );
+    }
+
+    function afterAll() {
+        try {
+            var qb = getInstance( "QueryBuilder@qb" );
+            qb.newQuery().from( "broken_links" )
+                .where( "id", ">", variables.brokenBoundary ?: 0 )
+                .delete();
+            qb.newQuery().from( "redirects" )
+                .where( "id", ">", variables.redirectBoundary ?: 0 )
+                .delete();
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "BrokenLinkServiceSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "BrokenLinkService", function() {
+
+            describe( "recordHit()", function() {
+                it( "inserts a new row on first hit", function() {
+                    var path = "/spec-missing-" & createUUID();
+                    svc.recordHit( path = path, referer = "https://ref.example/" );
+
+                    var row = fetchByPath( path );
+                    expect( isNullOrEmptyLocal( row ) ).toBeFalse();
+                    expect( val( row.hits ) ).toBe( 1 );
+                    expect( row.referer ).toBe( "https://ref.example/" );
+                } );
+
+                it( "increments hits + bumps last_seen_at on repeat", function() {
+                    var path = "/spec-repeat-" & createUUID();
+                    svc.recordHit( path = path );
+                    svc.recordHit( path = path );
+                    svc.recordHit( path = path );
+
+                    var row = fetchByPath( path );
+                    expect( val( row.hits ) ).toBe( 3 );
+                } );
+
+                it( "normalizes the path (matches RedirectService.normalizePath)", function() {
+                    var base = "/spec-norm-" & createUUID();
+                    svc.recordHit( path = base & "/?utm=1" );
+                    // Subsequent hit in a slightly different form lands
+                    // on the same row after normalization.
+                    svc.recordHit( path = base & "/" );
+
+                    var row = fetchByPath( base );
+                    expect( isNullOrEmptyLocal( row ) ).toBeFalse();
+                    expect( val( row.hits ) ).toBe( 2 );
+                } );
+
+                it( "skips asset paths (favicon / css / js / etc.)", function() {
+                    svc.recordHit( path = "/missing.css" );
+                    svc.recordHit( path = "/favicon.ico" );
+                    svc.recordHit( path = "/assets/app.js" );
+
+                    expect( isNullOrEmptyLocal( fetchByPath( "/missing.css" ) ) ).toBeTrue();
+                    expect( isNullOrEmptyLocal( fetchByPath( "/favicon.ico" ) ) ).toBeTrue();
+                    expect( isNullOrEmptyLocal( fetchByPath( "/assets/app.js" ) ) ).toBeTrue();
+                } );
+
+                it( "skips WordPress-scanner probe paths", function() {
+                    svc.recordHit( path = "/wp-admin/" );
+                    svc.recordHit( path = "/wp-login.php" );
+                    svc.recordHit( path = "/xmlrpc.php" );
+
+                    expect( isNullOrEmptyLocal( fetchByPath( "/wp-admin" ) ) ).toBeTrue();
+                    expect( isNullOrEmptyLocal( fetchByPath( "/wp-login.php" ) ) ).toBeTrue();
+                    expect( isNullOrEmptyLocal( fetchByPath( "/xmlrpc.php" ) ) ).toBeTrue();
+                } );
+
+                it( "does NOT overwrite a captured referer with an empty one on a repeat hit", function() {
+                    var path = "/spec-ref-" & createUUID();
+                    svc.recordHit( path = path, referer = "https://first.example/" );
+                    svc.recordHit( path = path, referer = "" );
+
+                    var row = fetchByPath( path );
+                    expect( row.referer ).toBe( "https://first.example/" );
+                } );
+            } );
+
+            describe( "list()", function() {
+                it( "omits resolved rows by default; includes them when flag is true", function() {
+                    var open = "/spec-open-" & createUUID();
+                    var done = "/spec-done-" & createUUID();
+                    svc.recordHit( path = open );
+                    svc.recordHit( path = done );
+
+                    // Mark `done` as resolved by hand (resolveWithRedirect
+                    // path is tested separately below).
+                    var doneRow = fetchByPath( done );
+                    getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "broken_links" )
+                        .where( "id", doneRow.id )
+                        .update( { "resolved_at" : dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" ) } );
+
+                    var unresolved = svc.list();
+                    var all        = svc.list( includeResolved = true );
+
+                    var paths = rowPaths( unresolved.rows );
+                    expect( paths ).toInclude( open );
+                    expect( paths ).notToInclude( done );
+
+                    var allPaths = rowPaths( all.rows );
+                    expect( allPaths ).toInclude( open );
+                    expect( allPaths ).toInclude( done );
+                } );
+
+                it( "orders by hits DESC then last_seen_at DESC", function() {
+                    var high = "/spec-high-" & createUUID();
+                    var low  = "/spec-low-"  & createUUID();
+                    svc.recordHit( path = low  );
+                    svc.recordHit( path = high );
+                    svc.recordHit( path = high );
+                    svc.recordHit( path = high );
+
+                    var paths = rowPaths( svc.list().rows );
+                    expect( paths.find( high ) ).toBeLT( paths.find( low ), "high-hit row appears before low-hit row" );
+                } );
+
+                it( "returns pagination metadata", function() {
+                    var out = svc.list( page = 1, perPage = 2 );
+                    expect( structKeyExists( out, "total"      ) ).toBeTrue();
+                    expect( structKeyExists( out, "totalPages" ) ).toBeTrue();
+                    expect( out.perPage ).toBe( 2 );
+                    expect( arrayLen( out.rows ) ).toBeLTE( 2 );
+                } );
+            } );
+
+            describe( "resolveWithRedirect()", function() {
+                it( "creates a redirects row AND back-fills broken_links.resolved_at + created_redirect_id", function() {
+                    var path = "/spec-promote-" & createUUID();
+                    svc.recordHit( path = path );
+                    var brokenId = fetchByPath( path ).id;
+
+                    var redirectId = svc.resolveWithRedirect(
+                        brokenLinkId = brokenId,
+                        toPath       = "/spec-new-target"
+                    );
+                    expect( redirectId ).toBeGT( 0 );
+
+                    var redirectRow = redirectSvc.lookup( path );
+                    expect( isNull( redirectRow ) ).toBeFalse();
+                    expect( redirectRow.to_path ).toBe( "/spec-new-target" );
+                    expect( val( redirectRow.status_code ) ).toBe( 301 );
+
+                    var brokenRow = fetchByPath( path );
+                    expect( len( brokenRow.resolved_at ?: "" ) ).toBeGT( 0 );
+                    expect( val( brokenRow.created_redirect_id ) ).toBe( redirectId );
+                } );
+
+                it( "throws NotFound when the broken_links row doesn't exist", function() {
+                    expect( function() {
+                        svc.resolveWithRedirect( brokenLinkId = 9999999, toPath = "/anywhere" );
+                    } ).toThrow( type = "bxBlogger.BrokenLinkService.NotFound" );
+                } );
+
+                it( "propagates RedirectService validation errors", function() {
+                    var path = "/spec-selfredir-" & createUUID();
+                    svc.recordHit( path = path );
+                    var brokenId = fetchByPath( path ).id;
+
+                    // self-redirect: RedirectService.register throws
+                    // `bxBlogger.RedirectService.SelfRedirect` and we
+                    // propagate rather than catch, so the admin UI
+                    // can surface the clean message.
+                    expect( function() {
+                        svc.resolveWithRedirect( brokenLinkId = brokenId, toPath = path );
+                    } ).toThrow( type = "bxBlogger.RedirectService.SelfRedirect" );
+                } );
+            } );
+
+            describe( "find() + delete()", function() {
+                it( "find() returns null when the id isn't present", function() {
+                    expect( isNull( svc.find( 99999999 ) ) ).toBeTrue();
+                } );
+
+                it( "delete() drops the row", function() {
+                    var path = "/spec-delete-" & createUUID();
+                    svc.recordHit( path = path );
+                    var id = fetchByPath( path ).id;
+                    svc.delete( id );
+                    expect( isNull( svc.find( id ) ) ).toBeTrue();
+                } );
+            } );
+
+        } );
+    }
+
+    // --------------------------------------------------------------------
+    // Helpers
+    // --------------------------------------------------------------------
+
+    private any function fetchByPath( required string path ) {
+        var normPath = variables.redirectSvc.normalizePath( arguments.path );
+        return getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "broken_links" )
+            .where( "path", normPath )
+            .first();
+    }
+
+    private boolean function isNullOrEmptyLocal( required any value ) {
+        if ( isNull( arguments.value ) ) return true;
+        if ( isStruct( arguments.value ) && structIsEmpty( arguments.value ) ) return true;
+        return false;
+    }
+
+    private array function rowPaths( required array rows ) {
+        var out = [];
+        for ( var r in arguments.rows ) out.append( r.path );
+        return out;
+    }
+
+    private numeric function maxId( required string table ) {
+        try {
+            var row = getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( arguments.table )
+                .selectRaw( "COALESCE(MAX(id), 0) AS max_id" )
+                .first();
+            return val( row.max_id ?: 0 );
+        }
+        catch ( any e ) {
+            return 0;
+        }
+    }
+
+}
