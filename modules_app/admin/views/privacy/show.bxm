@@ -51,7 +51,7 @@
                    href="#event.buildLink( to = 'admin:Privacy.exportUser', queryString = 'id=' & prc.user.getId() )#">
                     Download export (ZIP)
                 </a>
-                <bx:if prc.canPurge>
+                <bx:if prc.canPurge && prc.user.getId() != prc.signedInId>
                     <button type="button" class="btn btn-outline-danger"
                             data-bs-toggle="collapse"
                             data-bs-target="##purge-confirm"
@@ -59,6 +59,16 @@
                             aria-controls="purge-confirm">
                         Purge&hellip;
                     </button>
+                <bx:elseif prc.canPurge>
+                    <!--- Focused-on-self — the purge action would
+                          invalidate our own session mid-request, so
+                          we surface a read-only hint instead of the
+                          button. Service enforces the same rule on
+                          the POST side. --->
+                    <span class="text-muted small align-self-center"
+                          title="Ask another admin to purge your account.">
+                        Self-purge disabled
+                    </span>
                 </bx:if>
             </div>
         </div>
@@ -102,8 +112,9 @@
             <!--- Phase 8.D.2 — right-to-be-forgotten two-step confirm.
                   Collapsed by default (Bootstrap); the "Purge…" button
                   toggles it open. Typed-email confirm is re-checked by
-                  the handler so a direct POST can't bypass. --->
-            <bx:if prc.canPurge>
+                  the handler so a direct POST can't bypass. Hidden on
+                  self-focus — matches the button-level hide above. --->
+            <bx:if prc.canPurge && prc.user.getId() != prc.signedInId>
                 <div id="purge-confirm" class="collapse mt-4">
                     <div class="border border-danger rounded p-3 bg-danger bg-opacity-10">
                         <h5 class="mb-2">Purge this user</h5>

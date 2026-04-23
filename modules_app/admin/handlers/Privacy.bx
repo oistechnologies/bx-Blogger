@@ -47,7 +47,13 @@ class extends="coldbox.system.EventHandler" {
         prc.pageTitle   = "Privacy";
         prc.query       = trim( rc.q ?: "" );
         prc.lookupError = "";
-        prc.canPurge    = cbauth.getUser().hasPermission( "users.purge" );
+        // `canPurge` gates the dangerous-action UI; self-purge is
+        // additionally blocked in the view by comparing the focused
+        // user's id to the signed-in admin's. Service enforces the
+        // same rule as a defense-in-depth second layer so a direct
+        // POST can't bypass the UI hide.
+        prc.canPurge   = cbauth.getUser().hasPermission( "users.purge" );
+        prc.signedInId = cbauth.getUser().getId();
         // Absence of prc.user is the "no user selected" state —
         // the view checks `structKeyExists(prc, "user")` (BoxLang
         // removes struct keys assigned to null, so we just don't

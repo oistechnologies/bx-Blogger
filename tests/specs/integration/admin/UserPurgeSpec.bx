@@ -144,6 +144,17 @@ class extends="tests.support.BaseIntegrationSpec" {
                 } ).toThrow( type = "bxBlogger.UserService.CannotPurgeSentinel" );
             } );
 
+            it( "refuses to purge the acting admin's own account", function() {
+                // Self-purge would invalidate the admin's session
+                // mid-request. Even when peer admins exist, the
+                // service throws so a direct POST bypassing the UI
+                // hide can't do it either.
+                var admin = createTestUser();
+                expect( function() {
+                    userSvc.purge( user = admin, purgingAdminId = admin.getId() );
+                } ).toThrow( type = "bxBlogger.UserService.CannotPurgeSelf" );
+            } );
+
         } );
     }
 

@@ -540,6 +540,18 @@ class accessors="true" singleton {
                 message = "Refusing to purge the sentinel 'Deleted User' account."
             );
         }
+        // Self-purge guard. The "last super_admin" check below
+        // handles site lock-out; this one handles the mid-request
+        // session-invalidation confusion of an admin dropping
+        // their own row while they're logged into it. Even when
+        // peers exist, an admin should delegate the purge to
+        // another admin rather than run it on themselves.
+        if ( targetId == arguments.purgingAdminId ) {
+            throw(
+                type    = "bxBlogger.UserService.CannotPurgeSelf",
+                message = "Refusing to purge your own account — ask another admin to run the purge."
+            );
+        }
         if ( isSuperAdmin( arguments.user ) && countActiveSuperAdmins() <= 1 ) {
             throw(
                 type    = "bxBlogger.UserService.CannotPurgeLastSuperAdmin",
