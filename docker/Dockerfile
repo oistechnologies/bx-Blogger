@@ -54,4 +54,12 @@ RUN ${BUILD_DIR}/util/warmup-server.sh
 COPY docker/docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 
+# Phase 10.D — cbq worker entrypoint with SIGTERM drain + 30s grace.
+# Only the prod `worker` service in docker-compose.prod.yml uses this
+# (overrides CMD with `/cbq-worker-entrypoint.sh`); the app container
+# still boots via docker-entrypoint.sh above. See the script header for
+# the rationale + compose settings required alongside it.
+COPY docker/cbq-worker-entrypoint.sh /cbq-worker-entrypoint.sh
+RUN chmod +x /cbq-worker-entrypoint.sh
+
 CMD [ "/docker-entrypoint.sh" ]

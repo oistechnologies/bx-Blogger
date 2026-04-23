@@ -55,7 +55,15 @@ services:
     env_file: .env
     environment:
       ENVIRONMENT: production
-    command: [ "box", "cbq:work", "--tries=3" ]
+    # Phase 10.D — graceful-shutdown wrapper. Traps SIGTERM, forwards
+    # to the cbq:work child, waits up to CBQ_DRAIN_SECONDS (default 30s)
+    # for the child to finish its current job, then SIGKILL. See
+    # docker/cbq-worker-entrypoint.sh for the full rationale.
+    command: [ "/cbq-worker-entrypoint.sh" ]
+    # Docker's default stop-grace is 10s — too short for the 30s drain.
+    # 35s gives the wrapper a 5s buffer to handle its own SIGKILL branch
+    # before Docker itself escalates to SIGKILL.
+    stop_grace_period: 35s
     volumes:
       - backup-data:/var/backups/bx-blogger
     depends_on:
