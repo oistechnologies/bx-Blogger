@@ -176,6 +176,10 @@
 						<a class="nav-link #( currentEvent.startsWith( 'admin:Menus.' ) ? 'active' : '' )#"
 						   href="#event.buildLink( 'admin:Menus.index' )#">Menus</a>
 					</bx:if>
+					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "settings.manage" )>
+						<a class="nav-link #( currentEvent.startsWith( 'admin:Settings.' ) ? 'active' : '' )#"
+						   href="#event.buildLink( 'admin:Settings.index' )#">Settings</a>
+					</bx:if>
 
 					<!--- My account — always last, always visible to any
 					      signed-in admin-module user. Separated from the

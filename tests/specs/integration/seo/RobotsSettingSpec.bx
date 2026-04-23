@@ -1,0 +1,57 @@
+/**
+ * bx-Blogger — RobotsSettingSpec (Phase 7.B, B23)
+ *
+ * Ratchets two contracts for the admin-editable `/robots.txt`:
+ *
+ *   1. `seo.robots_txt` is present in the settings table after app
+ *      boot — `Main.seedEnvDrivenSettings()` actually ran and wrote
+ *      the default.
+ *   2. SettingService can round-trip a multi-line string value
+ *      without mangling newlines or content — the property this
+ *      setting uniquely depends on compared to the short scalars
+ *      the rest of the settings table holds.
+ *
+ * The default body's *content* is deliberately NOT asserted here:
+ * it's exercised via a manual curl smoke test on `/robots.txt`, and
+ * any admin (or other spec) can legitimately overwrite the value,
+ * making a content-shape assertion flap across runs.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.settings = getInstance( "SettingService" );
+    }
+
+    function afterAll() {
+        try {
+            variables.settings.delete( "tests.seo.robots_txt" );
+        }
+        catch ( any e ) {}
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "seo.robots_txt", function() {
+
+            it( "is seeded by Main.onAppInit so the setting is always present", function() {
+                expect( settings.has( "seo.robots_txt" ) ).toBeTrue();
+            } );
+
+            it( "round-trips a multi-line body through SettingService.string storage", function() {
+                var body = "User-agent: *" & char( 10 )
+                    & "Allow: /" & char( 10 )
+                    & "Disallow: /admin/" & char( 10 )
+                    & "Sitemap: https://example.com/sitemap.xml" & char( 10 );
+
+                settings.set( key = "tests.seo.robots_txt", value = body, type = "string" );
+                var back = settings.get( "tests.seo.robots_txt", "" );
+
+                expect( back ).toBe( trim( body ) );  // SettingService trims on write
+                expect( back contains char( 10 ) ).toBeTrue( "newlines preserved" );
+            } );
+
+        } );
+    }
+
+}

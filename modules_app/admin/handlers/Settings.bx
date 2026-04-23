@@ -1,0 +1,46 @@
+/**
+ * bx-Blogger — admin:Settings (Phase 7.B, B23)
+ *
+ * Landing for app-level settings. Phase 7.B ships the SEO page
+ * (robots.txt body). Peer pages — site identity, social, display
+ * — slot in as sibling actions here as they land.
+ *
+ * Bare `/admin/settings` redirects to the SEO page today; once a
+ * second page exists this becomes a proper nav/tab landing.
+ *
+ * Permissions: `settings.manage` already seeded by Phase 1's roles
+ * migration and assigned to super_admin + admin.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    this.layouts = { "Main.bxm" : "*" };
+
+    /**
+     * `this.prehandler_only` could gate all actions with a permission
+     * check, but CBWIRE wire actions short-circuit here — a logged-in
+     * user without the permission would still see a disabled form
+     * with the flash error set by the wire. The handler-side guard
+     * keeps anonymous visitors out.
+     */
+    function preHandler( event, rc, prc, action, eventArguments ) {
+        var auth = getInstance( "AuthenticationService@cbauth" );
+        if ( !auth.isLoggedIn() ) {
+            relocate( url = "/security/login" );
+            return;
+        }
+        if ( !auth.getUser().hasPermission( "settings.manage" ) ) {
+            relocate( event = "admin:Dashboard.index" );
+            return;
+        }
+    }
+
+    function index( event, rc, prc ) {
+        relocate( event = "admin:Settings.seo" );
+    }
+
+    function seo( event, rc, prc ) {
+        prc.pageTitle = "SEO Settings";
+        event.setView( view = "settings/seo" );
+    }
+
+}

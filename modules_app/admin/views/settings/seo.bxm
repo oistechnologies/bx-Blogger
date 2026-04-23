@@ -1,0 +1,5 @@
+<bx:output>
+#view( view = "partials/heading", args = { "title" : "SEO Settings" } )#
+
+#wire( name = "settings.seo" )#
+</bx:output>

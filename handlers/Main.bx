@@ -62,17 +62,52 @@ class extends="coldbox.system.EventHandler" {
 	}
 
 	/**
-	 * `/robots.txt` — Phase 3 ships a permissive default. Phase 7 (B23)
-	 * ships the admin SEO panel that lets an editor override this body
-	 * via `settings.seo.robots_txt`.
+	 * `/robots.txt` — body comes from `settings.seo.robots_txt` when
+	 * an admin has edited it (via the Phase 7.B SEO settings page),
+	 * otherwise falls back to the default seeded on first boot
+	 * (see `seedEnvDrivenSettings`). A canonical `Sitemap:` line
+	 * with the real base URL is appended when the body doesn't
+	 * already declare one — saves the admin from remembering to
+	 * retype their own hostname after a domain change.
 	 */
 	function robots( event, rc, prc ) {
+		var body = getInstance( "SettingService" ).get( "seo.robots_txt", defaultRobotsBody() );
+		if ( !len( trim( body ) ) ) body = defaultRobotsBody();
+
+		if ( !reFindNoCase( "(?m)^\s*Sitemap\s*:", body ) ) {
+			var proto   = event.getHTTPHeader( "X-Forwarded-Proto", cgi.server_protocol contains "HTTPS" ? "https" : "http" );
+			var host    = event.getHTTPHeader( "Host", cgi.server_name ?: "localhost" );
+			var baseUrl = proto & "://" & host;
+			if ( right( body, 1 ) != char( 10 ) ) body &= char( 10 );
+			body &= "Sitemap: " & baseUrl & "/sitemap.xml" & char( 10 );
+		}
+
 		event.setHTTPHeader( name = "Content-Type", value = "text/plain; charset=utf-8" );
 		event.renderData(
 			type       = "plain",
-			data       = "User-agent: *" & char( 10 ) & "Allow: /" & char( 10 ) & "Sitemap: /sitemap.xml" & char( 10 ),
+			data       = body,
 			statusCode = 200
 		);
+	}
+
+	/**
+	 * Default robots.txt body seeded on first boot and used as the
+	 * inline fallback if the setting is empty. Disallows the admin
+	 * shell and other non-public surfaces (preview, account, auth
+	 * routes) that crawlers should never index. The `Sitemap:` line
+	 * is injected by the handler with the real base URL, so it is
+	 * intentionally omitted here.
+	 */
+	private string function defaultRobotsBody() {
+		var nl = char( 10 );
+		return "User-agent: *" & nl
+			& "Allow: /" & nl
+			& "Disallow: /admin/" & nl
+			& "Disallow: /preview/" & nl
+			& "Disallow: /account/" & nl
+			& "Disallow: /security/" & nl
+			& "Disallow: /passwordReset/" & nl
+			& "Disallow: /emailVerification/" & nl;
 	}
 
 	/**
@@ -336,6 +371,17 @@ class extends="coldbox.system.EventHandler" {
 					description = "Destination for admin notification emails (failed jobs, security alerts, daily digest)."
 				);
 			}
+
+			// Phase 7.B — seed the default robots.txt body so the
+			// SEO settings textarea lands on a real starting point
+			// rather than a blank field. Admin edits thereafter are
+			// authoritative.
+			settings.seedIfMissing(
+				key         = "seo.robots_txt",
+				value       = defaultRobotsBody(),
+				type        = "string",
+				description = "Raw body served at /robots.txt. A Sitemap: line is auto-appended when not already present."
+			);
 		}
 		catch ( any e ) {
 			var log = getInstance( "logbox:logger:Main" );

@@ -1,0 +1,195 @@
+<bx:script>
+// @startWire
+/**
+ * settings.seo — admin form for `/robots.txt` (Phase 7.B, B23).
+ *
+ * Loads the current `seo.robots_txt` value, lets the admin edit it,
+ * shows a live preview of what the handler would serve (robots body
+ * plus the auto-injected Sitemap: line when the body doesn't declare
+ * one), and saves via SettingService — which in turn invalidates the
+ * per-setting cache AND the page cache so crawlers see the new body
+ * on the next fetch.
+ *
+ * "Reset to default" writes the bundled default back to the setting,
+ * so the admin doesn't have to retype the boilerplate after a
+ * well-intended edit goes sideways.
+ */
+
+property name="settingService" inject="SettingService";
+property name="cbauth"         inject="AuthenticationService@cbauth";
+
+data = {
+    "robotsTxt"  : "",
+    "flashOk"    : "",
+    "flashError" : ""
+};
+
+function onMount( event, rc, prc, params ) {
+    data.robotsTxt = settingService.get( "seo.robots_txt", defaultRobotsBody() );
+}
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function save() {
+    clearFlashes();
+    if ( !requirePerm() ) return;
+
+    var body = trim( data.robotsTxt ?: "" );
+    if ( !len( body ) ) {
+        data.flashError = "robots.txt body can't be empty — use " &
+            char( 34 ) & "Reset to default" & char( 34 ) & " if you want the shipped boilerplate back.";
+        return;
+    }
+
+    settingService.set(
+        key         = "seo.robots_txt",
+        value       = body,
+        type        = "string",
+        description = "Raw body served at /robots.txt. A Sitemap: line is auto-appended when not already present."
+    );
+    data.robotsTxt = settingService.get( "seo.robots_txt", body );
+    data.flashOk   = "robots.txt updated. Crawlers will pick up the change on their next fetch.";
+}
+
+function resetToDefault() {
+    clearFlashes();
+    if ( !requirePerm() ) return;
+    settingService.set(
+        key   = "seo.robots_txt",
+        value = defaultRobotsBody(),
+        type  = "string"
+    );
+    data.robotsTxt = settingService.get( "seo.robots_txt", defaultRobotsBody() );
+    data.flashOk   = "Reset to default robots.txt.";
+}
+
+// --------------------------------------------------------------------
+// View helpers
+// --------------------------------------------------------------------
+
+/**
+ * What the public /robots.txt handler would serve for the current
+ * admin-visible base URL. Mirrors `Main.robots()` so the preview
+ * panel never drifts from reality. Uses `cgi.http_host` because the
+ * wire's own request is the admin page — same host either way.
+ */
+string function preview() {
+    var body = trim( data.robotsTxt ?: "" );
+    if ( !len( body ) ) body = defaultRobotsBody();
+    if ( !reFindNoCase( "(?m)^\s*Sitemap\s*:", body ) ) {
+        var proto = cgi.server_protocol contains "HTTPS" ? "https" : "http";
+        var host  = cgi.http_host ?: ( cgi.server_name ?: "localhost" );
+        if ( right( body, 1 ) != char( 10 ) ) body &= char( 10 );
+        body &= "Sitemap: " & proto & "://" & host & "/sitemap.xml" & char( 10 );
+    }
+    return body;
+}
+
+// --------------------------------------------------------------------
+// Private
+// --------------------------------------------------------------------
+
+private void function clearFlashes() {
+    data.flashOk    = "";
+    data.flashError = "";
+}
+
+private boolean function requirePerm() {
+    var user = cbauth.getUser();
+    if ( user.hasPermission( "settings.manage" ) ) return true;
+    data.flashError = "You don't have permission to edit settings.";
+    return false;
+}
+
+/**
+ * Bundled default. Kept in sync with `Main.defaultRobotsBody()`.
+ * The one duplication is intentional — handler can't call into the
+ * wire's private, and lifting this into a service for two readers
+ * isn't pulling its weight yet.
+ */
+private string function defaultRobotsBody() {
+    var nl = char( 10 );
+    return "User-agent: *" & nl
+        & "Allow: /" & nl
+        & "Disallow: /admin/" & nl
+        & "Disallow: /preview/" & nl
+        & "Disallow: /account/" & nl
+        & "Disallow: /security/" & nl
+        & "Disallow: /passwordReset/" & nl
+        & "Disallow: /emailVerification/" & nl;
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<div>
+    <bx:if len( args.flashOk )>
+        <div class="alert alert-success alert-dismissible">
+            #encodeForHTML( args.flashOk )#
+            <button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+        </div>
+    </bx:if>
+    <bx:if len( args.flashError )>
+        <div class="alert alert-danger alert-dismissible">
+            #encodeForHTML( args.flashError )#
+            <button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+        </div>
+    </bx:if>
+
+    <div class="row g-4">
+        <div class="col-12 col-xl-7">
+            <div class="card stat-card stat-card-info">
+                <div class="card-header card-header-soft card-header-soft-info">
+                    <span class="h6 mb-0">robots.txt</span>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted small mb-3">
+                        Controls what crawlers see at <code>/robots.txt</code>. Admin
+                        and preview routes are disallowed by default. A <code>Sitemap:</code>
+                        line is auto-appended with the real base URL unless you declare
+                        one here, so a domain change doesn&rsquo;t require re-editing.
+                    </p>
+
+                    <form wire:submit.prevent="save">
+                        <div class="mb-3">
+                            <label for="robots-body" class="form-label">Body</label>
+                            <textarea id="robots-body"
+                                      class="form-control font-monospace"
+                                      rows="14"
+                                      wire:model.blur="robotsTxt"
+                                      spellcheck="false"></textarea>
+                        </div>
+                        <div class="d-flex gap-2">
+                            <button type="submit" class="btn btn-primary">Save</button>
+                            <button type="button"
+                                    class="btn btn-outline-danger"
+                                    wire:click="resetToDefault"
+                                    wire:confirm="Replace the current body with the shipped default?">
+                                Reset to default
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12 col-xl-5">
+            <div class="card stat-card stat-card-secondary">
+                <div class="card-header card-header-soft card-header-soft-secondary">
+                    <span class="h6 mb-0">Live preview &mdash; <code>/robots.txt</code></span>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted small mb-2">
+                        Exactly what the handler would serve right now. The
+                        <code>Sitemap:</code> line appears here automatically unless
+                        you declared one above.
+                    </p>
+                    <pre class="p-3 rounded bg-body-secondary small mb-0" style="white-space: pre-wrap;">#encodeForHTML( preview() )#</pre>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+</bx:output>
