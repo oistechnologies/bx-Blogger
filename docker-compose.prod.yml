@@ -38,6 +38,10 @@ services:
     env_file: .env
     environment:
       ENVIRONMENT: production
+      # Phase 10.E — one JSON object per stdout line so the Docker
+      # log driver (journald / fluentd / Loki / ELK) can index every
+      # event by level/category without regex-scraping free text.
+      LOG_FORMAT: json
     # No `ports:` block — the app is not published to the host. NPM reaches
     # it via the shared `proxy` network below using container DNS:
     #     scheme=http, host=${COMPOSE_PROJECT_NAME:-bx-blogger}-app, port=8080
@@ -55,6 +59,7 @@ services:
     env_file: .env
     environment:
       ENVIRONMENT: production
+      LOG_FORMAT: json
     # Phase 10.D — graceful-shutdown wrapper. Traps SIGTERM, forwards
     # to the cbq:work child, waits up to CBQ_DRAIN_SECONDS (default 30s)
     # for the child to finish its current job, then SIGKILL. See

@@ -1,0 +1,124 @@
+/**
+ * bx-Blogger — JsonLineLayout (Phase 10.E)
+ *
+ * LogBox custom layout: emits one JSON object per log event,
+ * one event per stdout line. Intended to be paired with the
+ * built-in ConsoleAppender in production so Docker's log driver
+ * (journald, fluentd, loki, ELK, etc.) can index every log event
+ * by level / category / message without regex-scraping free-form
+ * text.
+ *
+ * Wired in config/Coldbox.bx when LOG_FORMAT=json:
+ *
+ *   appenders : {
+ *     console : {
+ *       class  : "coldbox.system.logging.appenders.ConsoleAppender",
+ *       layout : "models.services.logging.JsonLineLayout"
+ *     }
+ *   }
+ *
+ * Shape:
+ *   {
+ *     "ts"    : "2026-04-23T21:45:32.123Z",
+ *     "level" : "INFO",
+ *     "cat"   : "root.handlers.Main",
+ *     "msg"   : "Login succeeded for user #42",
+ *     "extra" : { "userId": 42, "ip": "203.0.113.9" },
+ *     "app"   : "bx-blogger",
+ *     "ver"   : "0.1.0"
+ *   }
+ *
+ * Contract:
+ *   - Output is exactly one line (no embedded raw newlines —
+ *     jsonSerialize escapes newlines in strings as `\n`).
+ *   - `extra` is omitted when extraInfo is empty (saves bytes
+ *     on high-volume INFO logs).
+ *   - Any failure inside the layout (weird extraInfo that fails
+ *     to serialize, etc.) is caught and replaced with a minimal
+ *     fallback line; we never throw out of the logging path.
+ *
+ * Paths chosen explicitly (not relative):
+ *   BoxLang resolves `models.services.logging.JsonLineLayout`
+ *   from the app root. Don't use `root.models...` — that's the
+ *   generated-class name shape, not a createObject path.
+ */
+class extends="coldbox.system.logging.Layout" {
+
+    variables.appName    = "";
+    variables.appVersion = "";
+
+    /**
+     * LogBox passes the owning appender on init. We take that
+     * moment to snapshot APP_NAME / APP_VERSION from env so
+     * every event-format call avoids a setting lookup.
+     */
+    function init( required appender ) {
+        super.init( arguments.appender );
+        variables.appName    = getSystemSetting( "APP_NAME",    "bx-blogger" );
+        variables.appVersion = getSystemSetting( "APP_VERSION", "dev"        );
+        return this;
+    }
+
+    /**
+     * Format a LogEvent into a single JSON-serialized line.
+     *
+     * @logEvent coldbox.system.logging.LogEvent instance.
+     */
+    function format( required logEvent ) {
+        try {
+            var severity = variables.appender.severityToString( arguments.logEvent.getSeverity() );
+
+            var payload = {
+                "ts"    : isoNow(),
+                "level" : uCase( severity ),
+                "cat"   : arguments.logEvent.getCategory(),
+                "msg"   : arguments.logEvent.getMessage(),
+                "app"   : variables.appName,
+                "ver"   : variables.appVersion
+            };
+
+            var extra = arguments.logEvent.getExtraInfo();
+            if ( !isNull( extra ) ) {
+                if ( isSimpleValue( extra ) ) {
+                    if ( len( extra ) ) payload.extra = extra;
+                }
+                else if ( isStruct( extra ) || isArray( extra ) ) {
+                    payload.extra = extra;
+                }
+                else {
+                    // Object / query / other — fall back to the
+                    // appender's string representation so we still
+                    // capture *something* useful.
+                    payload.extra = arguments.logEvent.getExtraInfoAsString();
+                }
+            }
+
+            return jsonSerialize( payload );
+        }
+        catch ( any e ) {
+            // Last-ditch: a minimal valid JSON line with just
+            // enough context to trace the failure. Keeps the log
+            // stream parseable even when an extraInfo serializer
+            // blows up.
+            return jsonSerialize( {
+                "ts"         : isoNow(),
+                "level"      : "ERROR",
+                "cat"        : "logging.JsonLineLayout",
+                "msg"        : "layout.format() threw: " & ( e.message ?: "unknown" ),
+                "app"        : variables.appName,
+                "ver"        : variables.appVersion
+            } );
+        }
+    }
+
+    /**
+     * ISO-8601 UTC timestamp with millisecond precision —
+     * `2026-04-23T21:45:32.123Z`. Uses java.time.Instant so the
+     * string format is stable across engines + free of locale
+     * quirks dateTimeFormat() has with fractional seconds.
+     */
+    private string function isoNow() {
+        return createObject( "java", "java.time.Instant" ).now().toString();
+    }
+
+}

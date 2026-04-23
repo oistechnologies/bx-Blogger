@@ -99,16 +99,33 @@ class {
 		 * --------------------------------------------------------------------------
 		 * Application Logging (https://logbox.ortusbooks.com)
 		 * --------------------------------------------------------------------------
-		 * By Default we log to the console, but you can add many appenders or destinations to log to.
-		 * You can also choose the logging level of the root logger, or even the actual appender.
+		 * LOG_FORMAT controls the appender shape:
+		 *
+		 *   text (default, dev) — ConsoleAppender with the stock
+		 *                         human-readable layout. Easy to
+		 *                         skim in `docker compose logs`.
+		 *
+		 *   json (prod)          — ConsoleAppender with our custom
+		 *                         JsonLineLayout: one JSON object
+		 *                         per line to stdout, indexable by
+		 *                         journald / Loki / fluentd / ELK
+		 *                         without regex-scraping free text.
+		 *
+		 * Both modes write to stdout only — no file appender. A
+		 * Docker container's filesystem is ephemeral; log files
+		 * there die with the container. The orchestrator's log
+		 * driver is the single source of truth.
 		 */
+		var logFormat = getSystemSetting( "LOG_FORMAT", "text" );
+		var consoleAppender = logFormat == "json"
+			? {
+				class  : "coldbox.system.logging.appenders.ConsoleAppender",
+				layout : "models.services.logging.JsonLineLayout"
+			}
+			: { class : "coldbox.system.logging.appenders.ConsoleAppender" };
+
 		variables.logBox = {
-			// Define Appenders
-			appenders : { coldboxTracer : { class : "coldbox.system.logging.appenders.ConsoleAppender" } },
-			filelog    : {
-				class      : "coldbox.system.logging.appenders.RollingFileAppender",
-				properties : { filename : "app", filePath : expandPath( "logs" ) }
-			},
+			appenders : { console : consoleAppender },
 			// Root Logger
 			root      : { levelmax : "INFO", appenders : "*" },
 			// Implicit Level Categories

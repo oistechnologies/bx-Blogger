@@ -1,0 +1,162 @@
+/**
+ * bx-Blogger — JsonLineLayoutSpec (Phase 10.E)
+ *
+ * Exercises the JSON-per-line layout used in production logging.
+ * The dev stack defaults to text logs, so this spec has to build
+ * the layout directly (it's not wired up in dev's LogBox config).
+ *
+ * Covers:
+ *   - Single-line output (no embedded raw newlines — orchestrators
+ *     assume one event per line)
+ *   - Required keys: ts / level / cat / msg / app / ver
+ *   - Level mapping (numeric severity → upper-case string)
+ *   - ISO8601-with-millis timestamp
+ *   - extraInfo handling: string / struct / empty-none
+ *   - Messages containing `"`, `\`, `#`, newlines are correctly escaped
+ *   - Failures inside format() fall back to a minimal valid JSON line
+ *     (never throw out of the logging path)
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        // The layout needs an "appender" argument on init, purely for
+        // severityToString(). A ConsoleAppender stand-in works fine —
+        // we don't exercise its queue.
+        variables.appender = createObject(
+            "component",
+            "coldbox.system.logging.appenders.ConsoleAppender"
+        ).init( name = "test-console" );
+        variables.layout = createObject(
+            "component",
+            "models.services.logging.JsonLineLayout"
+        ).init( variables.appender );
+    }
+
+    function run() {
+        describe( "JsonLineLayout", function() {
+
+            it( "emits a single line (no raw newlines)", function() {
+                var line = variables.layout.format( evt( "hello world", 3, "test.cat" ) );
+                expect( line ).notToInclude( char( 10 ) );
+                expect( line ).notToInclude( char( 13 ) );
+            } );
+
+            it( "is parseable JSON with all required keys", function() {
+                var line = variables.layout.format( evt( "hello world", 3, "test.cat" ) );
+                var obj  = jsonDeserialize( line );
+                [ "ts", "level", "cat", "msg", "app", "ver" ].each( function( k ) {
+                    expect( obj ).toHaveKey( k, "missing key: #k#" );
+                } );
+            } );
+
+            it( "maps numeric severity to the correct upper-case string", function() {
+                var cases = { 0 : "FATAL", 1 : "ERROR", 2 : "WARN", 3 : "INFO", 4 : "DEBUG" };
+                for ( var sev in cases ) {
+                    var line = variables.layout.format( evt( "m", sev, "c" ) );
+                    var obj  = jsonDeserialize( line );
+                    expect( obj.level ).toBe( cases[ sev ], "severity #sev# → #cases[sev]#" );
+                }
+            } );
+
+            it( "emits an ISO-8601 timestamp with millis + Z", function() {
+                var obj = jsonDeserialize( variables.layout.format( evt( "m", 3, "c" ) ) );
+                // Shape: 2026-04-23T21:45:32.123Z — we don't pin the
+                // time, just the format.
+                expect( reFindNoCase( "^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z$", obj.ts ) ).toBeGT( 0 );
+            } );
+
+            it( "preserves the category verbatim", function() {
+                var obj = jsonDeserialize( variables.layout.format( evt( "m", 3, "root.models.services.PostService" ) ) );
+                expect( obj.cat ).toBe( "root.models.services.PostService" );
+            } );
+
+            it( "omits `extra` when extraInfo is empty", function() {
+                var obj = jsonDeserialize( variables.layout.format( evt( "m", 3, "c" ) ) );
+                expect( structKeyExists( obj, "extra" ) ).toBeFalse();
+            } );
+
+            it( "passes through a struct extraInfo as a nested object", function() {
+                var e   = evt( "with struct", 3, "c", { userId : 42, ip : "203.0.113.9" } );
+                var obj = jsonDeserialize( variables.layout.format( e ) );
+                expect( obj.extra.userId ).toBe( 42 );
+                expect( obj.extra.ip     ).toBe( "203.0.113.9" );
+            } );
+
+            it( "passes through an array extraInfo", function() {
+                var e   = evt( "with array", 3, "c", [ "a", "b", "c" ] );
+                var obj = jsonDeserialize( variables.layout.format( e ) );
+                expect( obj.extra ).toBeArray();
+                expect( obj.extra.len() ).toBe( 3 );
+            } );
+
+            it( "passes through a string extraInfo", function() {
+                var e   = evt( "with string", 3, "c", "note" );
+                var obj = jsonDeserialize( variables.layout.format( e ) );
+                expect( obj.extra ).toBe( "note" );
+            } );
+
+            it( "escapes quotes / backslashes in the message without breaking the JSON", function() {
+                var tricky = 'He said "hi" and used \ backslash';
+                var line   = variables.layout.format( evt( tricky, 3, "c" ) );
+                var obj    = jsonDeserialize( line );
+                expect( obj.msg ).toBe( tricky );
+            } );
+
+            it( "escapes embedded newlines in the message (stays one line)", function() {
+                var multiline = "line1" & char( 10 ) & "line2" & char( 13 ) & "line3";
+                var line      = variables.layout.format( evt( multiline, 3, "c" ) );
+                // The produced line must not itself contain raw CR/LF,
+                // but the round-tripped message must carry them back.
+                expect( line ).notToInclude( char( 10 ) );
+                expect( line ).notToInclude( char( 13 ) );
+                var obj = jsonDeserialize( line );
+                expect( obj.msg ).toBe( multiline );
+            } );
+
+            it( "includes APP_NAME + APP_VERSION from env under `app` + `ver`", function() {
+                // Layout snapshots these on init(); we can't cleanly
+                // mutate the env after construction, so just confirm
+                // they're non-empty strings.
+                var obj = jsonDeserialize( variables.layout.format( evt( "m", 3, "c" ) ) );
+                expect( len( obj.app ) ).toBeGTE( 1 );
+                expect( len( obj.ver ) ).toBeGTE( 1 );
+            } );
+
+            it( "never throws — a misbehaving extraInfo falls back to a minimal line", function() {
+                // A raw Java object (no $toString, not a CFML type) is
+                // the worst case: getExtraInfoAsString() can still
+                // stringify it, but if serialization ever fails the
+                // catch-block should kick in.
+                var weirdo = createObject( "java", "java.lang.Thread" ).currentThread();
+                var line   = variables.layout.format( evt( "weird", 3, "c", weirdo ) );
+                var obj    = jsonDeserialize( line );
+                // Either the happy path ran (layout stringified the
+                // object into extra) or the fallback kicked in. Both
+                // are valid JSON — that's the contract.
+                expect( structKeyExists( obj, "ts" )    ).toBeTrue();
+                expect( structKeyExists( obj, "level" ) ).toBeTrue();
+                expect( structKeyExists( obj, "msg" )   ).toBeTrue();
+            } );
+
+        } );
+    }
+
+    /**
+     * Build a real LogEvent (not a mock) for each case — that way
+     * severity / category / extraInfo plumbing is exercised exactly
+     * as LogBox itself would pass them to format().
+     */
+    private any function evt( required string msg, required numeric severity, required string cat, any extraInfo = "" ) {
+        return createObject(
+            "component",
+            "coldbox.system.logging.LogEvent"
+        ).init(
+            message   = arguments.msg,
+            severity  = arguments.severity,
+            extraInfo = arguments.extraInfo,
+            category  = arguments.cat
+        );
+    }
+
+}
