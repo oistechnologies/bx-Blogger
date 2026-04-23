@@ -19,7 +19,13 @@ class {
 	this.sessionTimeout       = createTimespan( 0, 1, 0, 0 );
 	this.setClientCookies     = true;
 	this.setDomainCookies     = true;
-	this.timezone             = "UTC";
+	// Timezone — sourced from APP_TIMEZONE (see .env.example). IANA
+	// name, not an abbreviation. Defaults to America/New_York so a
+	// half-configured install still produces sensible timestamps.
+	// Docker containers also get TZ set in compose, which covers
+	// the JVM + MySQL + OS-clock side; this line aligns ColdBox's
+	// own request-context timezone with them.
+	this.timezone             = getSystemSetting( "APP_TIMEZONE", "America/New_York" );
 	this.whiteSpaceManagement = "smart";
 
 	/**

@@ -5,7 +5,8 @@
 	},
 	"jvm":{
 		"heapSize":"2048",
-		"javaVersion":"openjdk21_jre"
+		"javaVersion":"openjdk21_jre",
+		"args":"-Duser.timezone=${env.APP_TIMEZONE}"
 	},
 	"web":{
 		"http":{

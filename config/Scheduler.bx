@@ -30,10 +30,12 @@
 class {
 
     function configure() {
-        // Server-local time keeps "02:00" readable for ops without
-        // mental TZ arithmetic. Prod containers should run in the
-        // host's preferred TZ (usually UTC — revisit if that changes).
-        setTimezone( "UTC" );
+        // Scheduler times (`02:00`, `06:00`, etc.) are interpreted
+        // in this timezone — match the app's global timezone so a
+        // "daily 02:00" task fires at 2am in whatever TZ the site
+        // actually operates in, not UTC. Sourced from APP_TIMEZONE
+        // (see .env.example + Application.bx).
+        setTimezone( getSystemSetting( "APP_TIMEZONE", "America/New_York" ) );
 
         // IMPORTANT: do NOT call `job.dispatch()` from inside a
         // scheduled-task closure. cbq's AbstractJob has a
