@@ -169,6 +169,69 @@ class accessors="true" singleton {
      * interceptor after serving a redirect. Uses a single UPDATE so
      * the counter is atomic against concurrent hits.
      */
+    /**
+     * Fetch a single redirect by id. Returns the row struct or
+     * null when no match — used by the admin edit form to hydrate.
+     *
+     * Named `findById` rather than `find` to dodge BoxLang's
+     * built-in `find(substring, string)` BIF — calling a bare
+     * `find(id)` from another method in this class resolves to
+     * the BIF and throws "Required argument [string] is missing".
+     */
+    any function findById( required numeric id ) {
+        var row = freshQb().from( "redirects" )
+            .where( "id", arguments.id )
+            .first();
+        return isNullOrEmpty( row ) ? javaCast( "null", "" ) : row;
+    }
+
+    /**
+     * Update a redirect row's `to_path` + `status_code` by id.
+     * Deliberately does NOT permit changing `from_path` — that's
+     * semantically a new redirect (different legacy URL) and
+     * should flow through `register()` + a fresh row so the audit
+     * trail (hit counter, last_hit_at) for the original path
+     * isn't muddled. The admin UI's edit form reflects this
+     * constraint: only the target + status are editable in-place.
+     */
+    function updateById(
+        required numeric id,
+        required string  toPath,
+                 numeric statusCode = 301
+    ) {
+        var toNorm = normalizePath( arguments.toPath );
+        assertValidPath( toNorm, "to_path" );
+        if ( arguments.statusCode != 301 && arguments.statusCode != 302 ) {
+            throw(
+                type    = "bxBlogger.RedirectService.InvalidStatus",
+                message = "status_code must be 301 or 302 (got " & arguments.statusCode & ")"
+            );
+        }
+
+        var row = findById( arguments.id );
+        if ( isNull( row ) ) {
+            throw(
+                type    = "bxBlogger.RedirectService.NotFound",
+                message = "Redirect id=" & arguments.id & " not found"
+            );
+        }
+        if ( row.from_path == toNorm ) {
+            throw(
+                type    = "bxBlogger.RedirectService.SelfRedirect",
+                message = "Refusing to update redirect [" & row.from_path & "] to point at itself"
+            );
+        }
+
+        freshQb().from( "redirects" )
+            .where( "id", arguments.id )
+            .update( {
+                "to_path"     : toNorm,
+                "status_code" : arguments.statusCode,
+                "updated_at"  : nowForDb()
+            } );
+        variables.pageCacheService.invalidateAll();
+    }
+
     function recordHit( required numeric id ) {
         freshQb().from( "redirects" )
             .where( "id", arguments.id )

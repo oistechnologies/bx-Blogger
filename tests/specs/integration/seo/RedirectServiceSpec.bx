@@ -122,6 +122,45 @@ class extends="tests.support.BaseIntegrationSpec" {
                 } );
             } );
 
+            describe( "findById() + updateById() — Phase 8.B admin CRUD", function() {
+                it( "findById() returns the row for a known id; null for unknown", function() {
+                    var id = svc.register( fromPath = "/find-spec-a", toPath = "/find-spec-b" );
+                    var row = svc.findById( id );
+                    expect( isNull( row ) ).toBeFalse();
+                    expect( row.from_path ).toBe( "/find-spec-a" );
+                    expect( isNull( svc.findById( 99999999 ) ) ).toBeTrue();
+                } );
+
+                it( "updateById() rewrites to_path + status_code", function() {
+                    var id = svc.register( fromPath = "/upd-from", toPath = "/upd-to-1", statusCode = 301 );
+                    svc.updateById( id = id, toPath = "/upd-to-2", statusCode = 302 );
+
+                    var row = svc.findById( id );
+                    expect( row.to_path ).toBe( "/upd-to-2" );
+                    expect( val( row.status_code ) ).toBe( 302 );
+                } );
+
+                it( "updateById() refuses to point a redirect at its own from_path", function() {
+                    var id = svc.register( fromPath = "/upd-self", toPath = "/somewhere" );
+                    expect( function() {
+                        svc.updateById( id = id, toPath = "/upd-self" );
+                    } ).toThrow( type = "bxBlogger.RedirectService.SelfRedirect" );
+                } );
+
+                it( "updateById() refuses unknown id", function() {
+                    expect( function() {
+                        svc.updateById( id = 99999999, toPath = "/nowhere" );
+                    } ).toThrow( type = "bxBlogger.RedirectService.NotFound" );
+                } );
+
+                it( "updateById() refuses bad status code", function() {
+                    var id = svc.register( fromPath = "/upd-bad-status", toPath = "/somewhere" );
+                    expect( function() {
+                        svc.updateById( id = id, toPath = "/elsewhere", statusCode = 418 );
+                    } ).toThrow( type = "bxBlogger.RedirectService.InvalidStatus" );
+                } );
+            } );
+
             describe( "recordHit()", function() {
                 it( "increments hits and stamps last_hit_at", function() {
                     var id   = svc.register( fromPath = "/hit-source", toPath = "/hit-target" );

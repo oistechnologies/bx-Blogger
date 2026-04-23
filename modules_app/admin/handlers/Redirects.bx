@@ -1,0 +1,33 @@
+/**
+ * bx-Blogger — admin:Redirects (Phase 8.B)
+ *
+ * Thin chrome around the `redirects.manager` CBWIRE wire. The
+ * wire owns every action (list, create, edit, delete) and
+ * dispatches through RedirectService for the actual mutations.
+ *
+ * Permission: `redirects.manage` — seeded on super_admin + admin
+ * in the Phase 7.G migration (same permission that gates the
+ * "Add Redirect" button on the broken-links report).
+ */
+class extends="coldbox.system.EventHandler" {
+
+    this.layouts = { "Main.bxm" : "*" };
+
+    function preHandler( event, rc, prc, action, eventArguments ) {
+        var auth = getInstance( "AuthenticationService@cbauth" );
+        if ( !auth.isLoggedIn() ) {
+            relocate( url = "/security/login" );
+            return;
+        }
+        if ( !auth.getUser().hasPermission( "redirects.manage" ) ) {
+            relocate( event = "admin:Dashboard.index" );
+            return;
+        }
+    }
+
+    function index( event, rc, prc ) {
+        prc.pageTitle = "Redirects";
+        event.setView( view = "redirects/index" );
+    }
+
+}

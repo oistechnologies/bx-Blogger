@@ -1,0 +1,273 @@
+<bx:script>
+// @startWire
+/**
+ * redirects.manager — Phase 8.B admin CRUD for the `redirects`
+ * table.
+ *
+ * Surfaces every redirect created by the Phase 7.C slug-change
+ * hook, the 7.G broken-links promote action, and manual admin
+ * creates through the "Add redirect" form at the top of the
+ * list. Actions:
+ *
+ *   - Add       — inline form at the top of the table
+ *   - Edit      — inline edit of `to_path` + `status_code`
+ *                 (NOT `from_path` — changing the legacy URL is
+ *                 semantically a new redirect, route through
+ *                 "Add redirect" so the old row's hit counter
+ *                 stays intact on the audit trail)
+ *   - Delete    — with wire:confirm
+ *
+ * All writes delegate to RedirectService so the normalization /
+ * chain-collapse / page-cache-invalidation / typed-exception
+ * semantics the broken-links "Add Redirect" button relies on
+ * fire uniformly.
+ */
+
+property name="redirectSvc" inject="RedirectService";
+property name="cbauth"      inject="AuthenticationService@cbauth";
+
+data = {
+    "newFromPath"   : "",
+    "newToPath"     : "",
+    "newStatusCode" : 301,
+    "editingId"     : 0,
+    "editToPath"    : "",
+    "editStatusCode": 301,
+    "flashOk"       : "",
+    "flashError"    : ""
+};
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function addRedirect() {
+    clearFlashes();
+    var fromPath = trim( data.newFromPath ?: "" );
+    var toPath   = trim( data.newToPath   ?: "" );
+    var status   = val( data.newStatusCode ?: 301 );
+    if ( !len( fromPath ) || !len( toPath ) ) {
+        data.flashError = "Both From path and To path are required.";
+        return;
+    }
+    try {
+        redirectSvc.register(
+            fromPath   = fromPath,
+            toPath     = toPath,
+            statusCode = status,
+            createdBy  = cbauth.getUser().getId()
+        );
+        data.flashOk       = "Redirect saved.";
+        data.newFromPath   = "";
+        data.newToPath     = "";
+        data.newStatusCode = 301;
+    }
+    catch ( any e ) {
+        data.flashError = "Couldn't save: " & ( e.message ?: "unknown error" );
+    }
+}
+
+function startEdit( required id ) {
+    clearFlashes();
+    var row = redirectSvc.findById( int( arguments.id ) );
+    if ( isNull( row ) ) {
+        data.flashError = "Redirect not found.";
+        return;
+    }
+    data.editingId      = int( arguments.id );
+    data.editToPath     = row.to_path;
+    data.editStatusCode = val( row.status_code ?: 301 );
+}
+
+function cancelEdit() {
+    data.editingId      = 0;
+    data.editToPath     = "";
+    data.editStatusCode = 301;
+}
+
+function saveEdit() {
+    clearFlashes();
+    if ( data.editingId <= 0 ) return;
+    try {
+        redirectSvc.updateById(
+            id         = data.editingId,
+            toPath     = data.editToPath,
+            statusCode = val( data.editStatusCode ?: 301 )
+        );
+        data.flashOk = "Redirect updated.";
+        cancelEdit();
+    }
+    catch ( any e ) {
+        data.flashError = "Couldn't update: " & ( e.message ?: "unknown error" );
+    }
+}
+
+function removeRedirect( required id ) {
+    clearFlashes();
+    redirectSvc.delete( int( arguments.id ) );
+    data.flashOk = "Redirect deleted.";
+    if ( data.editingId == int( arguments.id ) ) cancelEdit();
+}
+
+// --------------------------------------------------------------------
+// View helpers
+// --------------------------------------------------------------------
+
+array function rows() {
+    return redirectSvc.all();
+}
+
+// --------------------------------------------------------------------
+// Private
+// --------------------------------------------------------------------
+
+private void function clearFlashes() {
+    data.flashOk    = "";
+    data.flashError = "";
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:script>
+    items = rows();
+</bx:script>
+
+<div>
+    <bx:if len( args.flashOk )>
+        <div class="alert alert-success alert-dismissible">
+            #encodeForHTML( args.flashOk )#
+            <button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+        </div>
+    </bx:if>
+    <bx:if len( args.flashError )>
+        <div class="alert alert-danger alert-dismissible">
+            #encodeForHTML( args.flashError )#
+            <button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+        </div>
+    </bx:if>
+
+    <!--- Add form --->
+    <div class="card stat-card stat-card-info mb-3">
+        <div class="card-header card-header-soft card-header-soft-info">
+            <span class="h6 mb-0">Add redirect</span>
+        </div>
+        <div class="card-body">
+            <form wire:submit.prevent="addRedirect" class="row g-2 align-items-end">
+                <div class="col-md-5">
+                    <label for="new-from-path" class="form-label small">From path</label>
+                    <input type="text"
+                           id="new-from-path"
+                           class="form-control"
+                           placeholder="/old-post-slug"
+                           wire:model.blur="newFromPath">
+                </div>
+                <div class="col-md-5">
+                    <label for="new-to-path" class="form-label small">To path</label>
+                    <input type="text"
+                           id="new-to-path"
+                           class="form-control"
+                           placeholder="/blog/new-slug"
+                           wire:model.blur="newToPath">
+                </div>
+                <div class="col-md-1">
+                    <label for="new-status" class="form-label small">Status</label>
+                    <select id="new-status" class="form-select" wire:model.blur="newStatusCode">
+                        <option value="301">301</option>
+                        <option value="302">302</option>
+                    </select>
+                </div>
+                <div class="col-md-1 text-end">
+                    <button type="submit" class="btn btn-primary w-100">Add</button>
+                </div>
+            </form>
+            <p class="small text-muted mb-0 mt-2">
+                Paths are normalized (leading slash, no trailing slash, no query string). 301
+                is permanent (default); 302 is temporary. Registering an existing From path
+                updates the target.
+            </p>
+        </div>
+    </div>
+
+    <!--- List --->
+    <div class="card stat-card stat-card-secondary">
+        <div class="card-header card-header-soft card-header-soft-secondary">
+            <span class="h6 mb-0">
+                All redirects &mdash; #arrayLen( items )#
+            </span>
+        </div>
+        <div class="card-body p-0">
+            <bx:if !arrayLen( items )>
+                <p class="text-muted p-4 mb-0">No redirects yet. Add one above, or let the
+                slug-change hook + broken-links promoter fill this list over time.</p>
+            <bx:else>
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th scope="col">From</th>
+                                <th scope="col">To</th>
+                                <th scope="col" class="text-end">Status</th>
+                                <th scope="col" class="text-end">Hits</th>
+                                <th scope="col">Last hit</th>
+                                <th scope="col" class="text-end" style="width: 14rem;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <bx:loop array="#items#" item="row">
+                                <tr>
+                                    <td><code class="small">#encodeForHTML( row.from_path )#</code></td>
+                                    <td>
+                                        <bx:if args.editingId == val( row.id )>
+                                            <input type="text"
+                                                   class="form-control form-control-sm"
+                                                   wire:model.blur="editToPath"
+                                                   placeholder="/new-target">
+                                        <bx:else>
+                                            <code class="small">#encodeForHTML( row.to_path )#</code>
+                                        </bx:if>
+                                    </td>
+                                    <td class="text-end">
+                                        <bx:if args.editingId == val( row.id )>
+                                            <select class="form-select form-select-sm" wire:model.blur="editStatusCode" style="width: 4.5rem;">
+                                                <option value="301">301</option>
+                                                <option value="302">302</option>
+                                            </select>
+                                        <bx:else>
+                                            #val( row.status_code ?: 301 )#
+                                        </bx:if>
+                                    </td>
+                                    <td class="text-end">#val( row.hits ?: 0 )#</td>
+                                    <td class="small text-muted">
+                                        <bx:if !isNull( row.last_hit_at ?: "" ) && len( row.last_hit_at ?: "" )>
+                                            #encodeForHTML( dateTimeFormat( row.last_hit_at, "yyyy-mm-dd h:nn tt" ) )#
+                                        <bx:else>
+                                            &mdash;
+                                        </bx:if>
+                                    </td>
+                                    <td class="text-end">
+                                        <bx:if args.editingId == val( row.id )>
+                                            <button type="button" class="btn btn-primary btn-sm"
+                                                    wire:click="saveEdit">Save</button>
+                                            <button type="button" class="btn btn-outline-secondary btn-sm"
+                                                    wire:click="cancelEdit">Cancel</button>
+                                        <bx:else>
+                                            <button type="button" class="btn btn-outline-primary btn-sm"
+                                                    wire:click="startEdit(#val( row.id )#)">Edit</button>
+                                            <button type="button" class="btn btn-outline-danger btn-sm"
+                                                    wire:click="removeRedirect(#val( row.id )#)"
+                                                    wire:confirm="Delete this redirect? Crawlers will start seeing 404s on the legacy path again.">
+                                                Delete
+                                            </button>
+                                        </bx:if>
+                                    </td>
+                                </tr>
+                            </bx:loop>
+                        </tbody>
+                    </table>
+                </div>
+            </bx:if>
+        </div>
+    </div>
+</div>
+</bx:output>
