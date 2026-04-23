@@ -93,11 +93,15 @@ class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
         var sourcePath  = mediaEntity.getPath();
         var sourceBytes = disk.getAsBinary( sourcePath );
 
-        // Materialize to a temp file — BoxLang's imageNew reads from
-        // byte arrays directly on some paths but not all, and temp-
-        // file IO is cheap next to the decode.
-        var srcTmp = getTempFile( getTempDirectory(), "thumb-src-" );
-        fileWrite( srcTmp, sourceBytes );
+        // Read ImageIO from an in-memory byte stream. Avoids tmp
+        // file roundtrips entirely — `fileWrite(path, bytes)` inside
+        // a WireBox-managed class interprets byte[] as a String and
+        // UTF-8-reencodes it (discovered in 6.F: JPEG magic
+        // `ff d8 ff e0` → `ef bf bd ...`, which kills any downstream
+        // binary reader).
+        var ByteArrayInputStream  = createObject( "java", "java.io.ByteArrayInputStream" );
+        var ByteArrayOutputStream = createObject( "java", "java.io.ByteArrayOutputStream" );
+        var bis = ByteArrayInputStream.init( sourceBytes );
 
         try {
             var focalX = mediaEntity.getFocalX() ?: 0.5;
@@ -117,11 +121,9 @@ class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
             // java.awt.image + javax.imageio is portable, predictable,
             // and bypasses the whole BIF-dispatch quirk.
             var ImageIO       = createObject( "java", "javax.imageio.ImageIO" );
-            var JFile         = createObject( "java", "java.io.File" );
             var BufferedImage = createObject( "java", "java.awt.image.BufferedImage" );
-            var JImage        = createObject( "java", "java.awt.Image" );
 
-            var srcBuffered = ImageIO.read( JFile.init( srcTmp ) );
+            var srcBuffered = ImageIO.read( bis );
             if ( isNull( srcBuffered ) ) {
                 throw(
                     type    = "bxBlogger.GenerateThumbnailsJob.UnreadableImage",
@@ -171,16 +173,17 @@ class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
                     }
 
                     var outPath = stem & "-" & sizeName & "." & ext;
-                    var outTmp  = getTempFile( getTempDirectory(), "thumb-out-" );
-                    ImageIO.write( outBuffered, imageIoFormat( ext ), JFile.init( outTmp ) );
 
+                    // ImageIO → ByteArrayOutputStream → cbfs. Avoids
+                    // the tmp-file roundtrip and the fileReadBinary
+                    // gotcha noted at the top of handle().
+                    var baos = ByteArrayOutputStream.init();
+                    ImageIO.write( outBuffered, imageIoFormat( ext ), baos );
                     disk.create(
                         path      = outPath,
-                        contents  = fileReadBinary( outTmp ),
+                        contents  = baos.toByteArray(),
                         overwrite = true
                     );
-
-                    fileDelete( outTmp );
 
                     thumbsMap[ sizeName ] = {
                         "path"   : outPath,
@@ -220,7 +223,7 @@ class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
             );
         }
         finally {
-            try { fileDelete( srcTmp ); } catch ( any e ) {}
+            try { bis.close(); } catch ( any e ) {}
         }
     }
 

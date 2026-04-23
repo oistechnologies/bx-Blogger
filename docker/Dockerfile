@@ -23,6 +23,15 @@ LABEL repository="https://github.com/mrigsby/bx-Blogger"
 # ${PORT} is provided by the base image (default 8080).
 ENV HEALTHCHECK_URI="http://127.0.0.1:${PORT}/__health"
 
+# 6.F — cwebp CLI for WebpConvertJob. Java ImageIO's stock writers don't
+# support WebP, and bundling a Java WebP JAR via cbjavaloader means
+# tracking yet another third-party artifact. Shelling out to the stock
+# `webp` Debian package is ~500KB and stable (libwebp is Google-
+# maintained).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends webp \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy the full project — .dockerignore filters out .git, DEV-NOTES, .env, etc.
 COPY ./ ${APP_DIR}/
 

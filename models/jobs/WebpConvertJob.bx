@@ -1,0 +1,207 @@
+/**
+ * bx-Blogger — WebpConvertJob (Phase 6.F / B9-complement)
+ *
+ * For a single media row, produce a WebP sibling for the original
+ * file + every thumbnail in `thumbnails_json`, then add those
+ * `.webp` paths back into `thumbnails_json` under a `webp` key per
+ * size. The result is a JSON shape that `MediaService
+ * .responsiveImage()` can consume to emit `<picture>` with a WebP
+ * source alongside the original-format fallback (the picture-tag
+ * wiring itself lands in a later chunk — 6.F ships the data).
+ *
+ * Encoding path: shells out to the `cwebp` CLI binary installed
+ * in the Docker image (see docker/Dockerfile). Java ImageIO
+ * doesn't ship a WebP writer; a third-party JAR would work but
+ * the CLI is maintained by Google, zero-dependency at runtime,
+ * and produces identical output to the reference encoder. Fixed
+ * quality of 80 — a well-known sweet spot for web imagery that
+ * cuts file size ~30% vs JPEG-85 at the same visual quality.
+ *
+ * Called from two places:
+ *   1. After GenerateThumbnailsJob completes, via the
+ *      `WebpOnThumbnailsInterceptor` subscriber on
+ *      `postThumbnailGenerate` — keeps the upload → resize →
+ *      webp pipeline flowing without each step knowing about
+ *      the others.
+ *   2. `MediaService.dispatchWebpFor(mediaId)` for explicit
+ *      backfill when a theme adds WebP support to an existing
+ *      install.
+ *
+ * Non-request thread rules apply per CLAUDE.md: uses `writeLog`
+ * and `application.wireBox` lookups inside handle().
+ */
+class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
+
+    variables.quality = 80;   // cwebp -q 80
+
+    function handle() {
+        var props   = variables.properties ?: {};
+        var mediaId = structKeyExists( props, "mediaId" ) ? props.mediaId : 0;
+        if ( !isNumeric( mediaId ) || int( mediaId ) <= 0 ) {
+            throw(
+                type    = "bxBlogger.WebpConvertJob.MalformedPayload",
+                message = "WebpConvertJob requires a positive numeric mediaId property."
+            );
+        }
+
+        var wirebox = application.wireBox;
+        var mediaEntity = wirebox.getInstance( "Media" ).find( mediaId );
+        if ( isNull( mediaEntity ) ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "WebpConvertJob: media row " & mediaId & " no longer exists — skipping."
+            );
+            return;
+        }
+
+        if ( left( mediaEntity.getMimeType() ?: "", 6 ) != "image/" ) return;
+        // WebP already — no point converting.
+        if ( lCase( mediaEntity.getMimeType() ) == "image/webp" ) return;
+
+        var cbfs     = wirebox.getInstance( "DiskService@cbfs" );
+        var diskName = mediaEntity.getDisk();
+        var disk     = cbfs.get( diskName );
+
+        // Load existing thumbnails map (may be empty on pure
+        // backfill of pre-thumbnails media).
+        var thumbs = mediaEntity.getThumbnails();
+        if ( !isStruct( thumbs ) ) thumbs = {};
+
+        // Build the work list: `original` + each existing sized
+        // thumbnail. Each entry is `{ path, outPath }` — outPath
+        // is the source path with the extension replaced by `.webp`.
+        var work = [ {
+            "key"     : "original",
+            "path"    : mediaEntity.getPath(),
+            "outPath" : swapExt( mediaEntity.getPath(), "webp" )
+        } ];
+        for ( var sizeName in structKeyArray( thumbs ) ) {
+            var t = thumbs[ sizeName ];
+            if ( !isStruct( t ) || !structKeyExists( t, "path" ) ) continue;
+            work.append( {
+                "key"     : sizeName,
+                "path"    : t.path,
+                "outPath" : swapExt( t.path, "webp" )
+            } );
+        }
+
+        // Java NIO for binary I/O — `fileWrite(path, byte[])` from a
+        // WireBox-managed job class routes through a String-encoding
+        // path and UTF-8-mangles the bytes (6.F discovery). `Files
+        // .write(Path, byte[])` is unambiguously binary and the
+        // standard contract we want.
+        var Files   = createObject( "java", "java.nio.file.Files" );
+        var Paths   = createObject( "java", "java.nio.file.Paths" );
+        var jURI    = createObject( "java", "java.net.URI" );
+
+        var produced = {};
+        for ( var item in work ) {
+            try {
+                var srcBytes = disk.getAsBinary( item.path );
+                var srcTmp   = getTempFile( getTempDirectory(), "webp-src-" );
+                Files.write(
+                    Paths.get( srcTmp, javaCast( "String[]", [] ) ),
+                    srcBytes,
+                    javaCast( "java.nio.file.OpenOption[]", [] )
+                );
+
+                var outTmp = getTempFile( getTempDirectory(), "webp-out-" );
+                runCwebp( srcTmp, outTmp );
+
+                disk.create(
+                    path      = item.outPath,
+                    contents  = Files.readAllBytes( Paths.get( outTmp, javaCast( "String[]", [] ) ) ),
+                    overwrite = true
+                );
+
+                produced[ item.key ] = item.outPath;
+
+                try { fileDelete( srcTmp ); } catch ( any e ) {}
+                try { fileDelete( outTmp ); } catch ( any e ) {}
+            }
+            catch ( any err ) {
+                writeLog(
+                    file = "bxblogger",
+                    type = "warning",
+                    text = "WebpConvertJob: size '" & item.key & "' (" & item.path & ") failed for media=" & mediaId & ": " & err.message
+                );
+            }
+        }
+
+        // Merge produced paths back into thumbnails_json. `original`
+        // lands at the top level; sized entries gain a `webp` key
+        // alongside their existing path/width/height.
+        var merged = duplicate( thumbs );
+        if ( structKeyExists( produced, "original" ) ) {
+            merged[ "original_webp" ] = { "path" : produced.original };
+        }
+        for ( var sizeName in structKeyArray( produced ) ) {
+            if ( sizeName == "original" ) continue;
+            if ( !structKeyExists( merged, sizeName ) ) continue;
+            var entry = isStruct( merged[ sizeName ] ) ? merged[ sizeName ] : {};
+            entry.webp = produced[ sizeName ];
+            merged[ sizeName ] = entry;
+        }
+
+        wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "media" )
+            .where( "id", mediaId )
+            .update( { "thumbnails_json" : jsonSerialize( merged ) } );
+
+        writeLog(
+            file = "bxblogger",
+            type = "information",
+            text = "WebpConvertJob: media=" & mediaId & " produced " & structCount( produced ) & " webp variants."
+        );
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    /**
+     * Replace the extension on `path` with `newExt`. `foo/bar.jpg`
+     * → `foo/bar.webp`. If there's no extension, appends one.
+     */
+    private string function swapExt( required string path, required string newExt ) {
+        return reReplace( arguments.path, "\.[^./]+$", "" ) & "." & arguments.newExt;
+    }
+
+    /**
+     * Shell out to the `cwebp` CLI. `-q 80` is a sweet-spot quality
+     * for web thumbs. Raises on non-zero exit with the stderr
+     * captured so the caller's retry / failed-job path sees a real
+     * message.
+     */
+    private void function runCwebp( required string srcPath, required string outPath ) {
+        var ProcessBuilder = createObject( "java", "java.lang.ProcessBuilder" );
+        var cmd = [
+            "cwebp",
+            "-q", javaCast( "string", variables.quality ),
+            "-quiet",
+            arguments.srcPath,
+            "-o", arguments.outPath
+        ];
+        var pb = ProcessBuilder.init( cmd );
+        pb.redirectErrorStream( javaCast( "boolean", true ) );
+        var proc = pb.start();
+        proc.waitFor();
+
+        if ( proc.exitValue() != 0 ) {
+            var stderr = "";
+            try {
+                var Scanner = createObject( "java", "java.util.Scanner" );
+                var s = Scanner.init( proc.getInputStream() ).useDelimiter( javaCast( "string", "\\A" ) );
+                stderr = s.hasNext() ? s.next() : "";
+            }
+            catch ( any readErr ) { /* best-effort */ }
+
+            throw(
+                type    = "bxBlogger.WebpConvertJob.CwebpFailed",
+                message = "cwebp exited " & proc.exitValue() & " on " & arguments.srcPath & ": " & stderr
+            );
+        }
+    }
+
+}

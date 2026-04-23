@@ -1,0 +1,44 @@
+/**
+ * bx-Blogger — WebpOnThumbnailsInterceptor (Phase 6.F)
+ *
+ * Bridges GenerateThumbnailsJob → WebpConvertJob. Subscribes to
+ * `postThumbnailGenerate` (announced by the former when it
+ * finishes writing a media's sized variants) and enqueues a
+ * WebpConvertJob for the same mediaId. Keeps the two jobs
+ * decoupled — each stays focused on one format — while still
+ * giving uploads a full "sized + WebP" asset set by the time
+ * the worker drains the queue.
+ *
+ * Lazy service resolution per the RateLimitInterceptor gotcha
+ * noted in CLAUDE.md — interceptors are built before the
+ * WireBox model scan completes, so property-inject
+ * `MediaService` at boot fails. `getInstance()` inside the hook
+ * runs on every fire (dependency already cached at that point).
+ */
+class extends="coldbox.system.Interceptor" {
+
+    function configure() {}
+
+    /**
+     * `postThumbnailGenerate` payload shape (from
+     * GenerateThumbnailsJob):
+     *   { mediaId, thumbnails }
+     */
+    function postThumbnailGenerate( event, data, buffer, rc, prc ) {
+        try {
+            if ( !structKeyExists( arguments.data, "mediaId" ) ) return;
+            var mediaId = int( arguments.data.mediaId );
+            if ( mediaId <= 0 ) return;
+
+            getInstance( "MediaService" ).dispatchWebpFor( mediaId );
+        }
+        catch ( any e ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "WebpOnThumbnailsInterceptor: " & e.message
+            );
+        }
+    }
+
+}

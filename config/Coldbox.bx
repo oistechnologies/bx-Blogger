@@ -243,7 +243,14 @@ class {
 			// the destination from the `notifications.email_to` setting;
 			// silently logs-and-returns if the setting is blank so a
 			// half-configured install doesn't throw on every write.
-			{ class : "interceptors.NotificationEmailChannelInterceptor" }
+			{ class : "interceptors.NotificationEmailChannelInterceptor" },
+			// 6.F — listens for `postThumbnailGenerate` (fired by
+			// GenerateThumbnailsJob) and dispatches a WebpConvertJob
+			// for the same mediaId. Keeps the resize + webp jobs
+			// decoupled; admin backfill calls MediaService
+			// .dispatchWebpFor(id) directly when re-running thumbs
+			// would be wasteful.
+			{ class : "interceptors.WebpOnThumbnailsInterceptor" }
 		];
 
 		/**

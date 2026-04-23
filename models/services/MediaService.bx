@@ -317,6 +317,21 @@ class accessors="true" singleton {
     }
 
     /**
+     * Enqueue a `WebpConvertJob` for `mediaId`. Fires automatically
+     * via the `postThumbnailGenerate` subscriber after
+     * GenerateThumbnailsJob finishes; exposed publicly so admin
+     * tooling / backfill scripts can run WebP generation against
+     * existing media without re-running the thumbnail resize
+     * (e.g., when a theme adds WebP support to a site that already
+     * has a media library).
+     */
+    void function dispatchWebpFor( required numeric mediaId ) {
+        variables.wirebox.getInstance( "WebpConvertJob" )
+            .setProperties( { "mediaId" : int( arguments.mediaId ) } )
+            .dispatch();
+    }
+
+    /**
      * Returns the public URL for a media row. In dev the file lives
      * under `/includes/public/media/...` which the MiniServer serves
      * directly. In prod with S3, the provider's own `url()` returns
