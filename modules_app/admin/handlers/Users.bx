@@ -1,0 +1,46 @@
+/**
+ * bx-Blogger — admin:Users (Phase UX)
+ *
+ * Mounts the user management wires. The `users.manage` permission
+ * gates every action — cbsecurity's firewall already enforces auth
+ * on /admin/*, but this handler adds the role-level check on top so
+ * a signed-in editor / author / contributor hitting the URL directly
+ * gets a redirect instead of a broken page.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    property name="cbauth" inject="AuthenticationService@cbauth";
+
+    this.layouts = { "Main.bxm" : "*" };
+
+    /**
+     * Guard runs before every action in this handler. Pattern matches
+     * the implicit ColdBox preHandler convention.
+     */
+    function preHandler( event, rc, prc, action, eventArguments ) {
+        var user = cbauth.getUser();
+        if ( !user.hasPermission( "users.manage" ) ) {
+            flash.put( "adminError", "You don't have permission to manage users." );
+            setNextEvent( event = "admin:Dashboard.index" );
+        }
+    }
+
+    /**
+     * GET /admin/users — list view.
+     */
+    function index( event, rc, prc ) {
+        prc.pageTitle = "Users";
+        event.setView( view = "users/index" );
+    }
+
+    /**
+     * GET /admin/users/editor — new user form.
+     * GET /admin/users/editor?id=N — edit existing user.
+     */
+    function editor( event, rc, prc ) {
+        prc.userId    = val( rc.id ?: 0 );
+        prc.pageTitle = prc.userId gt 0 ? "Edit user" : "New user";
+        event.setView( view = "users/editor" );
+    }
+
+}

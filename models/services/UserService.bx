@@ -177,4 +177,176 @@ class accessors="true" singleton {
         qb.from( "login_audit" ).insert( arguments.row );
     }
 
+    // --------------------------------------------------------------------
+    // Admin-facing CRUD (Phase UX — admin:Users wire)
+    // --------------------------------------------------------------------
+
+    /**
+     * Create a user from the admin. Hashes the plaintext password,
+     * marks email verified (admins can trust their own invites), and
+     * attaches the given role slug if supplied. Returns the saved
+     * entity. Validation failures raise bxBlogger.* exceptions so the
+     * wire can surface them in the flash scope.
+     */
+    function adminCreate(
+        required struct  attrs,
+        required string  plainPassword,
+                 string  roleSlug = ""
+    ) {
+        validateAdminAttrs( arguments.attrs, 0 );
+        if ( !len( trim( arguments.plainPassword ) ) ) {
+            throw( type = "bxBlogger.UserValidation", message = "Password is required." );
+        }
+
+        var User = variables.wirebox.getInstance( "User" );
+        var user = User.create( {
+            "email"              : trim( lCase( arguments.attrs.email ) ),
+            "displayName"        : trim( arguments.attrs.displayName ?: arguments.attrs.email ),
+            "username"           : trim( arguments.attrs.username    ?: "" ),
+            "passwordHash"       : variables.passwordService.hash( arguments.plainPassword ),
+            "isActive"           : ( arguments.attrs.isActive ?: 1 ) ? 1 : 0,
+            "twoFactorEnabled"   : 0,
+            "emailVerifiedAt"    : now(),
+            "passwordChangedAt"  : now(),
+            "mustChangePassword" : 0
+        } );
+
+        if ( len( arguments.roleSlug ) ) {
+            var role = variables.wirebox.getInstance( "Role" ).where( "slug", arguments.roleSlug ).first();
+            if ( !isNull( role ) ) user.roles().attach( role.getId() );
+        }
+        return user;
+    }
+
+    /**
+     * Update basic profile fields + active flag. Role changes live in
+     * `syncRoles()` so permission guards can run before the pivot is
+     * touched. Returns the updated entity.
+     */
+    function adminUpdate( required any user, required struct attrs ) {
+        validateAdminAttrs( arguments.attrs, arguments.user.getId() );
+
+        if ( structKeyExists( arguments.attrs, "email" ) && len( trim( arguments.attrs.email ) ) ) {
+            arguments.user.setEmail( trim( lCase( arguments.attrs.email ) ) );
+        }
+        if ( structKeyExists( arguments.attrs, "displayName" ) ) {
+            arguments.user.setDisplayName( trim( arguments.attrs.displayName ) );
+        }
+        if ( structKeyExists( arguments.attrs, "username" ) ) {
+            arguments.user.setUsername( trim( arguments.attrs.username ) );
+        }
+        if ( structKeyExists( arguments.attrs, "isActive" ) ) {
+            arguments.user.setIsActive( arguments.attrs.isActive ? 1 : 0 );
+        }
+        arguments.user.save();
+        return arguments.user;
+    }
+
+    /**
+     * Admin-set password. Bumps `password_changed_at`, clears
+     * `must_change_password`, resets any active lockout so the user
+     * can log in right away with the new password.
+     */
+    function adminSetPassword( required any user, required string plainPassword ) {
+        if ( !len( trim( arguments.plainPassword ) ) ) {
+            throw( type = "bxBlogger.UserValidation", message = "Password is required." );
+        }
+        arguments.user.setPasswordHash( variables.passwordService.hash( arguments.plainPassword ) );
+        arguments.user.setPasswordChangedAt( now() );
+        arguments.user.setMustChangePassword( 0 );
+        arguments.user.save();
+        resetLockout( arguments.user );
+    }
+
+    /**
+     * Replace the user's full role set with the given slug array.
+     * Skips slugs that don't resolve to a real role. Runs BEFORE
+     * permission guards in the caller — the wire must have already
+     * checked that `actor` is allowed to assign each of these roles
+     * (e.g. non-super_admin can't grant super_admin).
+     */
+    function syncRoles( required any user, required array roleSlugs ) {
+        var Role = variables.wirebox.getInstance( "Role" );
+        var desiredIds = [];
+        for ( var slug in arguments.roleSlugs ) {
+            var r = Role.where( "slug", slug ).first();
+            if ( !isNull( r ) ) desiredIds.append( r.getId() );
+        }
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        qb.newQuery().from( "user_roles" ).where( "user_id", arguments.user.getId() ).delete();
+        for ( var rid in desiredIds ) {
+            qb.newQuery().from( "user_roles" ).insert( {
+                "user_id"    : arguments.user.getId(),
+                "role_id"    : rid,
+                "created_at" : now()
+            } );
+        }
+    }
+
+    /**
+     * Soft-delete a user. Preserves login_audit / posts authorship
+     * history; cbauth's `canLogin()` short-circuits on `deleted_at`
+     * being non-null so the account can't re-authenticate.
+     */
+    function adminSoftDelete( required any user ) {
+        arguments.user.setDeletedAt( now() );
+        arguments.user.setIsActive( 0 );
+        arguments.user.save();
+    }
+
+    /**
+     * True if `user` holds the super_admin role. Used by guard rails
+     * in the wire to block non-super-admins from editing / demoting
+     * / deleting super_admins.
+     */
+    boolean function isSuperAdmin( required any user ) {
+        return arguments.user.hasRole( "super_admin" );
+    }
+
+    /**
+     * Count of active super_admin accounts (not soft-deleted, not
+     * inactive). The wire uses this to block the delete / demote /
+     * deactivate of the LAST super_admin — otherwise an operator
+     * could lock themselves out of their own site.
+     */
+    numeric function countActiveSuperAdmins() {
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        var row = qb.newQuery()
+            .from( "users" )
+            .join( "user_roles", "user_roles.user_id", "users.id" )
+            .join( "roles", "roles.id", "user_roles.role_id" )
+            .where( "roles.slug", "super_admin" )
+            .where( "users.is_active", 1 )
+            .whereNull( "users.deleted_at" )
+            .selectRaw( "COUNT(DISTINCT users.id) AS n" )
+            .first();
+        return val( row.n ?: 0 );
+    }
+
+    /**
+     * Shared email + displayName validation used by create + update.
+     * `excludeId` prevents a user from colliding with themselves on
+     * their own email during an update.
+     */
+    private void function validateAdminAttrs( required struct attrs, required numeric excludeId ) {
+        if ( structKeyExists( arguments.attrs, "email" ) ) {
+            var email = trim( lCase( arguments.attrs.email ?: "" ) );
+            if ( !len( email ) || !isValid( "email", email ) ) {
+                throw( type = "bxBlogger.UserValidation", message = "A valid email address is required." );
+            }
+            var existing = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "users" )
+                .where( "email", email )
+                .whereNull( "deleted_at" );
+            if ( arguments.excludeId > 0 ) existing.where( "id", "!=", arguments.excludeId );
+            if ( existing.exists() ) {
+                throw( type = "bxBlogger.UserValidation", message = "Another account is already using that email." );
+            }
+        }
+        if ( structKeyExists( arguments.attrs, "displayName" )
+             && !len( trim( arguments.attrs.displayName ?: "" ) ) ) {
+            throw( type = "bxBlogger.UserValidation", message = "Display name is required." );
+        }
+    }
+
 }

@@ -1,0 +1,8 @@
+<bx:output>
+<div class="d-flex justify-content-between align-items-center mb-4">
+	<h1 class="h3 mb-0">#encodeForHTML( prc.pageTitle )#</h1>
+	<a class="btn btn-outline-secondary" href="#event.buildLink( 'admin:Users.index' )#">← Back to users</a>
+</div>
+
+#wire( "users.editor", { userId : prc.userId } )#
+</bx:output>

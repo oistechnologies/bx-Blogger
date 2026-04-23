@@ -119,6 +119,10 @@
 					   href="#event.buildLink( 'admin:Tags.index' )#">Tags</a>
 					<a class="nav-link #( currentEvent.startsWith( 'admin:Media.' ) ? 'active' : '' )#"
 					   href="#event.buildLink( 'admin:Media.index' )#">Media</a>
+					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "users.manage" )>
+						<a class="nav-link #( currentEvent.startsWith( 'admin:Users.' ) ? 'active' : '' )#"
+						   href="#event.buildLink( 'admin:Users.index' )#">Users</a>
+					</bx:if>
 					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "themes.manage" )>
 						<a class="nav-link #( currentEvent.startsWith( 'admin:Themes.' ) ? 'active' : '' )#"
 						   href="#event.buildLink( 'admin:Themes.index' )#">Themes</a>

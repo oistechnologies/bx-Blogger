@@ -1,0 +1,343 @@
+<bx:script>
+// @startWire
+/**
+ * users.editor — create a new user or edit an existing one.
+ *
+ * Mount: wire("users.editor", { userId: N }). userId=0 = create.
+ * Role assignment, password reset, and the active-status toggle all
+ * route through UserService so validation + password hashing + lock-
+ * out reset stay in one place.
+ *
+ * Permission guards (evaluated in the wire before service calls):
+ *   - Handler's preHandler already confirmed users.manage on the
+ *     viewer; we don't re-check at wire mount.
+ *   - A non-super_admin can't assign super_admin, can't edit an
+ *     existing super_admin, and can't demote the last super_admin.
+ *   - A user can't self-demote (strip their own super_admin role or
+ *     deactivate themselves via this form).
+ */
+
+property name="userService" inject="UserService";
+property name="cbauth"      inject="AuthenticationService@cbauth";
+
+data = {
+    "userId"      : 0,
+    "email"       : "",
+    "displayName" : "",
+    "username"    : "",
+    "isActive"    : 1,
+    "password"    : "",       // plaintext; only set on save when len > 0
+    "passwordConfirm" : "",
+    "roleSlugs"   : [],
+    "flashOk"     : "",
+    "flashError"  : "",
+    "validationErrors" : []
+};
+
+function onMount( event, rc, prc, params ) {
+    if ( structKeyExists( arguments.params, "userId" ) ) {
+        data.userId = val( arguments.params.userId );
+    }
+    if ( data.userId gt 0 ) {
+        loadFromDb( data.userId );
+    }
+}
+
+private function loadFromDb( required id ) {
+    var target = getInstance( "User" ).find( arguments.id );
+    if ( isNull( target ) ) {
+        data.flashError = "User ##" & arguments.id & " not found.";
+        data.userId = 0;
+        return;
+    }
+    data.userId      = target.getId();
+    data.email       = target.getEmail() ?: "";
+    data.displayName = target.getDisplayName() ?: "";
+    data.username    = target.getUsername() ?: "";
+    data.isActive    = target.getIsActive() ? 1 : 0;
+    data.roleSlugs   = target.getRoles().map( ( r ) => r.getSlug() );
+}
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function save() {
+    clearFlashes();
+    var viewer  = cbauth.getUser();
+    var isCreate = data.userId lte 0;
+
+    // Permission: only super_admins can assign / remove super_admin.
+    if ( !userService.isSuperAdmin( viewer ) && arrayContains( data.roleSlugs ?: [], "super_admin" ) ) {
+        data.flashError = "Only a super admin can grant the super admin role.";
+        return;
+    }
+
+    // If editing an existing super_admin, only a super_admin can do so.
+    if ( !isCreate ) {
+        var target = getInstance( "User" ).find( data.userId );
+        if ( isNull( target ) ) {
+            data.flashError = "That user no longer exists.";
+            return;
+        }
+        if ( userService.isSuperAdmin( target ) && !userService.isSuperAdmin( viewer ) ) {
+            data.flashError = "Only a super admin can edit another super admin.";
+            return;
+        }
+
+        // Self-edit guard rails: can't self-demote or self-deactivate.
+        if ( target.getId() == viewer.getId() ) {
+            if ( userService.isSuperAdmin( target ) && !arrayContains( data.roleSlugs, "super_admin" ) ) {
+                data.flashError = "You can't remove your own super admin role here — ask another super admin to do it.";
+                return;
+            }
+            if ( !data.isActive ) {
+                data.flashError = "You can't deactivate your own account.";
+                return;
+            }
+        }
+
+        // Last-super-admin protection.
+        if ( userService.isSuperAdmin( target ) && !arrayContains( data.roleSlugs, "super_admin" ) ) {
+            if ( userService.countActiveSuperAdmins() lte 1 ) {
+                data.flashError = "Can't remove the super admin role from the only active super admin.";
+                return;
+            }
+        }
+        if ( userService.isSuperAdmin( target ) && !data.isActive ) {
+            if ( userService.countActiveSuperAdmins() lte 1 ) {
+                data.flashError = "Can't deactivate the only active super admin.";
+                return;
+            }
+        }
+    }
+
+    // Password sanity (create: required; update: optional).
+    if ( len( data.password ) || isCreate ) {
+        if ( data.password != data.passwordConfirm ) {
+            data.flashError = "Passwords don't match.";
+            return;
+        }
+    }
+
+    try {
+        if ( isCreate ) {
+            var created = userService.adminCreate(
+                attrs = {
+                    "email"       : data.email,
+                    "displayName" : data.displayName,
+                    "username"    : data.username,
+                    "isActive"    : data.isActive
+                },
+                plainPassword = data.password
+            );
+            userService.syncRoles( created, data.roleSlugs );
+            data.userId = created.getId();
+            data.flashOk = "User created.";
+            data.password = "";
+            data.passwordConfirm = "";
+        } else {
+            var updated = userService.adminUpdate( target, {
+                "email"       : data.email,
+                "displayName" : data.displayName,
+                "username"    : data.username,
+                "isActive"    : data.isActive
+            } );
+            userService.syncRoles( updated, data.roleSlugs );
+            if ( len( data.password ) ) {
+                userService.adminSetPassword( updated, data.password );
+                data.password = "";
+                data.passwordConfirm = "";
+            }
+            data.flashOk = "User updated.";
+        }
+    }
+    catch ( bxBlogger.UserValidation e ) {
+        data.flashError = e.message;
+    }
+    catch ( any e ) {
+        data.flashError = "Save failed: " & e.message;
+    }
+}
+
+function toggleRole( required string slug ) {
+    var idx = arrayFindNoCase( data.roleSlugs, arguments.slug );
+    if ( idx ) {
+        data.roleSlugs.deleteAt( idx );
+    } else {
+        data.roleSlugs.append( arguments.slug );
+    }
+}
+
+// --------------------------------------------------------------------
+// Helpers
+// --------------------------------------------------------------------
+
+function allRoles() {
+    return getInstance( "QueryBuilder@qb" ).newQuery()
+        .from( "roles" )
+        .orderBy( "name", "asc" )
+        .select( [ "slug", "name", "description" ] )
+        .get();
+}
+
+private function clearFlashes() {
+    data.flashOk = "";
+    data.flashError = "";
+    data.validationErrors = [];
+}
+
+/**
+ * Template helper — returns whether the current viewer is a super
+ * admin. Wraps the injected `cbauth` / `userService` so the template
+ * script can read it without needing them resolvable at render scope.
+ */
+function viewerIsSuperAdmin() {
+    return userService.isSuperAdmin( cbauth.getUser() );
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:script>
+    roles         = allRoles();
+    viewerIsSuper = viewerIsSuperAdmin();
+    isCreate      = ( args.userId ?: 0 ) lte 0;
+</bx:script>
+
+<div>
+	<bx:if len( args.flashOk )>
+		<div class="alert alert-success alert-dismissible">
+			#encodeForHTML( args.flashOk )#
+			<button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+		</div>
+	</bx:if>
+	<bx:if len( args.flashError )>
+		<div class="alert alert-danger alert-dismissible">
+			#encodeForHTML( args.flashError )#
+			<button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+		</div>
+	</bx:if>
+
+	<form wire:submit.prevent="save">
+		<div class="row g-3">
+			<!--- Left column: basic profile + credentials --->
+			<div class="col-lg-8">
+				<div class="card stat-card stat-card-primary mb-3">
+					<div class="card-header card-header-soft card-header-soft-primary">
+						<span class="h6 mb-0">Account</span>
+					</div>
+					<div class="card-body">
+						<div class="mb-3">
+							<label for="userEmail" class="form-label">Email</label>
+							<input type="email" id="userEmail" class="form-control"
+							       wire:model.blur="email" required maxlength="255"
+							       autocomplete="off">
+							<small class="text-muted">Used to sign in. Must be unique across active accounts.</small>
+						</div>
+						<div class="row g-3">
+							<div class="col-md-7">
+								<label for="userDisplayName" class="form-label">Display name</label>
+								<input type="text" id="userDisplayName" class="form-control"
+								       wire:model.blur="displayName" maxlength="120">
+							</div>
+							<div class="col-md-5">
+								<label for="userUsername" class="form-label">Username (optional)</label>
+								<input type="text" id="userUsername" class="form-control"
+								       wire:model.blur="username" maxlength="60">
+							</div>
+						</div>
+					</div>
+				</div>
+
+				<div class="card stat-card stat-card-warning mb-3">
+					<div class="card-header card-header-soft card-header-soft-warning">
+						<span class="h6 mb-0">
+							<bx:if isCreate>Password<bx:else>Reset password</bx:if>
+						</span>
+					</div>
+					<div class="card-body">
+						<bx:if !isCreate>
+							<p class="small text-muted mb-2">
+								Leave blank to keep the current password.
+							</p>
+						</bx:if>
+						<div class="row g-3">
+							<div class="col-md-6">
+								<label for="userPassword" class="form-label small">
+									<bx:if isCreate>Password<bx:else>New password</bx:if>
+								</label>
+								<input type="password" id="userPassword" class="form-control"
+								       wire:model.blur="password" autocomplete="new-password">
+							</div>
+							<div class="col-md-6">
+								<label for="userPasswordConfirm" class="form-label small">Confirm</label>
+								<input type="password" id="userPasswordConfirm" class="form-control"
+								       wire:model.blur="passwordConfirm" autocomplete="new-password">
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<!--- Right column: status + roles --->
+			<div class="col-lg-4">
+				<div class="card stat-card stat-card-info mb-3">
+					<div class="card-header card-header-soft card-header-soft-info">
+						<span class="h6 mb-0">Status</span>
+					</div>
+					<div class="card-body">
+						<div class="form-check form-switch mb-0">
+							<input class="form-check-input" type="checkbox" role="switch"
+							       id="userIsActive"
+							       wire:model.live="isActive">
+							<label class="form-check-label" for="userIsActive">Active</label>
+						</div>
+						<small class="text-muted d-block mt-1">
+							Inactive accounts can't log in. Their posts + history are preserved.
+						</small>
+					</div>
+				</div>
+
+				<div class="card stat-card stat-card-secondary mb-3">
+					<div class="card-header card-header-soft card-header-soft-secondary">
+						<span class="h6 mb-0">Roles</span>
+					</div>
+					<div class="card-body">
+						<bx:loop array="#roles#" item="r">
+							<bx:script>
+								checked      = args.roleSlugs.findNoCase( r.slug ) gt 0;
+								isSuperRole  = r.slug == "super_admin";
+								canToggleRow = viewerIsSuper || !isSuperRole;
+							</bx:script>
+							<div class="form-check mb-2">
+								<input class="form-check-input" type="checkbox"
+								       id="role-#r.slug#"
+								       #( checked ? 'checked' : '' )#
+								       #( canToggleRow ? '' : 'disabled' )#
+								       wire:click="toggleRole('#encodeForHTMLAttribute( r.slug )#')">
+								<label class="form-check-label small" for="role-#r.slug#">
+									<strong>#encodeForHTML( r.name )#</strong>
+									<bx:if isSuperRole && !viewerIsSuper>
+										<span class="text-muted">&mdash; super admin only</span>
+									</bx:if>
+									<bx:if len( r.description ?: "" )>
+										<div class="text-muted" style="font-size:.75rem;">#encodeForHTML( r.description )#</div>
+									</bx:if>
+								</label>
+							</div>
+						</bx:loop>
+					</div>
+				</div>
+
+				<div class="d-grid gap-2">
+					<button type="submit" class="btn btn-primary">
+						<bx:if isCreate>Create user<bx:else>Save changes</bx:if>
+					</button>
+					<a class="btn btn-outline-secondary" href="#event.buildLink( 'admin:Users.index' )#">Cancel</a>
+				</div>
+			</div>
+		</div>
+	</form>
+</div>
+</bx:output>

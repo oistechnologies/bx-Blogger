@@ -1,0 +1,376 @@
+<bx:script>
+// @startWire
+/**
+ * users.manager — list / search / filter / deactivate / delete.
+ *
+ * Read-side of the /admin/users CRUD. Create + edit live in
+ * wires/users/editor.bxm (separate route, full-page form). Action
+ * permissions are checked server-side on every wire:click — the
+ * handler's preHandler already confirmed `users.manage`, but the
+ * per-action guard rails (can't delete last super_admin, non-super-
+ * admin can't touch a super_admin) run here before the service
+ * mutation.
+ */
+
+property name="userService" inject="UserService";
+property name="cbauth"      inject="AuthenticationService@cbauth";
+
+data = {
+    "search"      : "",
+    "roleFilter"  : "",
+    "statusFilter": "all",   // all | active | inactive
+    "page"        : 1,
+    "perPage"     : 20,
+    "flashOk"     : "",
+    "flashError"  : ""
+};
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function applyFilters() { data.page = 1; }
+
+function gotoPage( required pageNumber ) {
+    data.page = max( pageNumber, 1 );
+}
+
+function toggleActive( required userId ) {
+    clearFlashes();
+    var target = getInstance( "User" ).find( arguments.userId );
+    if ( isNull( target ) ) return;
+    if ( !canMutate( target ) ) return;
+
+    // Guard: can't deactivate the last super_admin.
+    if ( target.getIsActive() && userService.isSuperAdmin( target ) ) {
+        if ( userService.countActiveSuperAdmins() lte 1 ) {
+            data.flashError = "Can't deactivate the last super admin — at least one must stay active.";
+            return;
+        }
+    }
+
+    target.setIsActive( target.getIsActive() ? 0 : 1 );
+    target.save();
+    data.flashOk = ( target.getIsActive() ? "Activated" : "Deactivated" ) & " " & target.getEmail() & ".";
+}
+
+function softDelete( required userId ) {
+    clearFlashes();
+    var target = getInstance( "User" ).find( arguments.userId );
+    if ( isNull( target ) ) return;
+    if ( !canMutate( target ) ) return;
+
+    var viewer = cbauth.getUser();
+    if ( target.getId() == viewer.getId() ) {
+        data.flashError = "You can't delete your own account from the user list.";
+        return;
+    }
+
+    if ( userService.isSuperAdmin( target )
+         && userService.countActiveSuperAdmins() lte 1 ) {
+        data.flashError = "Can't delete the last active super admin.";
+        return;
+    }
+
+    userService.adminSoftDelete( target );
+    data.flashOk = "Removed " & target.getEmail() & ".";
+}
+
+// --------------------------------------------------------------------
+// Read-side helpers
+// --------------------------------------------------------------------
+
+function listPage() {
+    var qb = getInstance( "QueryBuilder@qb" ).newQuery()
+        .from( "users" )
+        .whereNull( "deleted_at" );
+
+    if ( data.statusFilter == "active" )   qb.where( "is_active", 1 );
+    if ( data.statusFilter == "inactive" ) qb.where( "is_active", 0 );
+
+    if ( len( trim( data.search ) ) ) {
+        var q = "%" & trim( data.search ) & "%";
+        qb.where( function( w ) {
+            w.where( "email", "like", q )
+             .orWhere( "display_name", "like", q )
+             .orWhere( "username", "like", q );
+        } );
+    }
+
+    if ( len( data.roleFilter ) ) {
+        // Scope the outer query by role membership via a sub-select.
+        qb.whereIn(
+            "id",
+            getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "user_roles" )
+                .join( "roles", "roles.id", "user_roles.role_id" )
+                .where( "roles.slug", data.roleFilter )
+                .select( "user_roles.user_id" )
+        );
+    }
+
+    var total = qb.count();
+    var offset = ( data.page - 1 ) * data.perPage;
+    if ( offset < 0 ) offset = 0;
+
+    var rows = qb
+        .select( [ "id", "email", "display_name", "username", "is_active", "last_login_at", "created_at" ] )
+        .orderBy( "email", "asc" )
+        .limit( data.perPage )
+        .offset( offset )
+        .get();
+
+    return { "rows" : rows, "total" : total };
+}
+
+/**
+ * Build a { userId: [ role-slugs ] } map for the current page so the
+ * template can show each user's roles without issuing a query per row.
+ */
+function rolesByUserId( required array userIds ) {
+    if ( !arrayLen( arguments.userIds ) ) return {};
+    var rows = getInstance( "QueryBuilder@qb" ).newQuery()
+        .from( "user_roles" )
+        .join( "roles", "roles.id", "user_roles.role_id" )
+        .whereIn( "user_roles.user_id", arguments.userIds )
+        .select( [ "user_roles.user_id AS user_id", "roles.slug AS slug", "roles.name AS name" ] )
+        .get();
+    var out = {};
+    for ( var r in rows ) {
+        if ( !structKeyExists( out, r.user_id ) ) out[ r.user_id ] = [];
+        out[ r.user_id ].append( { "slug": r.slug, "name": r.name } );
+    }
+    return out;
+}
+
+function allRoles() {
+    return getInstance( "QueryBuilder@qb" ).newQuery()
+        .from( "roles" )
+        .orderBy( "name", "asc" )
+        .select( [ "slug", "name" ] )
+        .get();
+}
+
+// --------------------------------------------------------------------
+// Guard rails
+// --------------------------------------------------------------------
+
+/**
+ * A non-super_admin cannot mutate a super_admin. Keeps regular
+ * admins from accidentally (or maliciously) disabling / demoting
+ * the site owner.
+ */
+private boolean function canMutate( required any target ) {
+    var viewer = cbauth.getUser();
+    if ( userService.isSuperAdmin( arguments.target ) && !userService.isSuperAdmin( viewer ) ) {
+        data.flashError = "Only a super admin can modify another super admin.";
+        return false;
+    }
+    return true;
+}
+
+private function clearFlashes() {
+    data.flashOk = "";
+    data.flashError = "";
+}
+
+/**
+ * Small struct the template consumes. Keeps `cbauth` / `userService`
+ * (property-injected on the wire class) out of the template script
+ * scope, where they're not resolvable.
+ */
+function viewerInfo() {
+    var v = cbauth.getUser();
+    return { "id" : v.getId(), "isSuper" : userService.isSuperAdmin( v ) };
+}
+
+function isSuperUserId( required numeric userId ) {
+    var u = getInstance( "User" ).find( arguments.userId );
+    return !isNull( u ) && userService.isSuperAdmin( u );
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:script>
+    page       = listPage();
+    rows       = page.rows;
+    total      = page.total;
+    pageMax    = ceiling( total / args.perPage );
+    if ( pageMax < 1 ) pageMax = 1;
+
+    ids = [];
+    for ( r in rows ) ids.append( r.id );
+    rolesMap = rolesByUserId( ids );
+
+    viewer        = viewerInfo();
+    viewerId      = viewer.id;
+    viewerIsSuper = viewer.isSuper;
+    roleList      = allRoles();
+
+    statusColor = ( isActive ) => isActive ? "success" : "secondary";
+</bx:script>
+
+<div>
+	<bx:if len( args.flashOk )>
+		<div class="alert alert-success alert-dismissible">
+			#encodeForHTML( args.flashOk )#
+			<button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+		</div>
+	</bx:if>
+	<bx:if len( args.flashError )>
+		<div class="alert alert-danger alert-dismissible">
+			#encodeForHTML( args.flashError )#
+			<button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+		</div>
+	</bx:if>
+
+	<form class="row g-2 mb-3" wire:submit.prevent="applyFilters">
+		<div class="col-md-5">
+			<input type="text" class="form-control form-control-sm"
+			       placeholder="Search email, name, or username…"
+			       wire:model="search" wire:keydown.enter="applyFilters">
+		</div>
+		<div class="col-md-3">
+			<select class="form-select form-select-sm" wire:model.live="roleFilter">
+				<option value="">All roles</option>
+				<bx:loop array="#roleList#" item="r">
+					<option value="#encodeForHTMLAttribute( r.slug )#">#encodeForHTML( r.name )#</option>
+				</bx:loop>
+			</select>
+		</div>
+		<div class="col-md-3">
+			<select class="form-select form-select-sm" wire:model.live="statusFilter">
+				<option value="all">All statuses</option>
+				<option value="active">Active only</option>
+				<option value="inactive">Inactive only</option>
+			</select>
+		</div>
+		<div class="col-md-1">
+			<button class="btn btn-outline-secondary btn-sm w-100" type="submit">Go</button>
+		</div>
+	</form>
+
+	<div class="card stat-card stat-card-secondary">
+		<div class="card-header card-header-soft card-header-soft-secondary">
+			<span class="h6 mb-0">All users</span>
+		</div>
+		<bx:if rows.len() == 0>
+			<div class="card-body text-center text-muted py-5">
+				No users match those filters.
+			</div>
+		<bx:else>
+			<table class="table table-hover mb-0 align-middle">
+				<thead class="table-light">
+					<tr>
+						<th>Name</th>
+						<th>Email</th>
+						<th>Roles</th>
+						<th>Status</th>
+						<th>Last login</th>
+						<th class="text-end">Actions</th>
+					</tr>
+				</thead>
+				<tbody>
+					<bx:loop array="#rows#" item="row">
+						<bx:script>
+							userRoles = rolesMap[ row.id ] ?: [];
+							isSuperRow = false;
+							for ( ur in userRoles ) if ( ur.slug == "super_admin" ) isSuperRow = true;
+							canTouch = !isSuperRow || viewerIsSuper;
+							isSelf = row.id == viewerId;
+						</bx:script>
+						<tr>
+							<td>
+								<a href="#event.buildLink( to = 'admin:Users.editor', queryString = 'id=' & row.id )#">
+									<bx:if len( row.display_name ?: "" )>
+										#encodeForHTML( row.display_name )#
+									<bx:else>
+										<span class="text-muted">&mdash; no name &mdash;</span>
+									</bx:if>
+								</a>
+								<bx:if isSelf>
+									<span class="badge bg-info text-dark ms-1" title="You">you</span>
+								</bx:if>
+							</td>
+							<td><small>#encodeForHTML( row.email )#</small></td>
+							<td>
+								<bx:if !arrayLen( userRoles )>
+									<span class="text-muted small">none</span>
+								<bx:else>
+									<bx:loop array="#userRoles#" item="ur">
+										<span class="badge bg-#( ur.slug == 'super_admin' ? 'primary' : 'secondary' )# me-1">
+											#encodeForHTML( ur.name )#
+										</span>
+									</bx:loop>
+								</bx:if>
+							</td>
+							<td>
+								<span class="badge bg-#statusColor( row.is_active )#">
+									#( row.is_active ? 'Active' : 'Inactive' )#
+								</span>
+							</td>
+							<td class="text-muted small">
+								<bx:if !isNull( row.last_login_at ) && len( row.last_login_at ?: "" )>
+									#fmtDateTimeShort( row.last_login_at )#
+								<bx:else>
+									never
+								</bx:if>
+							</td>
+							<td class="text-end">
+								<div class="btn-group btn-group-sm" role="group" aria-label="Row actions">
+									<a class="btn btn-outline-secondary"
+									   href="#event.buildLink( to = 'admin:Users.editor', queryString = 'id=' & row.id )#"
+									   title="Edit"
+									   aria-label="Edit user">
+										<i class="bi bi-pencil-square" aria-hidden="true"></i>
+									</a>
+									<bx:if canTouch>
+										<button class="btn btn-outline-secondary"
+										        type="button"
+										        wire:click="toggleActive(#row.id#)"
+										        title="#( row.is_active ? 'Deactivate' : 'Activate' )#"
+										        aria-label="Toggle active state">
+											<bx:if row.is_active>
+												<i class="bi bi-pause-circle" aria-hidden="true"></i>
+											<bx:else>
+												<i class="bi bi-play-circle" aria-hidden="true"></i>
+											</bx:if>
+										</button>
+										<bx:if !isSelf>
+											<button class="btn btn-outline-danger"
+											        type="button"
+											        wire:click="softDelete(#row.id#)"
+											        wire:confirm="Remove #encodeForHTMLAttribute( row.email )#? Their posts and history stay; the account just can't log in."
+											        title="Delete"
+											        aria-label="Soft-delete user">
+												<i class="bi bi-trash" aria-hidden="true"></i>
+											</button>
+										</bx:if>
+									</bx:if>
+								</div>
+							</td>
+						</tr>
+					</bx:loop>
+				</tbody>
+			</table>
+		</bx:if>
+	</div>
+
+	<bx:if pageMax gt 1>
+		<nav class="mt-3">
+			<ul class="pagination pagination-sm mb-0">
+				<li class="page-item #( args.page <= 1 ? 'disabled' : '' )#">
+					<button class="page-link" wire:click="gotoPage(#args.page - 1#)">Prev</button>
+				</li>
+				<li class="page-item">
+					<span class="page-link">Page #args.page# of #pageMax# · #total# total</span>
+				</li>
+				<li class="page-item #( args.page >= pageMax ? 'disabled' : '' )#">
+					<button class="page-link" wire:click="gotoPage(#args.page + 1#)">Next</button>
+				</li>
+			</ul>
+		</nav>
+	</bx:if>
+</div>
+</bx:output>
