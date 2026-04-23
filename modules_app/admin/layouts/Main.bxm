@@ -99,7 +99,7 @@
 					</a>
 				</li>
 				<bx:if cbauth.isLoggedIn()>
-					<li class="nav-item"><a class="nav-link" href="#event.buildLink( 'account' )#">#encodeForHTML( cbauth.getUser().getDisplayName() )#</a></li>
+					<li class="nav-item"><a class="nav-link" href="#event.buildLink( 'admin' )#">#encodeForHTML( cbauth.getUser().getDisplayName() )#</a></li>
 					<li class="nav-item"><a class="nav-link" href="#event.buildLink( 'logout' )#">Sign out</a></li>
 				</bx:if>
 			</ul>
@@ -136,6 +136,16 @@
 					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "menus.manage" )>
 						<a class="nav-link #( currentEvent.startsWith( 'admin:Menus.' ) ? 'active' : '' )#"
 						   href="#event.buildLink( 'admin:Menus.index' )#">Menus</a>
+					</bx:if>
+
+					<!--- My account — always last, always visible to any
+					      signed-in admin-module user. Separated from the
+					      management links above with a spacer for visual
+					      grouping ("work stuff" vs "your account"). --->
+					<bx:if cbauth.isLoggedIn()>
+						<hr class="my-2">
+						<a class="nav-link #( currentEvent.startsWith( 'admin:Account.' ) ? 'active' : '' )#"
+						   href="#event.buildLink( 'admin:Account.show' )#">My account</a>
 					</bx:if>
 				</nav>
 			</aside>

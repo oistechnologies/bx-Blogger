@@ -1,19 +1,25 @@
 /**
- * bx-Blogger — Account handler (Chunk 1.H — B6)
+ * bx-Blogger — admin:Account handler.
  *
- * Minimal self-service profile for Phase 1. Three fields:
+ * Self-service profile page for signed-in users. Moved under the
+ * admin module (Phase UX) because the only context anyone uses this
+ * is while they're logged into the admin — hosting it at the app
+ * root (`/account`) with its own layout made it feel like an
+ * orphaned public page. Now `/admin/account` wears the admin shell
+ * (sidebar + branded navbar + the same gradient active state).
+ *
+ * Fields covered (minimum-viable self-edit, unchanged from Phase 1):
  *   - Display name (immediate save)
  *   - Email (change triggers A2 verify flow — buffers in pending_email
  *            until the user clicks the verification link)
  *   - Password (re-auth with current password required on every change)
  *
- * Phase 2 replaces this with a CBWire `admin:Profile.show/update` component
- * inside the admin module — avatar via media library, bio, website,
- * timezone, locale, 2FA toggle, etc. Until then, this gives authenticated
- * users a way to rotate their password + keep their display name fresh.
+ * The richer user profile surface — avatar, bio, social links — is
+ * tracked as Post-UX Additions #5 and will extend this handler when
+ * it lands.
  *
- * cbsecurity firewall protects /account — the handler trusts cbauth.getUser()
- * is non-null (anonymous requests redirect to /login before we run).
+ * cbsecurity firewall's `^admin.*` rule already gates this path, so
+ * we trust cbauth.getUser() is non-null by the time any action runs.
  */
 class extends="coldbox.system.EventHandler" {
 
@@ -23,22 +29,19 @@ class extends="coldbox.system.EventHandler" {
     property name="emailVerificationService"  inject="EmailVerificationService";
     property name="log"                       inject="logbox:logger:{this}";
 
-    this.layouts = {
-        "Admin.bxm" : "*"
-    };
+    this.layouts = { "Main.bxm" : "*" };
 
     /**
-     * GET /account — render the profile form.
+     * GET /admin/account — render the profile form.
      */
     function show( event, rc, prc ) {
-        prc.pageTitle = "Your account";
+        prc.pageTitle = "My account";
         prc.user      = cbauth.getUser();
-        event.setView( view = "account/show", layout = "Admin" );
+        event.setView( view = "account/show" );
     }
 
     /**
-     * POST /account — update display name. Separate action so the form can
-     * declare `action="/account"` without a hidden `_action` field.
+     * POST /admin/account — update display name.
      */
     function updateProfile( event, rc, prc ) {
         param name="rc.displayName" default="";
@@ -47,22 +50,22 @@ class extends="coldbox.system.EventHandler" {
         var newName = trim( rc.displayName );
         if ( !len( newName ) ) {
             flash.put( "accountError", "Display name cannot be empty." );
-            relocate( "account" );
+            relocate( event = "admin:Account.show" );
             return;
         }
         if ( len( newName ) > 120 ) {
             flash.put( "accountError", "Display name is limited to 120 characters." );
-            relocate( "account" );
+            relocate( event = "admin:Account.show" );
             return;
         }
         user.setDisplayName( newName );
         user.save();
         flash.put( "accountMessage", "Display name updated." );
-        relocate( "account" );
+        relocate( event = "admin:Account.show" );
     }
 
     /**
-     * POST /account/email — start the change-email flow.
+     * POST /admin/account/email — start the change-email flow.
      *
      * Writes the requested email to `users.pending_email` and fires a
      * verification email bound to that address. On click, A2 promotes
@@ -74,21 +77,21 @@ class extends="coldbox.system.EventHandler" {
         param name="rc.email"           default="";
         param name="rc.currentPassword" default="";
 
-        var user    = cbauth.getUser();
+        var user     = cbauth.getUser();
         var newEmail = trim( rc.email );
         if ( !len( newEmail ) || !isValid( "email", newEmail ) ) {
             flash.put( "accountError", "Enter a valid email address." );
-            relocate( "account" );
+            relocate( event = "admin:Account.show" );
             return;
         }
         if ( newEmail == user.getEmail() ) {
             flash.put( "accountMessage", "That's already your current email." );
-            relocate( "account" );
+            relocate( event = "admin:Account.show" );
             return;
         }
         if ( !passwordService.verify( rc.currentPassword, user.getPasswordHash() ) ) {
             flash.put( "accountError", "Current password is incorrect." );
-            relocate( "account" );
+            relocate( event = "admin:Account.show" );
             return;
         }
 
@@ -108,8 +111,6 @@ class extends="coldbox.system.EventHandler" {
             .limit( 1 )
             .get();
         if ( rows.len() > 0 ) {
-            // Don't confirm existence; give the same "check your inbox"
-            // UX as a successful request. Log for operator visibility.
             log.info( "Account.updateEmail: silent reject - collision on " & newEmail & " requested by user=" & user.getId() );
         } else {
             user.setPendingEmail( newEmail );
@@ -119,12 +120,12 @@ class extends="coldbox.system.EventHandler" {
         }
 
         flash.put( "accountMessage", "Check your new inbox for a verification link. Your current email stays in place until you click it." );
-        relocate( "account" );
+        relocate( event = "admin:Account.show" );
     }
 
     /**
-     * POST /account/password — change password. Requires current password
-     * confirmation; new password runs through the policy service.
+     * POST /admin/account/password — change password. Requires current
+     * password confirmation; new password runs through the policy service.
      */
     function updatePassword( event, rc, prc ) {
         param name="rc.currentPassword" default="";
@@ -134,12 +135,12 @@ class extends="coldbox.system.EventHandler" {
         var user = cbauth.getUser();
         if ( !passwordService.verify( rc.currentPassword, user.getPasswordHash() ) ) {
             flash.put( "accountError", "Current password is incorrect." );
-            relocate( "account" );
+            relocate( event = "admin:Account.show" );
             return;
         }
         if ( rc.newPassword != rc.confirmPassword ) {
             flash.put( "accountError", "New passwords don't match." );
-            relocate( "account" );
+            relocate( event = "admin:Account.show" );
             return;
         }
         var policy = passwordService.validate(
@@ -148,7 +149,7 @@ class extends="coldbox.system.EventHandler" {
         );
         if ( !policy.valid ) {
             flash.put( "accountError", policy.errors.toList( " " ) );
-            relocate( "account" );
+            relocate( event = "admin:Account.show" );
             return;
         }
 
@@ -158,7 +159,7 @@ class extends="coldbox.system.EventHandler" {
         user.save();
 
         flash.put( "accountMessage", "Password updated." );
-        relocate( "account" );
+        relocate( event = "admin:Account.show" );
     }
 
 }

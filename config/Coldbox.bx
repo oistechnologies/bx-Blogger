@@ -336,12 +336,9 @@ class {
 							"match"      : "url",
 							"action"     : "redirect"
 						},
-						{
-							// B6 self-profile — same protection, different prefix.
-							"securelist" : "^account.*",
-							"match"      : "url",
-							"action"     : "redirect"
-						}
+						// Phase UX — removed the standalone `^account.*` rule
+						// when the account page moved under /admin/account.
+						// The `^admin.*` rule above covers it.
 					]
 				},
 				// CSRF module config (Phase 2 uses for form protection; minimal now)

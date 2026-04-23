@@ -70,24 +70,14 @@ class {
 		route( "/preview/:token" ).to( "preview.show" );
 
 		/**
-		 * Account self-service (B6 — Chunk 1.H).
-		 *   GET  /account           → show()
-		 *   POST /account           → updateProfile()  (display name)
-		 *   POST /account/email     → updateEmail()    (triggers A2 verify)
-		 *   POST /account/password  → updatePassword() (re-auth required)
-		 * cbsecurity firewall gates all four behind /login.
-		 * Specific sub-routes must be declared BEFORE the base /account route;
-		 * ColdBox matches in order and /account would otherwise swallow them.
+		 * Self-service account was originally at /account (Phase 1
+		 * Chunk 1.H — B6); Phase UX moved it into the admin shell at
+		 * /admin/account. Any incoming /account/* request falls
+		 * through to the invalidEventHandler (themed 404), which is
+		 * cheaper than carrying a permanent-redirect handler for
+		 * every legacy bookmark. The new sidebar "My account" link
+		 * drives discovery.
 		 */
-		route( "/account/email"    ).to( "account.updateEmail" );
-		route( "/account/password" ).to( "account.updatePassword" );
-
-		route( "/account" )
-			.withAction( {
-				"GET"  : "show",
-				"POST" : "updateProfile"
-			} )
-			.toHandler( "account" );
 
 		/**
 		 * /admin/* is served by the `admin` HMVC module

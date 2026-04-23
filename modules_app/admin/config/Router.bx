@@ -22,6 +22,19 @@ class {
         // `:handler/:action` matching `themes/foo`.)
         route( "themes/:slug/options" ).to( "Themes.options" );
 
+        // Phase UX — self-service account lives inside the admin shell
+        // (previously /account at the app root). Specific sub-routes
+        // first so the base /admin/account GET/POST pair doesn't
+        // swallow them.
+        route( "account/email"    ).to( "Account.updateEmail"    );
+        route( "account/password" ).to( "Account.updatePassword" );
+        route( "account" )
+            .withAction( {
+                "GET"  : "show",
+                "POST" : "updateProfile"
+            } )
+            .toHandler( "Account" );
+
         // Conventional :handler/:action — catches /admin/posts,
         // /admin/media/upload, etc. as they ship.
         route( ":handler/:action?" ).end();

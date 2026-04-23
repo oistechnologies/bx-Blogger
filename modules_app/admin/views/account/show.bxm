@@ -1,8 +1,8 @@
 <bx:output>
+#view( view = "partials/heading", args = { "title" : "My account" } )#
+
 <div class="row">
 	<div class="col-12 col-lg-8">
-		<h1 class="h3 mb-4">Your account</h1>
-
 		<bx:if flash.exists( "accountMessage" )>
 			<div class="alert alert-success">#encodeForHTML( flash.get( "accountMessage" ) )#</div>
 		</bx:if>
@@ -11,10 +11,12 @@
 		</bx:if>
 
 		<!---------- Display name ---------->
-		<div class="card mb-4">
+		<div class="card stat-card stat-card-primary mb-4">
+			<div class="card-header card-header-soft card-header-soft-primary">
+				<span class="h6 mb-0">Profile</span>
+			</div>
 			<div class="card-body">
-				<h2 class="h5 mb-3">Profile</h2>
-				<form method="POST" action="#event.buildLink( 'account.updateProfile' )#">
+				<form method="POST" action="#event.buildLink( 'admin:Account.updateProfile' )#">
 					<div class="mb-3">
 						<label for="displayName" class="form-label">Display name</label>
 						<input type="text"
@@ -32,9 +34,11 @@
 		</div>
 
 		<!---------- Email change ---------->
-		<div class="card mb-4">
+		<div class="card stat-card stat-card-info mb-4">
+			<div class="card-header card-header-soft card-header-soft-info">
+				<span class="h6 mb-0">Email address</span>
+			</div>
 			<div class="card-body">
-				<h2 class="h5 mb-3">Email address</h2>
 				<p class="text-muted small">
 					Current: <code>#encodeForHTML( prc.user.getEmail() )#</code>
 					<bx:if len( prc.user.getPendingEmail() ?: "" )>
@@ -43,7 +47,7 @@
 						Waiting for verification of <code>#encodeForHTML( prc.user.getPendingEmail() )#</code>.
 					</bx:if>
 				</p>
-				<form method="POST" action="#event.buildLink( 'account.updateEmail' )#" autocomplete="off">
+				<form method="POST" action="#event.buildLink( 'admin:Account.updateEmail' )#" autocomplete="off">
 					<div class="mb-3">
 						<label for="email" class="form-label">New email address</label>
 						<input type="email"
@@ -72,10 +76,12 @@
 		</div>
 
 		<!---------- Password change ---------->
-		<div class="card">
+		<div class="card stat-card stat-card-warning">
+			<div class="card-header card-header-soft card-header-soft-warning">
+				<span class="h6 mb-0">Password</span>
+			</div>
 			<div class="card-body">
-				<h2 class="h5 mb-3">Password</h2>
-				<form method="POST" action="#event.buildLink( 'account.updatePassword' )#" autocomplete="off">
+				<form method="POST" action="#event.buildLink( 'admin:Account.updatePassword' )#" autocomplete="off">
 					<div class="mb-3">
 						<label for="currentPassword" class="form-label">Current password</label>
 						<input type="password"
@@ -112,7 +118,6 @@
 				</form>
 			</div>
 		</div>
-
 	</div>
 </div>
 </bx:output>
