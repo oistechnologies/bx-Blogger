@@ -1,0 +1,282 @@
+<bx:script>
+// @startWire
+/**
+ * audit_log.list — Phase 8.C.2 filterable viewer.
+ *
+ * Columns: timestamp, actor (display_name + email), action,
+ * entity (type:id), IP, metadata (JSON snippet on click).
+ *
+ * Filters: actor user id, action (exact or namespace via
+ * trailing dot), entityType, entityId, date range. The
+ * "Download CSV" button builds the same filter set as a query
+ * string and hits `admin:AuditLog.export` — which is gated on
+ * `audit.export` (tighter perm than viewing).
+ */
+
+property name="auditSvc" inject="AuditLogService";
+property name="cbauth"   inject="AuthenticationService@cbauth";
+
+data = {
+    "page"       : 1,
+    "perPage"    : 50,
+    "f_userId"     : "",
+    "f_action"     : "",
+    "f_entityType" : "",
+    "f_entityId"   : "",
+    "f_dateFrom"   : "",
+    "f_dateTo"     : "",
+    "flashError" : ""
+};
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function applyFilters() {
+    // Any filter change resets to page 1 so the admin doesn't
+    // end up on page 14 of a suddenly-2-page result set.
+    data.page = 1;
+}
+
+function resetFilters() {
+    data.f_userId     = "";
+    data.f_action     = "";
+    data.f_entityType = "";
+    data.f_entityId   = "";
+    data.f_dateFrom   = "";
+    data.f_dateTo     = "";
+    data.page         = 1;
+}
+
+function goToPage( required pageNum ) {
+    var p = int( arguments.pageNum );
+    if ( p < 1 ) p = 1;
+    data.page = p;
+}
+
+// --------------------------------------------------------------------
+// View helpers
+// --------------------------------------------------------------------
+
+struct function paged() {
+    return auditSvc.list(
+        filters = filtersStruct(),
+        page    = data.page,
+        perPage = data.perPage
+    );
+}
+
+array function availableActions() {
+    return auditSvc.distinctActions();
+}
+
+boolean function canExport() {
+    return cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "audit.export" );
+}
+
+string function exportUrl() {
+    var qs   = [];
+    var f    = filtersStruct();
+    for ( var k in f ) {
+        if ( !len( toString( f[ k ] ) ) ) continue;
+        qs.append( lCase( k ) & "=" & urlEncodedFormat( toString( f[ k ] ) ) );
+    }
+    var base = "/admin/auditLog/export";
+    return arrayLen( qs ) ? ( base & "?" & qs.toList( "&" ) ) : base;
+}
+
+// --------------------------------------------------------------------
+// Private
+// --------------------------------------------------------------------
+
+private struct function filtersStruct() {
+    var out = {};
+    if ( len( data.f_userId     ) ) out[ "userId"     ] = val( data.f_userId );
+    if ( len( data.f_action     ) ) out[ "action"     ] = data.f_action;
+    if ( len( data.f_entityType ) ) out[ "entityType" ] = data.f_entityType;
+    if ( len( data.f_entityId   ) ) out[ "entityId"   ] = val( data.f_entityId );
+    if ( len( data.f_dateFrom   ) ) out[ "dateFrom"   ] = data.f_dateFrom;
+    if ( len( data.f_dateTo     ) ) out[ "dateTo"     ] = data.f_dateTo;
+    return out;
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:script>
+    report     = paged();
+    actions    = availableActions();
+    showExport = canExport();
+    dlUrl      = exportUrl();
+</bx:script>
+
+<div>
+    <bx:if len( args.flashError )>
+        <div class="alert alert-danger alert-dismissible">
+            #encodeForHTML( args.flashError )#
+            <button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+        </div>
+    </bx:if>
+
+    <!--- Filter bar --->
+    <div class="card stat-card stat-card-secondary mb-3">
+        <div class="card-header card-header-soft card-header-soft-secondary d-flex justify-content-between align-items-center">
+            <span class="h6 mb-0">Filters</span>
+            <div class="d-flex gap-2">
+                <button type="button" class="btn btn-outline-secondary btn-sm"
+                        wire:click="resetFilters">Reset</button>
+                <bx:if showExport>
+                    <a class="btn btn-outline-primary btn-sm"
+                       href="#encodeForHTMLAttribute( dlUrl )#">
+                        Download CSV
+                    </a>
+                </bx:if>
+            </div>
+        </div>
+        <div class="card-body">
+            <form wire:submit.prevent="applyFilters" class="row g-2 align-items-end">
+                <div class="col-md-2">
+                    <label for="f-action" class="form-label small">Action</label>
+                    <select id="f-action" class="form-select form-select-sm" wire:model.blur="f_action">
+                        <option value="">(any)</option>
+                        <bx:loop array="#actions#" item="a">
+                            <option value="#encodeForHTMLAttribute( a )#"
+                                    <bx:if args.f_action == a>selected</bx:if>>
+                                #encodeForHTML( a )#
+                            </option>
+                        </bx:loop>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label for="f-entityType" class="form-label small">Entity type</label>
+                    <input type="text" id="f-entityType"
+                           class="form-control form-control-sm"
+                           placeholder="post, redirect, user"
+                           wire:model.blur="f_entityType">
+                </div>
+                <div class="col-md-1">
+                    <label for="f-entityId" class="form-label small">Entity id</label>
+                    <input type="number" id="f-entityId"
+                           class="form-control form-control-sm"
+                           wire:model.blur="f_entityId">
+                </div>
+                <div class="col-md-1">
+                    <label for="f-userId" class="form-label small">User id</label>
+                    <input type="number" id="f-userId"
+                           class="form-control form-control-sm"
+                           wire:model.blur="f_userId">
+                </div>
+                <div class="col-md-2">
+                    <label for="f-dateFrom" class="form-label small">From</label>
+                    <input type="date" id="f-dateFrom"
+                           class="form-control form-control-sm"
+                           wire:model.blur="f_dateFrom">
+                </div>
+                <div class="col-md-2">
+                    <label for="f-dateTo" class="form-label small">To</label>
+                    <input type="date" id="f-dateTo"
+                           class="form-control form-control-sm"
+                           wire:model.blur="f_dateTo">
+                </div>
+                <div class="col-md-2 text-end">
+                    <button type="submit" class="btn btn-primary btn-sm w-100">Apply</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!--- Table --->
+    <div class="card stat-card stat-card-info">
+        <div class="card-header card-header-soft card-header-soft-info">
+            <span class="h6 mb-0">
+                Entries &mdash; #report.total#
+            </span>
+        </div>
+        <div class="card-body p-0">
+            <bx:if !arrayLen( report.rows )>
+                <p class="text-muted p-4 mb-0">No matching audit-log entries.</p>
+            <bx:else>
+                <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                        <thead>
+                            <tr>
+                                <th scope="col" style="width: 12rem;">When</th>
+                                <th scope="col">Actor</th>
+                                <th scope="col">Action</th>
+                                <th scope="col">Entity</th>
+                                <th scope="col">IP</th>
+                                <th scope="col">Metadata</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <bx:loop array="#report.rows#" item="row">
+                                <tr>
+                                    <td class="small text-muted">
+                                        #encodeForHTML( dateTimeFormat( row.created_at, "yyyy-mm-dd h:nn tt" ) )#
+                                    </td>
+                                    <td>
+                                        <bx:if !isNull( row.user_id ?: "" ) && len( row.user_id ?: "" )>
+                                            <div class="small fw-semibold">
+                                                #encodeForHTML( row.actor_display_name ?: ( "User ##" & row.user_id ) )#
+                                            </div>
+                                            <bx:if len( row.actor_email ?: "" )>
+                                                <div class="small text-muted">#encodeForHTML( row.actor_email )#</div>
+                                            </bx:if>
+                                        <bx:else>
+                                            <span class="badge text-bg-secondary">system</span>
+                                        </bx:if>
+                                    </td>
+                                    <td><code class="small">#encodeForHTML( row.action )#</code></td>
+                                    <td class="small">
+                                        <bx:if len( row.entity_type ?: "" )>
+                                            #encodeForHTML( row.entity_type )#<bx:if !isNull( row.entity_id ?: "" ) && len( row.entity_id ?: "" )>:<strong>#val( row.entity_id )#</strong></bx:if>
+                                        <bx:else>
+                                            &mdash;
+                                        </bx:if>
+                                    </td>
+                                    <td class="small text-muted">
+                                        <bx:if len( row.ip_address ?: "" )>
+                                            <code>#encodeForHTML( row.ip_address )#</code>
+                                        <bx:else>
+                                            &mdash;
+                                        </bx:if>
+                                    </td>
+                                    <td>
+                                        <bx:if len( row.metadata ?: "" )>
+                                            <details>
+                                                <summary class="small text-muted" style="cursor: pointer;">view</summary>
+                                                <pre class="small mb-0 mt-1 p-2 bg-body-tertiary rounded" style="max-width: 30rem; white-space: pre-wrap;">#encodeForHTML( row.metadata )#</pre>
+                                            </details>
+                                        <bx:else>
+                                            &mdash;
+                                        </bx:if>
+                                    </td>
+                                </tr>
+                            </bx:loop>
+                        </tbody>
+                    </table>
+                </div>
+            </bx:if>
+        </div>
+        <bx:if report.totalPages gt 1>
+            <div class="card-footer d-flex justify-content-between align-items-center">
+                <span class="small text-muted">
+                    Page #args.page# of #report.totalPages#
+                </span>
+                <div class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-secondary"
+                            wire:click="goToPage(#max( 1, args.page - 1 )#)"
+                            <bx:if args.page lte 1>disabled</bx:if>>
+                        &laquo; Prev
+                    </button>
+                    <button class="btn btn-outline-secondary"
+                            wire:click="goToPage(#min( report.totalPages, args.page + 1 )#)"
+                            <bx:if args.page gte report.totalPages>disabled</bx:if>>
+                        Next &raquo;
+                    </button>
+                </div>
+            </div>
+        </bx:if>
+    </div>
+</div>
+</bx:output>

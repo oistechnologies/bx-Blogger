@@ -1,0 +1,68 @@
+/**
+ * bx-Blogger — admin:AuditLog (Phase 8.C.2)
+ *
+ * Two actions:
+ *
+ *   index  — renders the filterable list wire (`audit_log.list`).
+ *            Gated on `audit.view`.
+ *   export — streams the filtered set as CSV. Gated on
+ *            `audit.export` (narrower: super_admin only by
+ *            default). Query string carries the same filter keys
+ *            the wire uses so the admin can hit "Download CSV"
+ *            directly from the filtered view.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    this.layouts = { "Main.bxm" : "*" };
+
+    function preHandler( event, rc, prc, action, eventArguments ) {
+        var auth = getInstance( "AuthenticationService@cbauth" );
+        if ( !auth.isLoggedIn() ) {
+            relocate( url = "/security/login" );
+            return;
+        }
+        // `export` needs the tighter permission. `index` + future
+        // actions fall back to the view permission.
+        var required = arguments.action == "export" ? "audit.export" : "audit.view";
+        if ( !auth.getUser().hasPermission( required ) ) {
+            relocate( event = "admin:Dashboard.index" );
+            return;
+        }
+    }
+
+    function index( event, rc, prc ) {
+        prc.pageTitle = "Audit Log";
+        event.setView( view = "audit_log/index" );
+    }
+
+    /**
+     * GET /admin/auditLog/export?userId=…&action=…&dateFrom=…&dateTo=…
+     *
+     * Emits the filtered slice as a CSV download. Filename is
+     * timestamped so a browser doesn't collapse multiple exports
+     * into one entry.
+     */
+    function export( event, rc, prc ) {
+        var filters = {};
+        if ( len( rc.userId     ?: "" ) ) filters[ "userId"     ] = val( rc.userId );
+        if ( len( rc.action     ?: "" ) ) filters[ "action"     ] = rc.action;
+        if ( len( rc.entityType ?: "" ) ) filters[ "entityType" ] = rc.entityType;
+        if ( len( rc.entityId   ?: "" ) ) filters[ "entityId"   ] = val( rc.entityId );
+        if ( len( rc.dateFrom   ?: "" ) ) filters[ "dateFrom"   ] = rc.dateFrom;
+        if ( len( rc.dateTo     ?: "" ) ) filters[ "dateTo"     ] = rc.dateTo;
+
+        var csv = getInstance( "AuditLogService" ).exportCsv( filters );
+        var filename = "audit-log-" & dateFormat( now(), "yyyymmdd" ) & "-" & timeFormat( now(), "HHmmss" ) & ".csv";
+
+        event.setHTTPHeader(
+            name  = "Content-Disposition",
+            value = 'attachment; filename="' & filename & '"'
+        );
+        event.renderData(
+            type        = "plain",
+            data        = csv,
+            contentType = "text/csv; charset=utf-8"
+        );
+    }
+
+}
