@@ -83,13 +83,13 @@ class extends="coldbox.system.EventHandler" {
         var id = val( rc.id ?: 0 );
         if ( id <= 0 ) {
             flash.put( "adminError", "Missing user id." );
-            relocate( event = "admin:Privacy.show" );
+            relocate( event = "admin:Privacy.index" );
             return;
         }
         var target = userService.retrieveUserById( id );
         if ( isNull( target ) ) {
             flash.put( "adminError", "User not found." );
-            relocate( event = "admin:Privacy.show" );
+            relocate( event = "admin:Privacy.index" );
             return;
         }
 

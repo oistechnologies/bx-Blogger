@@ -16,7 +16,7 @@
 </bx:if>
 
 <!--- User picker --->
-<form method="get" action="#event.buildLink( 'admin:Privacy.show' )#" class="card stat-card stat-card-info mb-3">
+<form method="get" action="#event.buildLink( 'admin:Privacy.index' )#" class="card stat-card stat-card-info mb-3">
     <div class="card-body">
         <label for="p-q" class="form-label small">Find user (id or email)</label>
         <div class="input-group">
