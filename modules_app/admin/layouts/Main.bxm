@@ -14,6 +14,13 @@
 		.app-brand { font-weight: 600; letter-spacing: -0.01em; }
 		.card { border: 0; box-shadow: 0 .125rem .25rem rgba(0,0,0,.05); }
 
+		/* Brand gradient — deep blue → purple, left to right. Reused by
+		   the top nav and the active sidebar link so the two match. */
+		.app-navbar,
+		.admin-sidebar .nav-link.active {
+			background: linear-gradient( 90deg, ##0d2b60 0%, ##7f47d4 100% );
+		}
+
 		/* Sidebar — keep the strong active state, add a left accent bar
 		   so the current section is easy to pick out at a glance. */
 		.admin-sidebar .nav-link {
@@ -24,9 +31,8 @@
 		}
 		.admin-sidebar .nav-link:hover { background: ##e9ecef; color: ##212529; }
 		.admin-sidebar .nav-link.active {
-			background: ##212529;
 			color: ##fff;
-			border-left-color: var( --bs-primary );
+			border-left-color: rgba( 255, 255, 255, .6 );
 		}
 
 		/* Dashboard stat cards — subtle left accent so a row of cards
@@ -76,7 +82,7 @@
 </head>
 <body class="d-flex flex-column min-vh-100">
 
-	<nav class="navbar navbar-expand-md navbar-dark bg-dark">
+	<nav class="navbar navbar-expand-md navbar-dark app-navbar">
 		<div class="container-fluid">
 			<a class="navbar-brand app-brand py-0" href="#event.buildLink( 'admin' )#">
 				<img src="/includes/public/branding/logo-dark.png"
