@@ -1,0 +1,16 @@
+{
+    "$schema": "/resources/schemas/theme.schema.json",
+    "name": "Tests Options Fixture",
+    "slug": "tests-options-fixture",
+    "version": "1.0.0",
+    "author": "bx-Blogger Test Suite",
+    "description": "Test-only theme. Exists solely so ThemeOptionsServiceSpec can exercise color / int / bool option normalization without coupling to user-facing themes. Do NOT ship — lives under tests/fixtures/ and is registered + torn down by the spec.",
+    "minBxblogerVersion": "0.1.0",
+    "bootstrap": "5.3",
+    "supports": [],
+    "options": [
+        { "key": "primary_color",   "type": "color", "default": "#0d6efd", "label": "Primary Color" },
+        { "key": "posts_per_page",  "type": "int",   "default": 10,        "label": "Posts Per Page" },
+        { "key": "show_author_box", "type": "bool",  "default": true,      "label": "Show Author Box" }
+    ]
+}

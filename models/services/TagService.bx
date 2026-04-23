@@ -15,8 +15,9 @@
  */
 class accessors="true" singleton {
 
-    property name="wirebox" inject="wirebox";
-    property name="log"     inject="logbox:logger:{this}";
+    property name="wirebox"          inject="wirebox";
+    property name="pageCacheService" inject="PageCacheService";
+    property name="log"              inject="logbox:logger:{this}";
 
     variables.maxSlugLength = 140;
 
@@ -25,6 +26,7 @@ class accessors="true" singleton {
         data.slug = ensureUniqueSlug( data.slug );
         var tag = variables.wirebox.getInstance( "Tag" ).create( data );
         log.info( "TagService: created tag=" & tag.getId() & " slug=" & tag.getSlug() );
+        variables.pageCacheService.invalidateAll();
         return tag;
     }
 
@@ -36,6 +38,7 @@ class accessors="true" singleton {
         }
         applyAttrsToEntity( arguments.tag, data );
         arguments.tag.save();
+        variables.pageCacheService.invalidateAll();
         return arguments.tag;
     }
 
@@ -47,6 +50,7 @@ class accessors="true" singleton {
         var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
         qb.newQuery().from( "post_tags" ).where( "tag_id", arguments.tag.getId() ).delete();
         qb.newQuery().from( "tags" ).where( "id", arguments.tag.getId() ).delete();
+        variables.pageCacheService.invalidateAll();
     }
 
     /**
@@ -91,6 +95,7 @@ class accessors="true" singleton {
 
         log.info( "TagService.merge: " & arguments.sourceTag.getName() & " → " & arguments.targetTag.getName() &
                   " (" & inserted & " new associations)" );
+        variables.pageCacheService.invalidateAll();
         return inserted;
     }
 

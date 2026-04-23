@@ -215,7 +215,7 @@ private boolean function requirePerm( required string perm ) {
                             <td class="text-end">
                                 <bx:if !t.isMissing>
                                     <a class="btn btn-sm btn-outline-secondary"
-                                       href="#event.buildLink( 'admin:Themes.options' )#/#encodeForHTMLAttribute( t.slug )#">
+                                       href="#event.buildLink( 'admin' )#/themes/#encodeForHTMLAttribute( t.slug )#/options">
                                         Options
                                     </a>
                                 </bx:if>

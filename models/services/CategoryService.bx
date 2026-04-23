@@ -26,8 +26,9 @@
  */
 class accessors="true" singleton {
 
-    property name="wirebox" inject="wirebox";
-    property name="log"     inject="logbox:logger:{this}";
+    property name="wirebox"          inject="wirebox";
+    property name="pageCacheService" inject="PageCacheService";
+    property name="log"              inject="logbox:logger:{this}";
 
     variables.maxSlugLength = 140;
 
@@ -45,6 +46,7 @@ class accessors="true" singleton {
 
         var cat = variables.wirebox.getInstance( "Category" ).create( data );
         log.info( "CategoryService: created category=" & cat.getId() & " path=" & cat.getPath() );
+        variables.pageCacheService.invalidateAll();
         return cat;
     }
 
@@ -74,6 +76,7 @@ class accessors="true" singleton {
         if ( slugChanged ) {
             rebuildDescendantPaths( arguments.category );
         }
+        variables.pageCacheService.invalidateAll();
         return arguments.category;
     }
 
@@ -109,6 +112,7 @@ class accessors="true" singleton {
         arguments.category.setPath( buildPath( len( target ) ? target : "", safeSlug ) );
         arguments.category.save();
         rebuildDescendantPaths( arguments.category );
+        variables.pageCacheService.invalidateAll();
         return arguments.category;
     }
 
@@ -127,6 +131,7 @@ class accessors="true" singleton {
                 .update( { "sort_order" : i } );
             i++;
         }
+        variables.pageCacheService.invalidateAll();
     }
 
     /**
@@ -161,6 +166,7 @@ class accessors="true" singleton {
 
         qb.newQuery().from( "post_categories" ).where( "category_id", arguments.category.getId() ).delete();
         qb.newQuery().from( "categories" ).where( "id", arguments.category.getId() ).delete();
+        variables.pageCacheService.invalidateAll();
     }
 
     // --------------------------------------------------------------------

@@ -8,18 +8,57 @@
  *   - setMany ignores keys the manifest doesn't declare
  *   - reset() wipes all stored rows for a theme
  *   - Theme.option() wires through the VO's lookup closure
+ *
+ * Tests run against a **synthetic** `tests-options-fixture` theme that
+ * lives under `tests/fixtures/themes/` and declares a color / int / bool
+ * option each. The user-facing themes (bx-blogger-default / -magazine)
+ * don't declare options today — their manifests will re-acquire options
+ * only when the public-render consumers land (see PLAN Post-UX item
+ * "Wire theme options into public render"). Keeping the spec off the
+ * shipped themes avoids churn when those manifests change later.
  */
 class extends="tests.support.BaseIntegrationSpec" {
+
+    variables.FIXTURE_SLUG = "tests-options-fixture";
+    variables.FIXTURE_DIR  = "tests/fixtures/themes/tests-options-fixture";
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc      = getInstance( "ThemeOptionsService" );
+        variables.themeSvc = getInstance( "ThemeService" );
+
+        // Seed a throwaway themes row for the fixture. `resolveActive()`
+        // only accepts rows whose `directory` exists on disk — the JSON
+        // at tests/fixtures/themes/tests-options-fixture/theme.json is
+        // what makes that check pass.
+        var manifestPath = expandPath( "/" & variables.FIXTURE_DIR & "/theme.json" );
+        var manifestJson = fileRead( manifestPath );
+
+        var qb = getInstance( "QueryBuilder@qb" );
+        qb.newQuery().from( "themes" ).where( "slug", variables.FIXTURE_SLUG ).delete();
+        qb.newQuery().from( "themes" ).insert( {
+            "slug"          : variables.FIXTURE_SLUG,
+            "name"          : "Tests Options Fixture",
+            "version"       : "1.0.0",
+            "author"        : "bx-Blogger Test Suite",
+            "description"   : "Test-only theme — see spec header.",
+            "manifest_json" : manifestJson,
+            "is_active"     : 0,
+            "is_system"     : 0,
+            "directory"     : variables.FIXTURE_DIR
+        } );
+    }
 
     function afterAll() {
         try {
             var qb = getInstance( "QueryBuilder@qb" );
             qb.newQuery().from( "theme_options" )
-                .where( "theme_slug", "bx-blogger-default" ).delete();
-            qb.newQuery().from( "theme_options" )
-                .where( "theme_slug", "bx-blogger-magazine" ).delete();
+                .where( "theme_slug", variables.FIXTURE_SLUG ).delete();
+            qb.newQuery().from( "themes" )
+                .where( "slug", variables.FIXTURE_SLUG ).delete();
 
-            // Restore canonical active-theme state.
+            // Restore canonical active-theme state — the Theme.option()
+            // test flips is_active via ThemeService.activate().
             qb.newQuery().from( "themes" ).update( { "is_active" : 0 } );
             qb.newQuery().from( "themes" )
                 .where( "slug", "bx-blogger-default" )
@@ -31,12 +70,6 @@ class extends="tests.support.BaseIntegrationSpec" {
         super.afterAll();
     }
 
-    function beforeAll() {
-        super.beforeAll();
-        variables.svc      = getInstance( "ThemeOptionsService" );
-        variables.themeSvc = getInstance( "ThemeService" );
-    }
-
     function run() {
         describe( "ThemeOptionsService", function() {
 
@@ -45,21 +78,19 @@ class extends="tests.support.BaseIntegrationSpec" {
                 // bleed into the next.
                 var qb = getInstance( "QueryBuilder@qb" );
                 qb.newQuery().from( "theme_options" )
-                    .where( "theme_slug", "bx-blogger-default" ).delete();
-                qb.newQuery().from( "theme_options" )
-                    .where( "theme_slug", "bx-blogger-magazine" ).delete();
-                svc.invalidate( "bx-blogger-default" );
-                svc.invalidate( "bx-blogger-magazine" );
+                    .where( "theme_slug", variables.FIXTURE_SLUG ).delete();
+                svc.invalidate( variables.FIXTURE_SLUG );
             } );
 
             describe( "getEffectiveOptions()", function() {
                 it( "returns every manifest-declared option with the declared default", function() {
-                    var list = svc.getEffectiveOptions( "bx-blogger-default" );
-                    expect( list.len() ).toBeGTE( 1 );
+                    var list = svc.getEffectiveOptions( variables.FIXTURE_SLUG );
+                    expect( list.len() ).toBeGTE( 3 );
 
                     var keys = list.map( function( o ) { return o.key; } );
                     expect( keys ).toInclude( "primary_color" );
                     expect( keys ).toInclude( "posts_per_page" );
+                    expect( keys ).toInclude( "show_author_box" );
 
                     for ( var entry in list ) {
                         if ( entry.key == "primary_color" ) {
@@ -77,8 +108,8 @@ class extends="tests.support.BaseIntegrationSpec" {
                 } );
 
                 it( "overlays a stored override onto the default", function() {
-                    svc.setOption( "bx-blogger-default", "posts_per_page", 25 );
-                    var list = svc.getEffectiveOptions( "bx-blogger-default" );
+                    svc.setOption( variables.FIXTURE_SLUG, "posts_per_page", 25 );
+                    var list = svc.getEffectiveOptions( variables.FIXTURE_SLUG );
                     for ( var entry in list ) {
                         if ( entry.key == "posts_per_page" ) {
                             expect( entry.value ).toBe( 25 );
@@ -90,81 +121,85 @@ class extends="tests.support.BaseIntegrationSpec" {
 
             describe( "getOption() / setOption()", function() {
                 it( "returns the manifest default when nothing is stored", function() {
-                    expect( svc.getOption( "bx-blogger-default", "primary_color" ) ).toBe( "##0d6efd" );
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "primary_color" ) ).toBe( "##0d6efd" );
                 } );
 
                 it( "returns an empty string for an unknown option", function() {
-                    expect( svc.getOption( "bx-blogger-default", "no-such-key" ) ).toBe( "" );
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "no-such-key" ) ).toBe( "" );
                 } );
 
                 it( "normalizes a bool value (string 'true' -> true)", function() {
-                    svc.setOption( "bx-blogger-default", "show_author_box", true );
-                    expect( svc.getOption( "bx-blogger-default", "show_author_box" ) ).toBeTrue();
-                    svc.setOption( "bx-blogger-default", "show_author_box", false );
-                    expect( svc.getOption( "bx-blogger-default", "show_author_box" ) ).toBeFalse();
+                    svc.setOption( variables.FIXTURE_SLUG, "show_author_box", true );
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "show_author_box" ) ).toBeTrue();
+                    svc.setOption( variables.FIXTURE_SLUG, "show_author_box", false );
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "show_author_box" ) ).toBeFalse();
                 } );
 
                 it( "normalizes an int value", function() {
-                    svc.setOption( "bx-blogger-default", "posts_per_page", "15" );
-                    expect( svc.getOption( "bx-blogger-default", "posts_per_page" ) ).toBe( 15 );
+                    svc.setOption( variables.FIXTURE_SLUG, "posts_per_page", "15" );
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "posts_per_page" ) ).toBe( 15 );
                 } );
 
                 it( "validates a color hex and falls back to the manifest default on malformed input", function() {
-                    svc.setOption( "bx-blogger-default", "primary_color", "##ff0000" );
-                    expect( svc.getOption( "bx-blogger-default", "primary_color" ) ).toBe( "##ff0000" );
+                    svc.setOption( variables.FIXTURE_SLUG, "primary_color", "##ff0000" );
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "primary_color" ) ).toBe( "##ff0000" );
 
                     // Anything not matching #RRGGBB reverts to default
-                    svc.setOption( "bx-blogger-default", "primary_color", "not-a-color" );
-                    expect( svc.getOption( "bx-blogger-default", "primary_color" ) ).toBe( "##0d6efd" );
+                    svc.setOption( variables.FIXTURE_SLUG, "primary_color", "not-a-color" );
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "primary_color" ) ).toBe( "##0d6efd" );
                 } );
 
                 it( "isolates values by theme_slug", function() {
-                    svc.setOption( "bx-blogger-default", "posts_per_page", 7 );
-                    svc.setOption( "bx-blogger-magazine", "posts_per_page", 21 );
-                    expect( svc.getOption( "bx-blogger-default", "posts_per_page" ) ).toBe( 7 );
-                    expect( svc.getOption( "bx-blogger-magazine", "posts_per_page" ) ).toBe( 21 );
+                    // Write a value under the fixture slug, read back
+                    // an unrelated slug — they must not bleed.
+                    svc.setOption( variables.FIXTURE_SLUG, "posts_per_page", 7 );
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "posts_per_page" ) ).toBe( 7 );
+                    // A theme with no `posts_per_page` in its manifest
+                    // returns "" (unknown-option rule).
+                    expect( svc.getOption( "bx-blogger-fallback", "posts_per_page" ) ).toBe( "" );
                 } );
             } );
 
             describe( "setMany() + reset()", function() {
                 it( "writes every manifest-declared key and ignores undeclared keys", function() {
                     svc.setMany(
-                        slug   = "bx-blogger-default",
+                        slug   = variables.FIXTURE_SLUG,
                         values = {
                             "posts_per_page"  : 12,
                             "show_author_box" : false,
                             "no-such-key"     : "smuggled"
                         }
                     );
-                    expect( svc.getOption( "bx-blogger-default", "posts_per_page" ) ).toBe( 12 );
-                    expect( svc.getOption( "bx-blogger-default", "show_author_box" ) ).toBeFalse();
-                    expect( svc.getOption( "bx-blogger-default", "no-such-key" ) ).toBe( "" );
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "posts_per_page" ) ).toBe( 12 );
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "show_author_box" ) ).toBeFalse();
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "no-such-key" ) ).toBe( "" );
 
                     var count = getInstance( "QueryBuilder@qb" ).newQuery()
                         .from( "theme_options" )
-                        .where( "theme_slug", "bx-blogger-default" )
+                        .where( "theme_slug", variables.FIXTURE_SLUG )
                         .where( "option_key", "no-such-key" )
                         .count();
                     expect( count ).toBe( 0 );
                 } );
 
                 it( "reset() wipes every row for the theme", function() {
-                    svc.setOption( "bx-blogger-default", "posts_per_page", 99 );
-                    svc.setOption( "bx-blogger-default", "show_author_box", false );
+                    svc.setOption( variables.FIXTURE_SLUG, "posts_per_page", 99 );
+                    svc.setOption( variables.FIXTURE_SLUG, "show_author_box", false );
 
-                    svc.reset( "bx-blogger-default" );
+                    svc.reset( variables.FIXTURE_SLUG );
 
-                    expect( svc.getOption( "bx-blogger-default", "posts_per_page" ) ).toBe( 10 );
-                    expect( svc.getOption( "bx-blogger-default", "show_author_box" ) ).toBeTrue();
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "posts_per_page" ) ).toBe( 10 );
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "show_author_box" ) ).toBeTrue();
                 } );
             } );
 
             describe( "Theme.option()", function() {
                 it( "returns the effective value via the VO's lookup closure", function() {
-                    themeSvc.activate( "bx-blogger-default" );
-                    svc.setOption( "bx-blogger-default", "primary_color", "##123456" );
+                    themeSvc.activate( variables.FIXTURE_SLUG );
+                    svc.setOption( variables.FIXTURE_SLUG, "primary_color", "##123456" );
 
                     var theme = themeSvc.resolveActive();
+                    expect( theme.getSlug() ).toBe( variables.FIXTURE_SLUG );
                     expect( theme.option( "primary_color" ) ).toBe( "##123456" );
                 } );
             } );

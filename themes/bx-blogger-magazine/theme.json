@@ -30,9 +30,5 @@
         { "name": "medium", "width": 1200, "crop": false },
         { "name": "hero",   "width": 1800, "crop": false }
     ],
-    "options": [
-        { "key": "accent_color",    "type": "color", "default": "#d97706", "label": "Accent Color (heading + link accent)" },
-        { "key": "posts_per_page",  "type": "int",   "default": 9,         "label": "Posts Per Page" },
-        { "key": "show_author_box", "type": "bool",  "default": true,      "label": "Show Author Box" }
-    ]
+    "options": []
 }
