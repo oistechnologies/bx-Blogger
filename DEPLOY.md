@@ -160,6 +160,7 @@ By default, media uploads and generated OG images are stored on a Docker volume.
 
 - [docs/operators/S3-COMPATIBLE-PROVIDERS.md](docs/operators/S3-COMPATIBLE-PROVIDERS.md) — the env-var block per provider (AWS S3, Cloudflare R2, Backblaze B2, Wasabi, DigitalOcean Spaces, self-hosted MinIO)
 - [docs/operators/S3-BACKUP-SETUP.md](docs/operators/S3-BACKUP-SETUP.md) — AWS S3 runbook with bucket + IAM + CloudFront
+- [docs/operators/BACKBLAZE-B2.md](docs/operators/BACKBLAZE-B2.md) — Backblaze B2 runbook with bucket + scoped keys + optional Cloudflare fronting
 - [docs/operators/MINIO-SELF-HOSTED.md](docs/operators/MINIO-SELF-HOSTED.md) — self-host a MinIO instance in the prod stack
 
 You can skip all of this on first deploy and turn it on later without data loss — the relevant env vars flip the backend without migration.
@@ -215,9 +216,11 @@ docker compose -f docker-compose.prod.yml logs app --tail=100
 Follow [docs/operators/NGINX-PROXY-MANAGER.md](docs/operators/NGINX-PROXY-MANAGER.md) for NPM. The short version:
 
 1. Confirm NPM and the bx-Blogger `app` container share the network named in `PROXY_NETWORK`:
+
    ```bash
    docker network inspect $PROXY_NETWORK | grep -E "bx-blogger-app|proxymanager|nginx"
    ```
+
 2. In NPM's dashboard, add a Proxy Host:
    - **Domain:** `blog.example.com`
    - **Forward Hostname / IP:** `bx-blogger-app`

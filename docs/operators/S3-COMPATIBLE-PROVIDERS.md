@@ -131,6 +131,10 @@ S3_FORCE_HTTPS=true
 
 Cheapest major provider by storage and egress. Popular for backups, increasingly for media too.
 
+**Full setup runbook:** [BACKBLAZE-B2.md](BACKBLAZE-B2.md) — account setup, bucket creation, scoped application keys (media + backups split), optional Cloudflare CDN fronting, cost expectations, security checklist.
+
+Quick-reference block:
+
 ```dotenv
 S3_ENDPOINT=https://s3.us-west-002.backblazeb2.com   # region varies; check your bucket
 S3_REGION=us-west-002

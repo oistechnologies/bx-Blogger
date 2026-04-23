@@ -176,6 +176,7 @@ bx-Blogger/
 - **[docs/operators/NGINX-PROXY-MANAGER.md](docs/operators/NGINX-PROXY-MANAGER.md)** — NPM proxy-host setup, field-by-field
 - **[docs/operators/MULTI-INSTANCE.md](docs/operators/MULTI-INSTANCE.md)** — multiple sites on one Docker host
 - **[docs/operators/S3-BACKUP-SETUP.md](docs/operators/S3-BACKUP-SETUP.md)** — AWS S3 with bucket + IAM + CloudFront
+- **[docs/operators/BACKBLAZE-B2.md](docs/operators/BACKBLAZE-B2.md)** — Backblaze B2 with scoped app keys + optional Cloudflare fronting
 - **[docs/operators/S3-COMPATIBLE-PROVIDERS.md](docs/operators/S3-COMPATIBLE-PROVIDERS.md)** — env-var blocks for every supported S3 backend
 - **[docs/operators/MINIO-SELF-HOSTED.md](docs/operators/MINIO-SELF-HOSTED.md)** — self-hosted MinIO as a prod S3 replacement
 
