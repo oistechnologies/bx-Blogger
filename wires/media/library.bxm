@@ -338,7 +338,7 @@ private function clearFlashes() {
 							   href="##"
 							   target="_blank"
 							   rel="noopener"
-							   title="Open in a new tab">
+							   data-bs-toggle="tooltip" title="Open in a new tab">
 								<i class="bi bi-box-arrow-up-right" aria-hidden="true"></i>
 							</a>
 							<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>

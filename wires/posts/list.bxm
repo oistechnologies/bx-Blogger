@@ -213,7 +213,7 @@ function trashPost( required postId ) {
 								<div class="btn-group btn-group-sm" role="group" aria-label="Row actions">
 									<a class="btn btn-outline-secondary"
 									   href="#event.buildLink( to = 'admin:Posts.editor', queryString = 'id=' & row.id )#"
-									   title="Edit"
+									   data-bs-toggle="tooltip" title="Edit"
 									   aria-label="Edit post">
 										<i class="bi bi-pencil-square" aria-hidden="true"></i>
 									</a>
@@ -222,7 +222,7 @@ function trashPost( required postId ) {
 										   href="#( row.post_type == 'page' ? '/' : '/blog/' )##encodeForHTMLAttribute( row.slug )#"
 										   target="_blank"
 										   rel="noopener"
-										   title="View on site"
+										   data-bs-toggle="tooltip" title="View on site"
 										   aria-label="View post on site (opens in a new tab)">
 											<i class="bi bi-box-arrow-up-right" aria-hidden="true"></i>
 										</a>
@@ -231,7 +231,7 @@ function trashPost( required postId ) {
 									        type="button"
 									        wire:click="trashPost(#row.id#)"
 									        wire:confirm="Move this post to trash?"
-									        title="Move to trash"
+									        data-bs-toggle="tooltip" title="Move to trash"
 									        aria-label="Move post to trash">
 										<i class="bi bi-trash" aria-hidden="true"></i>
 									</button>

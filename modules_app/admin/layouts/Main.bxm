@@ -198,6 +198,41 @@
 	#wireScripts()#
 	<script src="https://cdn.jsdelivr.net/npm/easymde@2.18.0/dist/easymde.min.js" crossorigin="anonymous" defer></script>
 
+	<!--- Bootstrap tooltip lifecycle — every [data-bs-toggle="tooltip"]
+	      gets a Bootstrap Tooltip instance on page load, and again
+	      after every CBWIRE morph (morph.added + morph.updated).
+	      `getOrCreateInstance` is idempotent so re-running on still-
+	      live elements is a no-op; DOM added by a morph gets tooltipped
+	      the first time it appears. Using a module-scoped flag to
+	      guarantee the listeners bind only once even if this script
+	      runs during a wire re-render. --->
+	<script>
+	( function () {
+	    if ( window.__bxBloggerTooltipHook ) return;
+	    window.__bxBloggerTooltipHook = true;
+
+	    function initIn( root ) {
+	        if ( typeof bootstrap === "undefined" || !bootstrap.Tooltip ) return;
+	        var scope = ( root && root.querySelectorAll ) ? root : document;
+	        scope.querySelectorAll( '[data-bs-toggle="tooltip"]' ).forEach( function ( el ) {
+	            bootstrap.Tooltip.getOrCreateInstance( el );
+	        } );
+	    }
+
+	    // Initial pass after Bootstrap's deferred bundle finishes parsing.
+	    window.addEventListener( "load", function () { initIn( document ); } );
+
+	    // Re-scan after CBWIRE morphs. Live v3's morph.added fires once
+	    // per newly inserted subtree; morph.updated fires when an
+	    // existing element's attributes change in place.
+	    document.addEventListener( "livewire:init", function () {
+	        if ( typeof Livewire === "undefined" || !Livewire.hook ) return;
+	        Livewire.hook( "morph.added",   function ( p ) { initIn( p.el ); } );
+	        Livewire.hook( "morph.updated", function ( p ) { initIn( p.el ); } );
+	    } );
+	} )();
+	</script>
+
 </body>
 </html>
 </bx:output>

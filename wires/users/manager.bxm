@@ -321,7 +321,7 @@ function isSuperUserId( required numeric userId ) {
 								<div class="btn-group btn-group-sm" role="group" aria-label="Row actions">
 									<a class="btn btn-outline-secondary"
 									   href="#event.buildLink( to = 'admin:Users.editor', queryString = 'id=' & row.id )#"
-									   title="Edit"
+									   data-bs-toggle="tooltip" title="Edit"
 									   aria-label="Edit user">
 										<i class="bi bi-pencil-square" aria-hidden="true"></i>
 									</a>
@@ -329,7 +329,7 @@ function isSuperUserId( required numeric userId ) {
 										<button class="btn btn-outline-secondary"
 										        type="button"
 										        wire:click="toggleActive(#row.id#)"
-										        title="#( row.is_active ? 'Deactivate' : 'Activate' )#"
+										        data-bs-toggle="tooltip" title="#( row.is_active ? 'Deactivate' : 'Activate' )#"
 										        aria-label="Toggle active state">
 											<bx:if row.is_active>
 												<i class="bi bi-pause-circle" aria-hidden="true"></i>
@@ -342,7 +342,7 @@ function isSuperUserId( required numeric userId ) {
 											        type="button"
 											        wire:click="softDelete(#row.id#)"
 											        wire:confirm="Remove #encodeForHTMLAttribute( row.email )#? Their posts and history stay; the account just can't log in."
-											        title="Delete"
+											        data-bs-toggle="tooltip" title="Delete"
 											        aria-label="Soft-delete user">
 												<i class="bi bi-trash" aria-hidden="true"></i>
 											</button>

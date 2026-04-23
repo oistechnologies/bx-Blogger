@@ -760,7 +760,7 @@ private array function parseTagsText( required string text ) {
 							<span>Slug</span>
 							<button type="button" class="btn btn-sm btn-outline-secondary"
 							        wire:click="regenerateSlug"
-							        title="Regenerate slug from title"
+							        data-bs-toggle="tooltip" title="Regenerate slug from title"
 							        aria-label="Regenerate slug from the current title">
 								<i class="bi bi-arrow-repeat" aria-hidden="true"></i>
 							</button>
@@ -787,14 +787,14 @@ private array function parseTagsText( required string text ) {
 								<bx:if aiEnabled()>
 									<button type="button" class="btn btn-outline-secondary"
 									        wire:click="openAiModal"
-									        title="Create from idea"
+									        data-bs-toggle="tooltip" title="Create from idea"
 									        aria-label="Create body from an idea with AI">
 										<i class="bi bi-stars" aria-hidden="true"></i>
 									</button>
 									<button type="button" class="btn btn-outline-secondary"
 									        wire:click="aiRequestReview"
 									        wire:loading.attr="disabled"
-									        title="Review & suggest edits"
+									        data-bs-toggle="tooltip" title="Review & suggest edits"
 									        aria-label="Ask AI to review the body and suggest edits">
 										<i class="bi bi-chat-square-text" aria-hidden="true"></i>
 									</button>
@@ -802,7 +802,7 @@ private array function parseTagsText( required string text ) {
 								<bx:if aiImageEnabled()>
 									<button type="button" class="btn btn-outline-secondary"
 									        wire:click="openImageModal('inline')"
-									        title="Generate image"
+									        data-bs-toggle="tooltip" title="Generate image"
 									        aria-label="Generate an image with AI and insert inline">
 										<i class="bi bi-image" aria-hidden="true"></i>
 									</button>
@@ -810,14 +810,14 @@ private array function parseTagsText( required string text ) {
 								<bx:if args.showPreview>
 									<button type="button" class="btn btn-outline-secondary"
 									        wire:click="hidePreview"
-									        title="Hide preview"
+									        data-bs-toggle="tooltip" title="Hide preview"
 									        aria-label="Hide the rendered preview">
 										<i class="bi bi-eye-slash" aria-hidden="true"></i>
 									</button>
 								<bx:else>
 									<button type="button" class="btn btn-outline-secondary"
 									        wire:click="preview"
-									        title="Preview"
+									        data-bs-toggle="tooltip" title="Preview"
 									        aria-label="Render a preview of the post body">
 										<i class="bi bi-eye" aria-hidden="true"></i>
 									</button>
