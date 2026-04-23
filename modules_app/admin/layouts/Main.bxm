@@ -28,11 +28,44 @@
 			border-radius: .25rem;
 			border-left: 3px solid transparent;
 			padding-left: calc( .75rem - 3px );
+			/* Stacking context for the hover pseudo-element below so a
+			   z-index: -1 on ::before goes behind the link's text but
+			   not behind the sidebar's background. */
+			position: relative;
+			isolation: isolate;
+			transition: color .25s ease;
 		}
-		.admin-sidebar .nav-link:hover { background: ##e9ecef; color: ##212529; }
+
+		/* Non-active hover = REVERSE of the active gradient (purple → blue
+		   instead of blue → purple), cross-faded in via a pseudo-element
+		   so we can animate opacity rather than the un-animatable
+		   background-image property. Active links stay on their own
+		   gradient; hovering an active link doesn't re-paint. */
+		.admin-sidebar .nav-link:not(.active)::before {
+			content: "";
+			position: absolute;
+			inset: 0;
+			z-index: -1;
+			background: linear-gradient( 90deg, ##7f47d4 0%, ##0d2b60 100% );
+			opacity: 0;
+			border-radius: inherit;
+			transition: opacity .25s ease;
+			pointer-events: none;
+		}
+		.admin-sidebar .nav-link:not(.active):hover::before { opacity: 1; }
+		.admin-sidebar .nav-link:not(.active):hover          { color: ##fff; }
+
 		.admin-sidebar .nav-link.active {
 			color: ##fff;
 			border-left-color: rgba( 255, 255, 255, .6 );
+		}
+
+		/* Respect the user's motion preference — drop the opacity
+		   transition to an instant swap for anyone who's asked the OS
+		   to minimize motion. */
+		@media ( prefers-reduced-motion: reduce ) {
+			.admin-sidebar .nav-link,
+			.admin-sidebar .nav-link:not(.active)::before { transition: none; }
 		}
 
 		/* Dashboard stat cards — subtle left accent so a row of cards
