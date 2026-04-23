@@ -11,6 +11,9 @@
 <bx:if flash.exists( "adminError" )>
     <div class="alert alert-danger">#encodeForHTML( flash.get( "adminError" ) )#</div>
 </bx:if>
+<bx:if flash.exists( "adminMessage" )>
+    <div class="alert alert-success">#encodeForHTML( flash.get( "adminMessage" ) )#</div>
+</bx:if>
 
 <!--- User picker --->
 <form method="get" action="#event.buildLink( 'admin:Privacy.show' )#" class="card stat-card stat-card-info mb-3">
@@ -48,13 +51,15 @@
                    href="#event.buildLink( event = 'admin:Privacy.exportUser', queryString = 'id=' & prc.user.getId() )#">
                     Download export (ZIP)
                 </a>
-                <!--- 8.D.2 will light this up. Keep the button
-                      visually present today as a read-only hint so
-                      the surface feels complete, but disable it. --->
-                <button type="button" class="btn btn-outline-danger" disabled
-                        title="Purge ships in Phase 8.D.2">
-                    Purge (8.D.2)
-                </button>
+                <bx:if prc.canPurge>
+                    <button type="button" class="btn btn-outline-danger"
+                            data-bs-toggle="collapse"
+                            data-bs-target="##purge-confirm"
+                            aria-expanded="false"
+                            aria-controls="purge-confirm">
+                        Purge&hellip;
+                    </button>
+                </bx:if>
             </div>
         </div>
         <div class="card-body">
@@ -93,6 +98,38 @@
                     </div>
                 </div>
             </div>
+
+            <!--- Phase 8.D.2 — right-to-be-forgotten two-step confirm.
+                  Collapsed by default (Bootstrap); the "Purge…" button
+                  toggles it open. Typed-email confirm is re-checked by
+                  the handler so a direct POST can't bypass. --->
+            <bx:if prc.canPurge>
+                <div id="purge-confirm" class="collapse mt-4">
+                    <div class="border border-danger rounded p-3 bg-danger bg-opacity-10">
+                        <h5 class="mb-2">Purge this user</h5>
+                        <p class="small mb-3">
+                            <strong>This is irreversible.</strong> The user row is deleted, their posts and
+                            revisions are reassigned to the sentinel &ldquo;Deleted User&rdquo; account, their
+                            uploaded media that no surviving post references is deleted, and their
+                            audit-log / login-audit IP + user-agent are blanked. An audit entry is
+                            written on your own account logging the purge.
+                        </p>
+                        <form method="POST"
+                              action="#event.buildLink( 'admin:Privacy.purge' )#"
+                              class="d-flex gap-2 align-items-center flex-wrap">
+                            <input type="hidden" name="id" value="#val( prc.user.getId() )#">
+                            <label for="confirmEmail" class="form-label small mb-0 me-2">
+                                Retype <code>#encodeForHTML( prc.user.getEmail() ?: "" )#</code> to confirm:
+                            </label>
+                            <input type="text" id="confirmEmail" name="confirmEmail"
+                                   class="form-control form-control-sm" style="max-width: 20rem;"
+                                   placeholder="#encodeForHTMLAttribute( prc.user.getEmail() ?: '' )#"
+                                   autocomplete="off">
+                            <button type="submit" class="btn btn-danger btn-sm">Permanently purge</button>
+                        </form>
+                    </div>
+                </div>
+            </bx:if>
         </div>
     </div>
 </bx:if>

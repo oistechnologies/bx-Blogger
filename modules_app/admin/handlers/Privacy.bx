@@ -17,12 +17,19 @@ class extends="coldbox.system.EventHandler" {
 
     this.layouts = { "Main.bxm" : "*" };
 
+    /**
+     * Permission gate. `purge` needs `users.purge` (super_admin
+     * only); the other actions accept `users.export_data` (admin
+     * + super_admin). Two-tier just like AuditLog's
+     * view/export split.
+     */
     function preHandler( event, rc, prc, action, eventArguments ) {
         if ( !cbauth.isLoggedIn() ) {
             relocate( url = "/security/login" );
             return;
         }
-        if ( !cbauth.getUser().hasPermission( "users.export_data" ) ) {
+        var required = arguments.action == "purge" ? "users.purge" : "users.export_data";
+        if ( !cbauth.getUser().hasPermission( required ) ) {
             relocate( event = "admin:Dashboard.index" );
             return;
         }
@@ -40,6 +47,7 @@ class extends="coldbox.system.EventHandler" {
         prc.pageTitle   = "Privacy";
         prc.query       = trim( rc.q ?: "" );
         prc.lookupError = "";
+        prc.canPurge    = cbauth.getUser().hasPermission( "users.purge" );
         // Absence of prc.user is the "no user selected" state —
         // the view checks `structKeyExists(prc, "user")` (BoxLang
         // removes struct keys assigned to null, so we just don't
@@ -86,6 +94,50 @@ class extends="coldbox.system.EventHandler" {
         }
 
         streamExport( event, target );
+    }
+
+    /**
+     * POST /admin/privacy/purge — Phase 8.D.2 right-to-be-
+     * forgotten. The form carries both `id` and `confirmEmail`;
+     * the handler only runs the purge when the admin retyped the
+     * target email exactly (the two-step confirm lives in the
+     * UI, but we assert it here too so a direct-POST attacker
+     * can't bypass).
+     */
+    function purge( event, rc, prc ) {
+        var id = val( rc.id ?: 0 );
+        if ( id <= 0 ) {
+            flash.put( "adminError", "Missing user id." );
+            relocate( event = "admin:Privacy.index" );
+            return;
+        }
+        var target = userService.retrieveUserById( id );
+        if ( isNull( target ) ) {
+            flash.put( "adminError", "User not found." );
+            relocate( event = "admin:Privacy.index" );
+            return;
+        }
+
+        var expectedEmail = lCase( trim( target.getEmail() ?: "" ) );
+        var typedEmail    = lCase( trim( rc.confirmEmail ?: "" ) );
+        if ( !len( expectedEmail ) || typedEmail != expectedEmail ) {
+            flash.put( "adminError", "Confirmation email didn't match. Purge aborted." );
+            relocate( event = "admin:Privacy.index", queryString = "q=" & expectedEmail );
+            return;
+        }
+
+        try {
+            userService.purge(
+                user            = target,
+                purgingAdminId  = cbauth.getUser().getId()
+            );
+            flash.put( "adminMessage", "Purged " & expectedEmail & ". Their posts were reassigned to the sentinel 'Deleted User' account." );
+            relocate( event = "admin:Privacy.index" );
+        }
+        catch ( any e ) {
+            flash.put( "adminError", "Purge failed: " & ( e.message ?: "unknown error" ) );
+            relocate( event = "admin:Privacy.index", queryString = "q=" & expectedEmail );
+        }
     }
 
     // --------------------------------------------------------------------

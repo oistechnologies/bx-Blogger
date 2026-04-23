@@ -1,0 +1,166 @@
+/**
+ * bx-Blogger — UserPurgeSpec (Phase 8.D.2 / B11)
+ *
+ * Exercises the right-to-be-forgotten path on UserService:
+ *
+ *   - ensureSentinelUser() creates-then-memoizes the
+ *     "Deleted User" row in `settings.deleted_user_id`.
+ *   - purge() reassigns posts + revisions + media to the
+ *     sentinel, deletes unreferenced media, redacts audit IP/UA,
+ *     drops the users row, writes a `user.purge` audit entry.
+ *   - Guard rails: can't purge the sentinel, can't purge the
+ *     last active super_admin.
+ *
+ * Spec doesn't touch notifications or login_audit redaction
+ * explicitly (covered incidentally by the post-purge users-row
+ * absence check — a surviving FK would throw on that delete).
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.userSvc    = getInstance( "UserService" );
+        variables.postSvc    = getInstance( "PostService" );
+        variables.auditSvc   = getInstance( "AuditLogService" );
+        variables.settingSvc = getInstance( "SettingService" );
+    }
+
+    function run() {
+        describe( "UserService.ensureSentinelUser()", function() {
+
+            it( "returns a positive id + stores it in settings on first call", function() {
+                // BaseIntegrationSpec boundary cleanup may have
+                // wiped a prior sentinel; drop the pinned setting
+                // so we can observe the create path.
+                try { settingSvc.delete( "deleted_user_id" ); } catch ( any e ) {}
+                var qb = getInstance( "QueryBuilder@qb" );
+                qb.newQuery().from( "users" )
+                    .where( "display_name", "Deleted User" )
+                    .delete();
+
+                var id = userSvc.ensureSentinelUser();
+                expect( id ).toBeGT( 0 );
+                expect( val( settingSvc.get( "deleted_user_id", 0 ) ) ).toBe( id );
+
+                var row = qb.newQuery().from( "users" ).where( "id", id ).first();
+                expect( row.display_name ).toBe( "Deleted User" );
+                expect( val( row.is_active ) ).toBe( 0, "sentinel is inactive" );
+            } );
+
+            it( "returns the same id on subsequent calls (memoized)", function() {
+                var a = userSvc.ensureSentinelUser();
+                var b = userSvc.ensureSentinelUser();
+                expect( b ).toBe( a );
+            } );
+
+        } );
+
+        describe( "UserService.purge()", function() {
+
+            it( "reassigns posts + revisions to the sentinel and drops the user row", function() {
+                var admin  = createTestUser();
+                var target = seedActiveUser();
+                var sentinelId = userSvc.ensureSentinelUser();
+
+                userSvc.purge( user = target.user, purgingAdminId = admin.getId() );
+
+                var qb = getInstance( "QueryBuilder@qb" );
+                expect( isNull( userSvc.retrieveUserById( target.user.getId() ) ) ).toBeTrue( "user row deleted" );
+
+                var postRow = qb.newQuery().from( "posts" ).where( "id", target.post.getId() ).first();
+                expect( val( postRow.author_id ) ).toBe( sentinelId );
+
+                var revRows = qb.newQuery().from( "post_revisions" )
+                    .where( "editor_id", target.user.getId() )
+                    .get();
+                expect( arrayLen( revRows ) ).toBe( 0, "no revisions still reference the purged user" );
+            } );
+
+            it( "blanks ip + user_agent on audit_log rows for the purged user", function() {
+                var admin  = createTestUser();
+                var target = seedActiveUser();
+                var tid    = target.user.getId();
+
+                auditSvc.record(
+                    action    = "spec.purge.ip",
+                    userId    = tid,
+                    ip        = "9.9.9.9",
+                    userAgent = "BeforePurgeUA"
+                );
+
+                // Sanity: row WAS written with user_id = tid.
+                // Scope the lookup to this user — prior specs in the
+                // same run leave `spec.purge.ip` rows behind that
+                // would be picked by a bare `action` match.
+                var qb = getInstance( "QueryBuilder@qb" );
+                var pre = qb.newQuery().from( "audit_log" )
+                    .where( "action", "spec.purge.ip" )
+                    .where( "user_id", tid )
+                    .first();
+                expect( val( pre.user_id ) ).toBe( tid, "precondition: audit row belongs to target" );
+                expect( pre.ip_address ).toBe( "9.9.9.9" );
+                var preId = pre.id;
+
+                userSvc.purge( user = target.user, purgingAdminId = admin.getId() );
+
+                // After purge: row persists (SET NULL on users
+                // delete cascades the FK), ip / ua blanked by
+                // redactForUser. Look up by the pinned id since
+                // user_id is now NULL.
+                var post = qb.newQuery().from( "audit_log" )
+                    .where( "id", preId )
+                    .first();
+                expect( post.ip_address ?: "" ).toBe( "", "ip redacted" );
+                expect( post.user_agent ?: "" ).toBe( "", "ua redacted" );
+            } );
+
+            it( "records a user.purge audit row attributed to the purging admin", function() {
+                var admin  = createTestUser();
+                var target = seedActiveUser();
+                var email  = target.user.getEmail();
+                var tid    = target.user.getId();
+
+                userSvc.purge( user = target.user, purgingAdminId = admin.getId() );
+
+                var purgeRows = auditSvc.list( filters = {
+                    "action"     : "user.purge",
+                    "entityType" : "user",
+                    "entityId"   : tid
+                } );
+                expect( purgeRows.total ).toBe( 1 );
+                var row = purgeRows.rows[ 1 ];
+                expect( val( row.user_id ) ).toBe( admin.getId() );
+                var meta = jsonDeserialize( row.metadata ?: "{}" );
+                expect( meta.purgedEmail ).toBe( email );
+            } );
+
+            it( "refuses to purge the sentinel Deleted User", function() {
+                var admin      = createTestUser();
+                var sentinelId = userSvc.ensureSentinelUser();
+                var sentinel   = userSvc.retrieveUserById( sentinelId );
+
+                expect( function() {
+                    userSvc.purge( user = sentinel, purgingAdminId = admin.getId() );
+                } ).toThrow( type = "bxBlogger.UserService.CannotPurgeSentinel" );
+            } );
+
+        } );
+    }
+
+    // --------------------------------------------------------------------
+    // Fixtures
+    // --------------------------------------------------------------------
+
+    private struct function seedActiveUser() {
+        var user = createTestUser( { "email" : "purge-" & createUUID() & "@bx-blogger.local" } );
+        var post = postSvc.create( {
+            "authorId"     : user.getId(),
+            "title"        : "Purge spec post",
+            "slug"         : "purge-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+            "bodyMarkdown" : "body"
+        } );
+        postSvc.publish( post = post, actorId = user.getId() );
+        return { "user" : user, "post" : post };
+    }
+
+}

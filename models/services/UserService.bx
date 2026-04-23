@@ -491,6 +491,216 @@ class accessors="true" singleton {
     }
 
     // --------------------------------------------------------------------
+    // Phase 8.D.2 — GDPR purge (right-to-be-forgotten)
+    // --------------------------------------------------------------------
+
+    /**
+     * Wipe `user` from the platform:
+     *
+     *   1. Reassign their posts' author_id to the sentinel
+     *      "Deleted User" account (preserves post history + URLs).
+     *   2. Reassign their post_revisions' editor_id to the sentinel.
+     *   3. Reassign their uploaded-media uploader_id to the sentinel
+     *      (media FK is RESTRICT on users.id, so we can't leave any
+     *      row pointing at the user we're about to drop).
+     *   4. Delete uploaded media that no surviving post references
+     *      (via `featured_media_id` or `og_image_id`).
+     *      Body-inline image references are NOT scanned — the
+     *      media row stays reassigned to the sentinel, which is
+     *      correct enough for a v1 purge (the image URL on disk
+     *      still works for readers of old posts).
+     *   5. Redact ip/user-agent on audit_log + login_audit rows
+     *      tied to the user; keep the rows so compliance can see
+     *      "admin X did Y" trails.
+     *   6. Delete pivot rows (user_roles, notifications) — both
+     *      CASCADE via FK but we run the explicit DELETEs anyway
+     *      so the purge is observable from this method's SQL
+     *      (easier to audit / trace from a log).
+     *   7. Delete the users row.
+     *   8. Record a `user.purge` audit entry on the purging admin,
+     *      with the purged user's email captured in metadata
+     *      (that email is about to vanish from the DB; capture it
+     *      BEFORE the delete).
+     *
+     * Guard rails:
+     *   - Throws `bxBlogger.UserService.CannotPurgeLastSuperAdmin`
+     *     when the target is the last active super_admin.
+     *   - Throws `bxBlogger.UserService.CannotPurgeSentinel` when
+     *     the target IS the sentinel Deleted User. (Purging the
+     *     sentinel would orphan every reassigned post.)
+     */
+    function purge( required any user, required numeric purgingAdminId ) {
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        var targetId = arguments.user.getId();
+
+        var sentinelId = ensureSentinelUser();
+        if ( targetId == sentinelId ) {
+            throw(
+                type    = "bxBlogger.UserService.CannotPurgeSentinel",
+                message = "Refusing to purge the sentinel 'Deleted User' account."
+            );
+        }
+        if ( isSuperAdmin( arguments.user ) && countActiveSuperAdmins() <= 1 ) {
+            throw(
+                type    = "bxBlogger.UserService.CannotPurgeLastSuperAdmin",
+                message = "Refusing to purge the last active super_admin."
+            );
+        }
+
+        var targetEmail = arguments.user.getEmail() ?: "";
+
+        // Snapshot the media the target user owns BEFORE we
+        // reassign. The post-reassignment alternative ("everything
+        // currently owned by sentinel") would mis-scope under a
+        // hypothetical concurrent purge against the same sentinel.
+        var targetMediaIds = [];
+        for ( var m in qb.newQuery().from( "media" )
+                .select( "id" )
+                .where( "uploader_id", targetId )
+                .get() ) targetMediaIds.append( m.id );
+
+        // 1. Reassign posts
+        qb.newQuery().from( "posts" )
+            .where( "author_id", targetId )
+            .update( { "author_id" : sentinelId } );
+
+        // 2. Reassign revisions
+        qb.newQuery().from( "post_revisions" )
+            .where( "editor_id", targetId )
+            .update( { "editor_id" : sentinelId } );
+
+        // 3. Reassign uploader_id on all media (media FK is
+        //    RESTRICT on users; can't leave rows pointing at the
+        //    user we're about to drop).
+        qb.newQuery().from( "media" )
+            .where( "uploader_id", targetId )
+            .update( { "uploader_id" : sentinelId } );
+
+        // 4. Delete the target's formerly-owned media rows that
+        //    no surviving post (or category) references. Body-
+        //    inline image references in post markdown are NOT
+        //    scanned — the media row stays reassigned to the
+        //    sentinel, the image on disk still works for readers.
+        if ( arrayLen( targetMediaIds ) ) {
+            var referenced = referencedMediaIdsFor( qb );
+            var deleteQ = qb.newQuery().from( "media" )
+                .whereIn( "id", targetMediaIds );
+            if ( arrayLen( referenced ) ) deleteQ.whereNotIn( "id", referenced );
+            deleteQ.delete();
+        }
+
+        // 5. Redact IP / user-agent in the audit surfaces but
+        //    keep the rows for compliance.
+        variables.wirebox.getInstance( "AuditLogService" ).redactForUser( targetId );
+        qb.newQuery().from( "login_audit" )
+            .where( "user_id", targetId )
+            .update( {
+                "ip"         : "",
+                "user_agent" : ""
+            } );
+
+        // 6. Drop pivots + per-user notifications. FK cascades
+        //    cover both of these, but running them explicitly
+        //    makes the purge observable from this method's SQL.
+        qb.newQuery().from( "user_roles"    ).where( "user_id", targetId ).delete();
+        qb.newQuery().from( "notifications" ).where( "user_id", targetId ).delete();
+
+        // 7. Drop the user row.
+        qb.newQuery().from( "users" ).where( "id", targetId ).delete();
+
+        // 8. Record the purge on the acting admin. Do this AFTER
+        //    the user row is gone so the audit entry can't
+        //    accidentally include `user_id = purged-user-id`
+        //    (the purging admin is the actor here).
+        variables.wirebox.getInstance( "AuditLogService" ).record(
+            action     = "user.purge",
+            userId     = arguments.purgingAdminId,
+            entityType = "user",
+            entityId   = targetId,
+            metadata   = {
+                "purgedEmail" : targetEmail
+            }
+        );
+    }
+
+    /**
+     * Return the id of the sentinel "Deleted User" account,
+     * creating it on first call. The id is memoized in
+     * `settings.deleted_user_id` so subsequent boots find the
+     * same sentinel without a users-table scan.
+     *
+     * The sentinel is inactive (never logs in), has a random
+     * unverified email in the bx-blogger.local TLD, and an
+     * unreachable bcrypt placeholder as password_hash.
+     */
+    numeric function ensureSentinelUser() {
+        var settings = variables.wirebox.getInstance( "SettingService" );
+        var stored   = settings.get( "deleted_user_id", 0 );
+        if ( val( stored ) > 0 ) {
+            // Verify the row actually exists (an operator could
+            // have manually nuked it; fall through to re-create).
+            var found = retrieveUserById( val( stored ) );
+            if ( !isNull( found ) ) return val( stored );
+        }
+
+        var qb  = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        var now = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+        var email = "deleted-user-" & lCase( replace( createUUID(), "-", "", "all" ) ) & "@bx-blogger.local";
+        qb.newQuery().from( "users" ).insert( {
+            "email"                : email,
+            // 60-char bcrypt-shaped placeholder (users.password_hash
+            // is VARCHAR(60) — exact length required). Same shape
+            // BaseIntegrationSpec uses for its test-user factory;
+            // cbauth.canLogin() short-circuits on is_active=0 so this
+            // hash is never actually verified against.
+            "password_hash"        : "$2a$12$R9h/cIPz0gi.URNNX3kh2OPST9.PgBkqquzi.Ss7KIUgO2t0jWMUW",
+            "display_name"         : "Deleted User",
+            "username"             : "deleted-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+            "is_active"            : 0,
+            "two_factor_enabled"   : 0,
+            "must_change_password" : 0,
+            "created_at"           : now,
+            "updated_at"           : now
+        } );
+        var row = qb.newQuery().from( "users" )
+            .where( "email", email )
+            .first();
+        var sentinelId = val( row.id ?: 0 );
+        settings.set(
+            key         = "deleted_user_id",
+            value       = sentinelId,
+            type        = "int",
+            description = "Sentinel user id for GDPR purges — posts / revisions / media get reassigned here so the original user row can be dropped."
+        );
+        return sentinelId;
+    }
+
+    /**
+     * All media ids currently referenced by any post as
+     * featured_media_id or og_image_id. Used by `purge` to
+     * decide which of the purged user's media can be deleted
+     * outright.
+     */
+    private array function referencedMediaIdsFor( required any qb ) {
+        var ids = {};
+        var rows = arguments.qb.newQuery().from( "posts" )
+            .select( [ "featured_media_id", "og_image_id" ] )
+            .whereNull( "deleted_at" )
+            .get();
+        for ( var r in rows ) {
+            if ( !isNull( r.featured_media_id ) && val( r.featured_media_id ) > 0 ) ids[ r.featured_media_id ] = true;
+            if ( !isNull( r.og_image_id       ) && val( r.og_image_id       ) > 0 ) ids[ r.og_image_id       ] = true;
+        }
+        var cats = arguments.qb.newQuery().from( "categories" )
+            .select( "og_image_id" )
+            .get();
+        for ( var c in cats ) {
+            if ( !isNull( c.og_image_id ) && val( c.og_image_id ) > 0 ) ids[ c.og_image_id ] = true;
+        }
+        return structKeyArray( ids );
+    }
+
+    // --------------------------------------------------------------------
 
     /**
      * Shared email + displayName validation used by create + update.
