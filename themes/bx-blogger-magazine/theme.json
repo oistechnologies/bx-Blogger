@@ -30,5 +30,7 @@
         { "name": "medium", "width": 1200, "crop": false },
         { "name": "hero",   "width": 1800, "crop": false }
     ],
-    "options": []
+    "options": [
+        { "key": "posts_per_page", "type": "int", "default": 9, "label": "Posts Per Page" }
+    ]
 }

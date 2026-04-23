@@ -22,7 +22,10 @@ class extends="coldbox.system.EventHandler" {
 	 */
 	function index( event, rc, prc ) {
 		var page = max( 1, int( rc.page ?: 1 ) );
-		var list = getInstance( "PublicPostService" ).listPublished( page = page );
+		var list = getInstance( "PublicPostService" ).listPublished(
+			page    = page,
+			perPage = themePerPage( prc )
+		);
 
 		prc.siteName       = getSetting( "AppName" );
 		prc.siteTagline    = "";
@@ -41,7 +44,11 @@ class extends="coldbox.system.EventHandler" {
 	function search( event, rc, prc ) {
 		var q    = trim( rc.q ?: "" );
 		var page = max( 1, int( rc.page ?: 1 ) );
-		var list = getInstance( "PublicPostService" ).listPublishedMatching( q = q, page = page );
+		var list = getInstance( "PublicPostService" ).listPublishedMatching(
+			q       = q,
+			page    = page,
+			perPage = themePerPage( prc )
+		);
 
 		prc.searchQuery    = q;
 		prc.posts          = list.posts;
@@ -138,6 +145,19 @@ class extends="coldbox.system.EventHandler" {
 		// idempotency story as the admin seed: short-circuits when
 		// anything already lives in the posts table.
 		seedSampleBlogPostIfEmpty();
+	}
+
+	/**
+	 * Read the active theme's `posts_per_page` option and return it as
+	 * a numeric, or 0 when the option isn't declared / returns a
+	 * non-numeric. `PublicPostService.resolvePerPage()` treats 0 as
+	 * "use the service-level default," so passing 0 is a clean
+	 * no-override signal.
+	 */
+	private numeric function themePerPage( required any prc ) {
+		if ( !structKeyExists( arguments.prc, "theme" ) ) return 0;
+		var v = arguments.prc.theme.option( "posts_per_page" );
+		return isNumeric( v ) ? int( v ) : 0;
 	}
 
 	/**

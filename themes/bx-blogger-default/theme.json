@@ -30,5 +30,7 @@
         { "name": "medium", "width": 1024, "crop": false },
         { "name": "large",  "width": 2048, "crop": false }
     ],
-    "options": []
+    "options": [
+        { "key": "posts_per_page", "type": "int", "default": 10, "label": "Posts Per Page" }
+    ]
 }

@@ -24,7 +24,10 @@ class extends="coldbox.system.EventHandler" {
      */
     function index( event, rc, prc ) {
         var page = max( 1, int( rc.page ?: 1 ) );
-        var list = getInstance( "PublicPostService" ).listPublished( page = page );
+        var list = getInstance( "PublicPostService" ).listPublished(
+            page    = page,
+            perPage = themePerPage( prc )
+        );
 
         prc.posts          = list.posts;
         prc.pagination     = buildPagination( baseUrl = "/blog", list = list );
@@ -106,7 +109,7 @@ class extends="coldbox.system.EventHandler" {
         var foundCategory = getInstance( "Category" ).find( row.id );
         var page          = max( 1, int( rc.page ?: 1 ) );
         var list          = getInstance( "PublicPostService" )
-            .listPublishedByCategory( category = foundCategory, page = page );
+            .listPublishedByCategory( category = foundCategory, page = page, perPage = themePerPage( prc ) );
 
         prc.category        = foundCategory;
         prc.posts           = list.posts;
@@ -137,7 +140,11 @@ class extends="coldbox.system.EventHandler" {
         }
 
         var page = max( 1, int( rc.page ?: 1 ) );
-        var list = getInstance( "PublicPostService" ).listPublishedByTag( tag = foundTag, page = page );
+        var list = getInstance( "PublicPostService" ).listPublishedByTag(
+            tag     = foundTag,
+            page    = page,
+            perPage = themePerPage( prc )
+        );
 
         prc.tag             = foundTag;
         prc.posts           = list.posts;
@@ -165,7 +172,11 @@ class extends="coldbox.system.EventHandler" {
         }
 
         var page = max( 1, int( rc.page ?: 1 ) );
-        var list = getInstance( "PublicPostService" ).listPublishedByAuthor( author = foundAuthor, page = page );
+        var list = getInstance( "PublicPostService" ).listPublishedByAuthor(
+            author  = foundAuthor,
+            page    = page,
+            perPage = themePerPage( prc )
+        );
 
         prc.author          = foundAuthor;
         prc.posts           = list.posts;
@@ -198,7 +209,7 @@ class extends="coldbox.system.EventHandler" {
 
         var page = max( 1, int( rc.page ?: 1 ) );
         var list = getInstance( "PublicPostService" )
-            .listPublishedByDateRange( year = year, month = month, page = page );
+            .listPublishedByDateRange( year = year, month = month, page = page, perPage = themePerPage( prc ) );
 
         var baseUrl = "/archive/" & year & ( len( month ) ? ( "/" & month ) : "" );
         var label   = len( month )
@@ -225,7 +236,10 @@ class extends="coldbox.system.EventHandler" {
      * GET /feed.xml — site-wide RSS.
      */
     function feed( event, rc, prc ) {
-        var xml = getInstance( "FeedService" ).siteFeed( baseUrl = siteBaseUrl( event ) );
+        var xml = getInstance( "FeedService" ).siteFeed(
+            baseUrl = siteBaseUrl( event ),
+            limit   = themePerPage( prc )
+        );
         writeFeedResponse( event, xml );
     }
 
@@ -245,7 +259,8 @@ class extends="coldbox.system.EventHandler" {
         var foundCategory = getInstance( "Category" ).find( catRow.id );
         var xml = getInstance( "FeedService" ).categoryFeed(
             category = foundCategory,
-            baseUrl  = siteBaseUrl( event )
+            baseUrl  = siteBaseUrl( event ),
+            limit    = themePerPage( prc )
         );
         writeFeedResponse( event, xml );
     }
@@ -262,7 +277,8 @@ class extends="coldbox.system.EventHandler" {
         }
         var xml = getInstance( "FeedService" ).tagFeed(
             tag     = foundTag,
-            baseUrl = siteBaseUrl( event )
+            baseUrl = siteBaseUrl( event ),
+            limit   = themePerPage( prc )
         );
         writeFeedResponse( event, xml );
     }
@@ -279,7 +295,8 @@ class extends="coldbox.system.EventHandler" {
         }
         var xml = getInstance( "FeedService" ).authorFeed(
             author  = foundAuthor,
-            baseUrl = siteBaseUrl( event )
+            baseUrl = siteBaseUrl( event ),
+            limit   = themePerPage( prc )
         );
         writeFeedResponse( event, xml );
     }
@@ -287,6 +304,20 @@ class extends="coldbox.system.EventHandler" {
     // --------------------------------------------------------------------
     // Private helpers
     // --------------------------------------------------------------------
+
+    /**
+     * Read the active theme's `posts_per_page` option and return it as
+     * a numeric, or 0 when the option isn't declared / returns a
+     * non-numeric. Both `PublicPostService.resolvePerPage()` and
+     * `FeedService.resolveLimit()` treat 0 / non-numeric as
+     * "use the service-level default," so passing 0 is a clean
+     * no-override signal.
+     */
+    private numeric function themePerPage( required any prc ) {
+        if ( !structKeyExists( arguments.prc, "theme" ) ) return 0;
+        var v = arguments.prc.theme.option( "posts_per_page" );
+        return isNumeric( v ) ? int( v ) : 0;
+    }
 
     /**
      * RSS spec wants absolute URLs — build the site's base (protocol +
