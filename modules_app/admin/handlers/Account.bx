@@ -154,7 +154,8 @@ class extends="coldbox.system.EventHandler" {
         } else {
             user.setPendingEmail( newEmail );
             user.save();
-            var ip = event.getHTTPHeader( "X-Forwarded-For", cgi.remote_addr ?: "" );
+            // Phase 10.A — see TrustedProxyInterceptor for trust gating.
+            var ip = event.getPrivateValue( "clientIp", cgi.remote_addr ?: "" );
             emailVerificationService.request( user = user, email = newEmail, ip = ip );
         }
 

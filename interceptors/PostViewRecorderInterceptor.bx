@@ -44,9 +44,12 @@ class extends="coldbox.system.Interceptor" {
             var rawUa = arguments.event.getHTTPHeader( "User-Agent", "" );
             if ( looksLikeBot( rawUa ) ) return;
 
-            var ipAddr = arguments.event.getHTTPHeader( "X-Forwarded-For", cgi.remote_addr ?: "" );
-            // X-Forwarded-For can be a comma-separated chain; client is leftmost.
-            if ( ipAddr contains "," ) ipAddr = trim( listFirst( ipAddr, "," ) );
+            // Phase 10.A — TrustedProxyInterceptor has already
+            // resolved the real client IP (XFF unwrapped only when
+            // the immediate hop is trusted) and stamped it on
+            // `prc.clientIp`. We read that. No more naive leftmost-
+            // of-XFF-header parsing at this call site.
+            var ipAddr = arguments.event.getPrivateValue( "clientIp", cgi.remote_addr ?: "" );
 
             var salt   = todaySalt();
             var ipHash = len( ipAddr ) ? lCase( hash( salt & "|" & ipAddr, "SHA-256" ) ) : "";

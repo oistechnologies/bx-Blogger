@@ -40,7 +40,12 @@ class extends="coldbox.system.EventHandler" {
 
         var email     = trim( rc.email );
         var password  = rc.password;
-        var ip        = event.getHTTPHeader( "X-Forwarded-For", cgi.remote_addr ?: "" );
+        // Phase 10.A — TrustedProxyInterceptor's pre-resolved IP
+        // (unwraps XFF only when the immediate hop is in
+        // TRUSTED_PROXIES). Falls back to cgi.remote_addr when the
+        // interceptor hasn't run (shouldn't happen for request
+        // paths, but defensive).
+        var ip        = event.getPrivateValue( "clientIp", cgi.remote_addr ?: "" );
         var userAgent = cgi.http_user_agent ?: "";
 
         // Basic form validation before hitting the DB

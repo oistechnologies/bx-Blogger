@@ -218,11 +218,20 @@ class {
 		 * it up in Phase 7) and returns HTTP 429 to the caller.
 		 */
 		variables.interceptors = [
+			// 10.A — resolves the real client IP on `preProcess` and
+			// stamps it on `prc.clientIp` for every downstream
+			// consumer (RateLimit, Security audit, BrokenLinks,
+			// PostViewRecorder, etc.). Runs FIRST so everything
+			// reads from a single consistent source. `prc.clientProto`
+			// gets the same treatment via X-Forwarded-Proto.
+			// TRUSTED_PROXIES env var gates header-trust — attacker-
+			// supplied XFF on a direct connection is ignored.
+			{ class : "interceptors.TrustedProxyInterceptor" },
 			// 5.A — full-page HTML cache for anonymous GETs on public
-			// routes. Registered FIRST so a cache hit short-circuits
-			// the request before RateLimit / ThemeResolution run —
-			// no point doing rate-limit math on a served-from-cache
-			// response.
+			// routes. Registered second (after TrustedProxy) so a
+			// cache hit still short-circuits RateLimit /
+			// ThemeResolution — no point doing that math on a served-
+			// from-cache response.
 			{ class : "interceptors.PageCacheInterceptor" },
 			// 7.C — runs BEFORE rate-limit + theme resolution. A match
 			// against the `redirects` table short-circuits the request

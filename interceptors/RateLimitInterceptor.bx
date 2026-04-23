@@ -123,9 +123,13 @@ class extends="coldbox.system.Interceptor" {
     }
 
     private string function getClientIp( required any event ) {
-        // Phase 1 uses raw remote addr; B15 TrustedProxyInterceptor will
-        // swap this out to read the unwrapped X-Forwarded-For value off prc.
-        return arguments.event.getHTTPHeader( "X-Forwarded-For", cgi.remote_addr ?: "0.0.0.0" );
+        // Phase 10.A — TrustedProxyInterceptor resolves the real
+        // client IP on `preProcess` (XFF only honored when the
+        // immediate hop is in TRUSTED_PROXIES) and stamps it on
+        // `prc.clientIp`. We read that via the event's private
+        // collection; no more unconditional XFF trust, no more
+        // attacker-spoofable rate-limit bypass.
+        return arguments.event.getPrivateValue( "clientIp", cgi.remote_addr ?: "0.0.0.0" );
     }
 
     private string function getCurrentUserId() {

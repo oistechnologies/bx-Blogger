@@ -1,0 +1,202 @@
+/**
+ * bx-Blogger — TrustedProxyInterceptorSpec (Phase 10.A, B15)
+ *
+ * Exercises the XFF trust-gating decision without needing a real
+ * request (the interceptor's `preProcess` body reduces to
+ * `resolveClientIp(immediateHop, xff)` + `resolveClientProto(...)`,
+ * both of which are pure functions). Running TRUSTED_PROXIES env
+ * is read at interceptor-configure time; to test different
+ * TRUSTED_PROXIES values we `new()` fresh instances.
+ *
+ * Threat-model coverage:
+ *   1. Trusted proxy in front → XFF honored (real client IP
+ *      surfaces)
+ *   2. No trusted proxy (direct-to-app) → XFF ignored, even when
+ *      attacker-supplied. The `immediateHop` wins. This is the
+ *      spoofing protection that wasn't in place before 10.A.
+ *   3. Malformed XFF chain → falls back to immediateHop
+ *   4. XFF with port suffix (`1.2.3.4:1234`) → port stripped
+ *   5. CIDR matching for common /8, /16, /24, /32 prefixes
+ *   6. Malformed TRUSTED_PROXIES entries → skipped at boot, not
+ *      thrown (an operator typo must not brick the app)
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function run() {
+        describe( "TrustedProxyInterceptor", function() {
+
+            describe( "resolveClientIp() — the core decision", function() {
+
+                it( "ignores XFF entirely when the immediate hop is NOT trusted", function() {
+                    // An attacker connecting directly to the app
+                    // from 203.0.113.5 sends "X-Forwarded-For: 1.1.1.1"
+                    // in an attempt to spoof a different IP. We
+                    // must return the real 203.0.113.5.
+                    var tpi = newInterceptor( "127.0.0.1/32,172.16.0.0/12" );
+                    var resolved = tpi.resolveClientIp( "203.0.113.5", "1.1.1.1" );
+                    expect( resolved ).toBe( "203.0.113.5", "spoofed XFF must be ignored without trusted proxy" );
+                } );
+
+                it( "honors XFF when the immediate hop IS trusted", function() {
+                    // NPM sits at 172.16.5.5, forwards the real client
+                    // (198.51.100.42) with XFF.
+                    var tpi = newInterceptor( "172.16.0.0/12" );
+                    var resolved = tpi.resolveClientIp( "172.16.5.5", "198.51.100.42" );
+                    expect( resolved ).toBe( "198.51.100.42" );
+                } );
+
+                it( "takes leftmost of a comma-separated XFF chain (real client)", function() {
+                    var tpi = newInterceptor( "172.16.0.0/12" );
+                    var resolved = tpi.resolveClientIp(
+                        "172.16.5.5",
+                        "198.51.100.42, 172.16.0.1, 172.16.0.2"
+                    );
+                    expect( resolved ).toBe( "198.51.100.42" );
+                } );
+
+                it( "strips port suffix on `ip:port` XFF values", function() {
+                    var tpi = newInterceptor( "172.16.0.0/12" );
+                    var resolved = tpi.resolveClientIp( "172.16.5.5", "198.51.100.42:5555" );
+                    expect( resolved ).toBe( "198.51.100.42" );
+                } );
+
+                it( "falls back to immediateHop when XFF is empty", function() {
+                    var tpi = newInterceptor( "172.16.0.0/12" );
+                    var resolved = tpi.resolveClientIp( "172.16.5.5", "" );
+                    expect( resolved ).toBe( "172.16.5.5" );
+                } );
+
+                it( "falls back to immediateHop when XFF is only junk", function() {
+                    var tpi = newInterceptor( "172.16.0.0/12" );
+                    var resolved = tpi.resolveClientIp( "172.16.5.5", "not-an-ip, also-nope" );
+                    expect( resolved ).toBe( "172.16.5.5" );
+                } );
+            } );
+
+            describe( "isTrustedProxy() — CIDR matching", function() {
+
+                it( "matches /32 single-host CIDRs exactly", function() {
+                    var tpi = newInterceptor( "127.0.0.1/32" );
+                    expect( tpi.isTrustedProxy( "127.0.0.1" ) ).toBeTrue();
+                    expect( tpi.isTrustedProxy( "127.0.0.2" ) ).toBeFalse();
+                } );
+
+                it( "matches /24 (class C) ranges", function() {
+                    var tpi = newInterceptor( "10.0.5.0/24" );
+                    expect( tpi.isTrustedProxy( "10.0.5.1" ) ).toBeTrue();
+                    expect( tpi.isTrustedProxy( "10.0.5.255" ) ).toBeTrue();
+                    expect( tpi.isTrustedProxy( "10.0.6.1" ) ).toBeFalse();
+                } );
+
+                it( "matches /16 ranges (typical Docker network)", function() {
+                    var tpi = newInterceptor( "172.60.0.0/16" );
+                    expect( tpi.isTrustedProxy( "172.60.0.1" ) ).toBeTrue();
+                    expect( tpi.isTrustedProxy( "172.60.255.255" ) ).toBeTrue();
+                    expect( tpi.isTrustedProxy( "172.61.0.1" ) ).toBeFalse();
+                } );
+
+                it( "matches /12 ranges (Docker bridge default)", function() {
+                    var tpi = newInterceptor( "172.16.0.0/12" );
+                    expect( tpi.isTrustedProxy( "172.16.0.1" ) ).toBeTrue();
+                    expect( tpi.isTrustedProxy( "172.31.255.254" ) ).toBeTrue();
+                    expect( tpi.isTrustedProxy( "172.15.0.1" ) ).toBeFalse();
+                    expect( tpi.isTrustedProxy( "172.32.0.1" ) ).toBeFalse();
+                } );
+
+                it( "supports multiple CIDRs in the list", function() {
+                    var tpi = newInterceptor( "127.0.0.1/32,10.0.0.0/8,172.60.0.0/16" );
+                    expect( tpi.isTrustedProxy( "127.0.0.1" ) ).toBeTrue();
+                    expect( tpi.isTrustedProxy( "10.9.9.9" ) ).toBeTrue();
+                    expect( tpi.isTrustedProxy( "172.60.1.1" ) ).toBeTrue();
+                    expect( tpi.isTrustedProxy( "8.8.8.8" ) ).toBeFalse();
+                } );
+
+                it( "treats a bare IP (no /bits) as /32", function() {
+                    var tpi = newInterceptor( "192.168.1.5" );
+                    expect( tpi.isTrustedProxy( "192.168.1.5" ) ).toBeTrue();
+                    expect( tpi.isTrustedProxy( "192.168.1.6" ) ).toBeFalse();
+                } );
+
+                it( "silently skips malformed CIDR entries at boot (a typo doesn't brick boot)", function() {
+                    // 999.999.999.999 is invalid; /40 is out of range
+                    // for IPv4; empty is just whitespace. App must
+                    // still boot and the valid entry must still work.
+                    var tpi = newInterceptor( "not-an-ip, 127.0.0.1/32, 999.999.999.999/40," );
+                    expect( tpi.isTrustedProxy( "127.0.0.1" ) ).toBeTrue();
+                    expect( tpi.isTrustedProxy( "8.8.8.8" ) ).toBeFalse();
+                } );
+            } );
+
+            describe( "resolveClientProto() — trust-gated X-Forwarded-Proto", function() {
+
+                it( "honors X-Forwarded-Proto: https when proxy is trusted", function() {
+                    var tpi = newInterceptor( "172.16.0.0/12" );
+                    expect( tpi.resolveClientProto( "172.16.5.5", "https", "HTTP/1.1" ) ).toBe( "https" );
+                } );
+
+                it( "ignores X-Forwarded-Proto when proxy is NOT trusted", function() {
+                    var tpi = newInterceptor( "172.16.0.0/12" );
+                    // Attacker on the public internet claiming https
+                    // on a plain HTTP connection — we must NOT believe
+                    // them (the cgi.server_protocol says HTTP/1.1).
+                    expect( tpi.resolveClientProto( "203.0.113.5", "https", "HTTP/1.1" ) ).toBe( "http" );
+                } );
+
+                it( "falls back to cgi.server_protocol when XFP is absent", function() {
+                    var tpi = newInterceptor( "172.16.0.0/12" );
+                    expect( tpi.resolveClientProto( "172.16.5.5", "", "HTTPS/1.1" ) ).toBe( "https" );
+                    expect( tpi.resolveClientProto( "172.16.5.5", "", "HTTP/1.1"  ) ).toBe( "http"  );
+                } );
+            } );
+
+            describe( "firstForwardedClient() — XFF parsing helper", function() {
+
+                it( "returns empty string for unparseable input", function() {
+                    var tpi = newInterceptor( "127.0.0.1/32" );
+                    expect( tpi.firstForwardedClient( "" ) ).toBe( "" );
+                    expect( tpi.firstForwardedClient( "not-an-ip" ) ).toBe( "" );
+                    expect( tpi.firstForwardedClient( "   " ) ).toBe( "" );
+                } );
+
+                it( "handles whitespace around entries", function() {
+                    var tpi = newInterceptor( "127.0.0.1/32" );
+                    expect( tpi.firstForwardedClient( "  198.51.100.42  ,  10.0.0.1  " ) ).toBe( "198.51.100.42" );
+                } );
+            } );
+
+        } );
+    }
+
+    // --------------------------------------------------------------------
+    // Helper — instantiate the interceptor with a specific
+    // TRUSTED_PROXIES value without going through WireBox (which
+    // would use whatever's in the real environment). We set the
+    // env var for the duration of `configure()` and restore the
+    // previous value afterward.
+    // --------------------------------------------------------------------
+
+    private any function newInterceptor( required string trustedProxiesCsv ) {
+        // BoxLang / CommandBox reads TRUSTED_PROXIES via
+        // `getSystemSetting`. For isolation we patch it directly
+        // via Java System.setProperty (which getSystemSetting
+        // resolves before falling through to env vars).
+        var System   = createObject( "java", "java.lang.System" );
+        var previous = System.getProperty( "TRUSTED_PROXIES" );
+        System.setProperty( javaCast( "string", "TRUSTED_PROXIES" ), javaCast( "string", arguments.trustedProxiesCsv ) );
+        try {
+            var inst = new interceptors.TrustedProxyInterceptor();
+            // Re-run configure() now that the system property is set.
+            inst.configure();
+            return inst;
+        }
+        finally {
+            if ( isNull( previous ) ) {
+                System.clearProperty( javaCast( "string", "TRUSTED_PROXIES" ) );
+            }
+            else {
+                System.setProperty( javaCast( "string", "TRUSTED_PROXIES" ), javaCast( "string", previous ) );
+            }
+        }
+    }
+
+}

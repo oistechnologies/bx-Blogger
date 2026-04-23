@@ -1,0 +1,274 @@
+/**
+ * bx-Blogger — TrustedProxyInterceptor (Phase 10.A, B15)
+ *
+ * Resolves the real client IP from the incoming request when
+ * we're running behind a trusted reverse proxy (NGINX Proxy
+ * Manager, Cloudflare, etc.) and exposes it on `prc.clientIp`
+ * for every downstream consumer — login/audit/rate-limit/404/
+ * post-view logging, etc.
+ *
+ * Threat model this closes:
+ *   - Without this interceptor, every call site in the app reads
+ *     `event.getHTTPHeader("X-Forwarded-For", cgi.remote_addr)`
+ *     directly, which unconditionally trusts any attacker-supplied
+ *     `X-Forwarded-For` header. An attacker can spoof
+ *     "X-Forwarded-For: 1.2.3.4" on a direct connection and get
+ *     any downstream logic (rate limiter, audit, ban list,
+ *     geolocation) to key off 1.2.3.4 instead of their real IP.
+ *   - With this interceptor, we only unwrap XFF when the IMMEDIATE
+ *     HOP (`cgi.remote_addr`) is in the `TRUSTED_PROXIES` CIDR
+ *     list. On a direct internet connection (no trusted proxy
+ *     in the chain), XFF is ignored regardless of what the client
+ *     claims.
+ *
+ * Config:
+ *   TRUSTED_PROXIES env var = comma-separated CIDR list.
+ *   Default "127.0.0.1/32,172.16.0.0/12" — covers localhost + the
+ *   standard Docker bridge range. Operators behind a proxy on a
+ *   custom Docker network (e.g. `docker-vm-net` at
+ *   `172.60.0.0/16`) add their network's CIDR to this list.
+ *   IPv4 only — IPv6 CIDR matching is deferred; IPv6 source IPs
+ *   with an XFF chain get an exact-match fallback (rare in
+ *   practice; all common Docker proxy deployments are IPv4).
+ *
+ * XFF parsing:
+ *   `X-Forwarded-For: client, proxy1, proxy2` — leftmost is the
+ *   originating client. We strip whitespace + any trailing port
+ *   segments (some proxies append `:1234`) and validate the
+ *   extracted value is a well-formed IP before trusting it.
+ *
+ * X-Forwarded-Proto:
+ *   Same trust rule as XFF. Surfaced as `prc.clientProto` so
+ *   link-building code can construct correct absolute URLs on
+ *   a TLS-terminated-at-proxy deploy. Falls back to
+ *   `cgi.server_protocol contains "HTTPS"` when no trusted proxy.
+ *
+ * Registered FIRST in config/Coldbox.bx (before PageCache,
+ *   RateLimit, etc.) so downstream interceptors can key off
+ *   `prc.clientIp` without having to re-parse the headers.
+ */
+class extends="coldbox.system.Interceptor" {
+
+    property name="log" inject="logbox:logger:{this}";
+
+    function configure() {
+        // Parse TRUSTED_PROXIES once at app boot. Each entry is
+        // either a CIDR (`10.0.0.0/8`) or a single IP (same as
+        // `/32`). We pre-compute the network address + mask as
+        // integers for IPv4 so the per-request check is a couple
+        // of bitwise ops.
+        variables.trustedRanges = parseTrustedProxies(
+            getSystemSetting( "TRUSTED_PROXIES", "127.0.0.1/32,172.16.0.0/12" )
+        );
+    }
+
+    function preProcess( event, data, buffer, rc, prc ) {
+        var immediateHop = cgi.remote_addr ?: "";
+        var xff          = arguments.event.getHTTPHeader( "X-Forwarded-For",   "" );
+        var xfp          = arguments.event.getHTTPHeader( "X-Forwarded-Proto", "" );
+        var cgiProto     = cgi.server_protocol ?: "";
+
+        arguments.prc.clientIp    = resolveClientIp(    immediateHop, xff );
+        arguments.prc.clientProto = resolveClientProto( immediateHop, xfp, cgiProto );
+    }
+
+    /**
+     * The whole decision boiled into one pure function so tests
+     * can exercise it without having to simulate `cgi.remote_addr`
+     * or a mock request. Trusted proxy in front → honor leftmost-
+     * valid IP from XFF. No trusted proxy → ignore XFF; use
+     * `immediateHop`. Empty XFF on a trusted path → fall back to
+     * `immediateHop` too.
+     */
+    string function resolveClientIp( required string immediateHop, required string xff ) {
+        if ( !len( arguments.immediateHop ) || !isTrustedProxy( arguments.immediateHop ) ) {
+            return arguments.immediateHop;
+        }
+        if ( !len( arguments.xff ) ) return arguments.immediateHop;
+        var client = firstForwardedClient( arguments.xff );
+        return len( client ) ? client : arguments.immediateHop;
+    }
+
+    /**
+     * Same trust gating as the IP resolution. Without a trusted
+     * proxy, fall back to `cgi.server_protocol` (which contains
+     * "HTTPS" when the app terminated TLS itself — rarely the
+     * case behind a proxy but covers self-hosted-bare-metal).
+     */
+    string function resolveClientProto(
+        required string immediateHop,
+        required string xfp,
+        required string cgiProto
+    ) {
+        var fallback = arguments.cgiProto contains "HTTPS" ? "https" : "http";
+        if ( !len( arguments.immediateHop ) || !isTrustedProxy( arguments.immediateHop ) ) {
+            return fallback;
+        }
+        if ( !len( arguments.xfp ) ) return fallback;
+        return lCase( trim( arguments.xfp ) ) == "https" ? "https" : "http";
+    }
+
+    // --------------------------------------------------------------------
+    // CIDR parsing + matching (IPv4)
+    // --------------------------------------------------------------------
+
+    /**
+     * Pre-compute trusted ranges. Returns an array of
+     *   { net: long, mask: long, bits: int, raw: string }
+     * entries for IPv4; IPv6 entries get `{ raw: "..." }` only
+     * (matched by exact string equality at check time).
+     *
+     * Malformed entries are logged + skipped, not thrown — a
+     * typo in TRUSTED_PROXIES shouldn't take down app boot.
+     */
+    private array function parseTrustedProxies( required string csv ) {
+        var ranges = [];
+        for ( var entry in listToArray( arguments.csv, "," ) ) {
+            var raw = trim( entry );
+            if ( !len( raw ) ) continue;
+            try {
+                var parts = listToArray( raw, "/" );
+                var ip    = parts[ 1 ];
+                var bits  = arrayLen( parts ) > 1 ? val( parts[ 2 ] ) : ( ip contains ":" ? 128 : 32 );
+
+                if ( ip contains ":" ) {
+                    // IPv6 — exact-match only (CIDR math deferred).
+                    ranges.append( { "raw" : ip, "isV6" : true } );
+                    continue;
+                }
+                var ipLong = ipv4ToLong( ip );
+                var mask   = bits == 0 ? 0 : bitMaskL( 32 - bits );
+                ranges.append( {
+                    "raw"   : raw,
+                    "isV6"  : false,
+                    "net"   : bitAnd( ipLong, mask ),
+                    "mask"  : mask,
+                    "bits"  : bits
+                } );
+            }
+            catch ( any e ) {
+                try {
+                    writeLog(
+                        file = "bxblogger",
+                        type = "warning",
+                        text = "TrustedProxyInterceptor: skipped malformed TRUSTED_PROXIES entry [" & raw & "]: " & e.message
+                    );
+                }
+                catch ( any innerErr ) { /* swallow */ }
+            }
+        }
+        return ranges;
+    }
+
+    boolean function isTrustedProxy( required string ip ) {
+        var candidate = trim( arguments.ip );
+        if ( !len( candidate ) ) return false;
+
+        // Strip any `[::1]:port` or `ip:port` framing some proxies
+        // append.
+        candidate = stripIpPort( candidate );
+
+        var isV6 = candidate contains ":";
+        if ( isV6 ) {
+            for ( var r in variables.trustedRanges ) {
+                if ( r.isV6 && lCase( r.raw ) == lCase( candidate ) ) return true;
+            }
+            return false;
+        }
+
+        try {
+            var cLong = ipv4ToLong( candidate );
+            for ( var r in variables.trustedRanges ) {
+                if ( r.isV6 ) continue;
+                if ( bitAnd( cLong, r.mask ) == r.net ) return true;
+            }
+        }
+        catch ( any e ) {
+            return false;
+        }
+        return false;
+    }
+
+    /**
+     * Parse `X-Forwarded-For: client, proxy1, proxy2` and return
+     * `client` (or the leftmost validly-formatted IP). Empty
+     * string when nothing parseable.
+     */
+    string function firstForwardedClient( required string xff ) {
+        for ( var part in listToArray( arguments.xff, "," ) ) {
+            var candidate = stripIpPort( trim( part ) );
+            if ( !len( candidate ) ) continue;
+            if ( isValidIp( candidate ) ) return candidate;
+        }
+        return "";
+    }
+
+    private string function stripIpPort( required string raw ) {
+        var v = arguments.raw;
+        // IPv6 in bracket form: `[::1]:1234`
+        if ( left( v, 1 ) == "[" ) {
+            var closeIdx = find( "]", v );
+            if ( closeIdx > 1 ) return mid( v, 2, closeIdx - 2 );
+            return v;
+        }
+        // IPv4 `1.2.3.4:port` — split on first colon, take left.
+        // An IPv6 literal without brackets has multiple colons;
+        // leave that alone (it's ambiguous without brackets but
+        // rarely seen in XFF).
+        if ( listLen( v, ":" ) == 2 && !( v contains "::" ) ) {
+            return listFirst( v, ":" );
+        }
+        return v;
+    }
+
+    private boolean function isValidIp( required string ip ) {
+        if ( arguments.ip contains ":" ) {
+            // Permissive IPv6 check: at least one `:` + only hex/:/
+            return reFind( "^[0-9a-fA-F:]+$", arguments.ip ) > 0;
+        }
+        try {
+            var parts = listToArray( arguments.ip, "." );
+            if ( arrayLen( parts ) != 4 ) return false;
+            for ( var o in parts ) {
+                if ( !isNumeric( o ) ) return false;
+                var n = int( o );
+                if ( n < 0 || n > 255 ) return false;
+            }
+            return true;
+        }
+        catch ( any e ) {
+            return false;
+        }
+    }
+
+    /**
+     * IPv4 string → 32-bit long (stored as a BoxLang numeric).
+     */
+    private numeric function ipv4ToLong( required string ip ) {
+        var parts = listToArray( arguments.ip, "." );
+        if ( arrayLen( parts ) != 4 ) {
+            throw(
+                type    = "bxBlogger.TrustedProxyInterceptor.InvalidIp",
+                message = "Not a valid IPv4 address: [" & arguments.ip & "]"
+            );
+        }
+        return  int( parts[ 1 ] ) * 16777216
+              + int( parts[ 2 ] ) * 65536
+              + int( parts[ 3 ] ) * 256
+              + int( parts[ 4 ] );
+    }
+
+    /**
+     * Mask with the top `(32 - hostBits)` bits set, bottom
+     * `hostBits` bits clear. For a /24, hostBits=8 and the mask
+     * is 0xFFFFFF00. `hostBits=0` → all-ones (`/32`).
+     */
+    private numeric function bitMaskL( required numeric hostBits ) {
+        if ( arguments.hostBits <= 0 ) return 4294967295;   // 0xFFFFFFFF
+        if ( arguments.hostBits >= 32 ) return 0;
+        // Top (32-hostBits) bits set: ((1<<32) - (1<<hostBits))
+        var lowBits = int( 2 ^ arguments.hostBits );
+        return 4294967296 - lowBits;
+    }
+
+}
