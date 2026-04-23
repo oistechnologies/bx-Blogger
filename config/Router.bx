@@ -111,7 +111,24 @@ class {
 		// includes it. `/feed.xml` still hits the browser exactly as
 		// expected — ColdBox just matches against the bare segment.
 		route( "/robots.txt" ).to( "main.robots"  );
-		route( "/sitemap"    ).to( "main.sitemap" );
+		// Phase 7.F — sub-sitemaps. Declared BEFORE the bare `/sitemap`
+		// pattern so the year-bearing and static variants match
+		// first. ColdBox auto-strips the `.xml` suffix when matching,
+		// so the route patterns are registered WITHOUT the extension
+		// (same convention the existing `/sitemap` pattern uses — it
+		// matches `/sitemap.xml` today). `/sitemap` (the top-level)
+		// auto-dispatches between `<urlset>` and `<sitemapindex>`
+		// based on the published-post count.
+		route( "/sitemap-static" ).to( "main.sitemapStatic" );
+		// Year-bearing sub-sitemap URLs (`/sitemap-2026.xml`) —
+		// ColdBox's placeholder syntax doesn't bind mid-segment
+		// after a dash in this version, so we register a broad
+		// `/sitemap-:year` pattern (matches any trailing token)
+		// and let the handler parse the digits out of the routed
+		// URL + reject anything non-numeric. Placed BEFORE
+		// `/sitemap` so the year variant wins.
+		route( "/sitemap-:year" ).to( "main.sitemapYear" );
+		route( "/sitemap" ).to( "main.sitemap" );
 		route( "/search"     ).to( "main.search"  );
 
 		// Site-wide RSS. Scope-specific variants map to dedicated

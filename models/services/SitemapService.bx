@@ -1,29 +1,32 @@
 /**
- * bx-Blogger — SitemapService (Chunk 3.E)
+ * bx-Blogger — SitemapService (Chunk 3.E + Phase 7.F B20)
  *
- * Builds a sitemap.xml 0.9 document covering:
- *   - Home
- *   - All published posts  (/blog/{slug})
- *   - All published pages  (/{slug})
- *   - Category archives    (/category/{slug})
- *   - Tag archives         (/tag/{slug})
- *   - Author archives      (/author/{username})
+ * Single-sitemap output is the default — a `<urlset>` document
+ * covering home, blog index, published posts, pages, categories,
+ * tags, and per-author archives. Once the count of published posts
+ * crosses `indexThreshold` (default 40,000), `forBaseUrl()` flips
+ * to `<sitemapindex>` mode and references per-year sub-sitemaps:
  *
- * Cached in CacheBox's default cache under `sitemap:{baseUrl}` with a
- * 60-minute TTL. Phase 6's `RebuildSitemapJob` + Phase 5's
- * `cacheInvalidate` hook will tighten this — for now the hour
- * window is enough to keep the cost of hitting `/sitemap.xml` on an
- * LLM crawler flood manageable.
+ *   /sitemap.xml          → sitemapindex (or urlset if under threshold)
+ *   /sitemap-static.xml   → home + blog + categories + tags + authors
+ *   /sitemap-{year}.xml   → that year's published posts
  *
- * Sitemap-index threshold (PLAN B20) — once `count(posts WHERE
- * status=published) > 40000`, the output flips to a
- * `<sitemapindex>` document referencing per-year sub-sitemaps. Phase
- * 7 owns that milestone; this service stubs the check but always
- * emits a single sitemap for now.
+ * Per-year + static sub-sitemaps are always build-capable; only the
+ * top-level dispatch changes at the threshold. That means crawlers
+ * following `<sitemap>` links always land on a valid `<urlset>`,
+ * even on a small site — the sub-sitemap routes are live from day
+ * one; they just aren't referenced until the threshold flips.
  *
- * Interception: fires `bxBlogger.preSitemapGenerate` +
- * `postSitemapGenerate` so modules can add custom URLs (Phase 4's
- * themes manager could add theme preview pages, for example).
+ * Cache layout — CacheBox's default cache, 60-minute TTL:
+ *   sitemap:{baseUrl}                → top-level (index or single)
+ *   sitemap:{baseUrl}:static         → /sitemap-static.xml
+ *   sitemap:{baseUrl}:year:{year}    → /sitemap-{year}.xml
+ * `invalidate()` clears the whole `sitemap:` keyspace in one call.
+ *
+ * Interception: `bxBlogger.preSitemapGenerate` fires on top-level
+ * + sub-sitemap builds so modules can mutate the URL list. Data
+ * struct: `{ baseUrl, urls, scope: "single" | "index" | "static" | "year:{year}" }`.
+ * `postSitemapGenerate` fires after the XML is assembled.
  */
 class accessors="true" singleton {
 
@@ -32,88 +35,245 @@ class accessors="true" singleton {
     property name="interceptorService" inject="coldbox:InterceptorService";
     property name="log"                inject="logbox:logger:{this}";
 
-    variables.cacheTtlMinutes = 60;
-    variables.sitemapIndexThreshold = 40000;  // B20
+    variables.cacheTtlMinutes    = 60;
+    variables.indexThreshold     = 40000;   // B20 flip point
+
+    // --------------------------------------------------------------------
+    // Public — top-level dispatch
+    // --------------------------------------------------------------------
 
     /**
-     * Produce the sitemap.xml string for the given base URL. Cached
-     * per-baseUrl — the cache key varies because multi-host setups
-     * (staging + prod from the same image) need different URLs.
+     * Produce the top-level sitemap for `baseUrl`. Below threshold:
+     * a single `<urlset>`. At or above threshold: a
+     * `<sitemapindex>` pointing at sub-sitemaps. Cached per
+     * baseUrl — multi-host setups (staging + prod from the same
+     * image) get different output.
      */
     string function forBaseUrl( required string baseUrl ) {
-        var key    = "sitemap:" & arguments.baseUrl;
+        var key    = cacheKey( arguments.baseUrl );
         var cached = variables.cache.get( key );
         if ( !isNull( cached ) && isSimpleValue( cached ) && len( cached ) ) {
             return cached;
         }
 
-        var xml = build( arguments.baseUrl );
+        var xml = publishedPostCount() > variables.indexThreshold
+            ? buildIndex( arguments.baseUrl )
+            : buildSingle( arguments.baseUrl );
+
         variables.cache.set( key, xml, variables.cacheTtlMinutes, 0 );
         return xml;
     }
 
     /**
-     * Drop the cached entry. Called by Phase 5's cacheInvalidate hook
-     * on post publish / theme switch / category edit.
+     * `<urlset>` for the given year's published posts. Year is an
+     * integer (e.g. 2026). Empty years — valid in the URL pattern
+     * but with no matching posts — render an empty urlset; crawlers
+     * handle that cleanly.
+     */
+    string function forYear( required string baseUrl, required numeric year ) {
+        var key    = cacheKey( arguments.baseUrl ) & ":year:" & arguments.year;
+        var cached = variables.cache.get( key );
+        if ( !isNull( cached ) && isSimpleValue( cached ) && len( cached ) ) {
+            return cached;
+        }
+
+        var urls = postUrls( arguments.baseUrl, arguments.year );
+        var xml  = assembleUrlset( arguments.baseUrl, urls, "year:" & arguments.year );
+        variables.cache.set( key, xml, variables.cacheTtlMinutes, 0 );
+        return xml;
+    }
+
+    /**
+     * `<urlset>` for the non-post surfaces — home, blog index,
+     * published pages, category archives, tag archives, author
+     * archives. Split out in index mode so per-year sub-sitemaps
+     * stay focused on post URLs.
+     */
+    string function forStatic( required string baseUrl ) {
+        var key    = cacheKey( arguments.baseUrl ) & ":static";
+        var cached = variables.cache.get( key );
+        if ( !isNull( cached ) && isSimpleValue( cached ) && len( cached ) ) {
+            return cached;
+        }
+
+        var urls = staticUrls( arguments.baseUrl );
+        var xml  = assembleUrlset( arguments.baseUrl, urls, "static" );
+        variables.cache.set( key, xml, variables.cacheTtlMinutes, 0 );
+        return xml;
+    }
+
+    /**
+     * Drop every `sitemap:` cache entry. Called by
+     * `cacheInvalidate` on post publish / theme switch /
+     * category edit.
      */
     function invalidate() {
         variables.cache.clearByKeySnippet( keySnippet = "sitemap:", regex = false );
     }
 
-    // --------------------------------------------------------------------
-    // Private
-    // --------------------------------------------------------------------
+    /**
+     * Operator-friendly accessor for the threshold. Tests and
+     * future admin controls lower this to force-split below 40k.
+     */
+    function setIndexThreshold( required numeric n ) {
+        variables.indexThreshold = int( arguments.n );
+        invalidate();  // cached output was built under the old threshold
+    }
 
-    private string function build( required string baseUrl ) {
-        var wb = variables.wirebox;
+    numeric function getIndexThreshold() {
+        return variables.indexThreshold;
+    }
 
-        // Cheap count so B20's threshold check stays here even though
-        // the Phase 7 branch hasn't shipped.
-        var publishedCount = wb.getInstance( "QueryBuilder@qb" ).newQuery()
-            .from( "posts" )
+    /**
+     * Distinct calendar years that contain ≥1 published post,
+     * descending. Used by the index builder to know which
+     * per-year sub-sitemaps to reference.
+     */
+    array function activeYears() {
+        var rows = freshQb().from( "posts" )
+            .selectRaw( "YEAR(COALESCE(published_at, created_at)) AS y, MAX(updated_at) AS lastmod" )
             .where( "post_type",  "post" )
             .where( "status",     "published" )
             .where( "visibility", "public" )
             .whereNull( "deleted_at" )
-            .count();
+            .groupBy( "y" )
+            .orderBy( "y", "desc" )
+            .get();
+        var out = [];
+        for ( var r in rows ) {
+            if ( isNull( r.y ) || !isNumeric( r.y ) ) continue;
+            out.append( { "year" : int( r.y ), "lastmod" : r.lastmod ?: "" } );
+        }
+        return out;
+    }
 
-        if ( publishedCount > variables.sitemapIndexThreshold ) {
-            variables.log.warn(
-                "SitemapService: published post count " & publishedCount
-                & " exceeds single-sitemap threshold " & variables.sitemapIndexThreshold
-                & " — index-split ships in Phase 7 B20; serving truncated sitemap for now."
-            );
+    // --------------------------------------------------------------------
+    // Private — top-level builders
+    // --------------------------------------------------------------------
+
+    /**
+     * Single-sitemap output: home + blog + posts + pages +
+     * taxonomies + authors, all in one `<urlset>`. Used below the
+     * index-split threshold.
+     */
+    private string function buildSingle( required string baseUrl ) {
+        var urls = staticUrls( arguments.baseUrl );
+        // No year arg → `postUrls` returns all posts (capped by
+        // `indexThreshold` so a single sitemap never grows past
+        // sitemaps.org's 50k URL limit even if an operator forgets
+        // to re-raise the threshold after disabling the split).
+        urls.append( postUrls( arguments.baseUrl ), true );
+        return assembleUrlset( arguments.baseUrl, urls, "single" );
+    }
+
+    /**
+     * Sitemap index referencing `/sitemap-static.xml` plus one
+     * `/sitemap-{year}.xml` per year with published posts.
+     */
+    private string function buildIndex( required string baseUrl ) {
+        var years = activeYears();
+        var data  = {
+            "baseUrl" : arguments.baseUrl,
+            "scope"   : "index",
+            "entries" : [
+                {
+                    "loc"     : arguments.baseUrl & "/sitemap-static.xml",
+                    "lastmod" : w3cDate( now() )
+                }
+            ]
+        };
+        for ( var y in years ) {
+            data.entries.append( {
+                "loc"     : arguments.baseUrl & "/sitemap-" & y.year & ".xml",
+                "lastmod" : w3cDate( y.lastmod )
+            } );
         }
 
-        var urls = [];
+        variables.interceptorService.announce( state = "preSitemapGenerate", data = data );
 
-        // Home
-        urls.append( { "loc" : arguments.baseUrl & "/",      "changefreq" : "daily",   "priority" : "1.0" } );
-        urls.append( { "loc" : arguments.baseUrl & "/blog",  "changefreq" : "daily",   "priority" : "0.9" } );
+        var buf = createObject( "java", "java.lang.StringBuilder" ).init();
+        buf.append( '<?xml version="1.0" encoding="UTF-8"?>' );
+        buf.append( char( 10 ) );
+        buf.append( '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' );
+        buf.append( char( 10 ) );
+        for ( var e in data.entries ) {
+            buf.append( "  <sitemap>" & char( 10 ) );
+            buf.append( "    <loc>" & xmlSafe( e.loc ) & "</loc>" & char( 10 ) );
+            if ( len( e.lastmod ?: "" ) ) {
+                buf.append( "    <lastmod>" & xmlSafe( e.lastmod ) & "</lastmod>" & char( 10 ) );
+            }
+            buf.append( "  </sitemap>" & char( 10 ) );
+        }
+        buf.append( "</sitemapindex>" & char( 10 ) );
 
-        // Published posts
-        var postRows = wb.getInstance( "QueryBuilder@qb" ).newQuery()
-            .from( "posts" )
+        data.xml = buf.toString();
+        variables.interceptorService.announce( state = "postSitemapGenerate", data = data );
+        return data.xml;
+    }
+
+    // --------------------------------------------------------------------
+    // Private — URL-list builders
+    // --------------------------------------------------------------------
+
+    /**
+     * Published-post URLs, optionally filtered by calendar year.
+     * Year coerces via `int()`; a zero / negative / out-of-range
+     * value narrows to a guaranteed-empty result (so
+     * `/sitemap-abc.xml`'s handler-side fallback to year=0 doesn't
+     * end up serving every post as if the split didn't happen).
+     * When `year` is absent entirely, every published post is
+     * returned — used by `buildSingle`.
+     *
+     * `published_at` is COALESCEd with `created_at` so a post
+     * drafted-and-never-back-dated still lands in the right
+     * bucket; matches the same COALESCE in `activeYears()`.
+     *
+     * A LIMIT is applied in "all posts" mode only so a
+     * misconfigured install above-threshold-but-split-disabled
+     * still produces a valid (truncated) sitemap rather than
+     * OOMing the render.
+     */
+    private array function postUrls( required string baseUrl, numeric year ) {
+        var q = freshQb().from( "posts" )
             .select( [ "slug", "updated_at" ] )
             .where( "post_type",  "post" )
             .where( "status",     "published" )
             .where( "visibility", "public" )
             .whereNull( "deleted_at" )
-            .orderBy( "published_at", "desc" )
-            .limit( variables.sitemapIndexThreshold )
-            .get();
-        for ( var p in postRows ) {
-            urls.append( {
+            .orderBy( "published_at", "desc" );
+
+        if ( structKeyExists( arguments, "year" ) && !isNull( arguments.year ) ) {
+            q.whereRaw( "YEAR(COALESCE(published_at, created_at)) = ?", [ int( arguments.year ) ] );
+        }
+        else {
+            q.limit( variables.indexThreshold );
+        }
+
+        var rows = q.get();
+        var out  = [];
+        for ( var p in rows ) {
+            out.append( {
                 "loc"        : arguments.baseUrl & "/blog/" & p.slug,
                 "lastmod"    : w3cDate( p.updated_at ),
                 "changefreq" : "weekly",
                 "priority"   : "0.8"
             } );
         }
+        return out;
+    }
 
-        // Published pages
-        var pageRows = wb.getInstance( "QueryBuilder@qb" ).newQuery()
-            .from( "posts" )
+    /**
+     * Non-post public surfaces. Separated so index mode can serve
+     * them from `/sitemap-static.xml` without mixing into per-year
+     * buckets.
+     */
+    private array function staticUrls( required string baseUrl ) {
+        var urls = [];
+
+        urls.append( { "loc" : arguments.baseUrl & "/",     "changefreq" : "daily", "priority" : "1.0" } );
+        urls.append( { "loc" : arguments.baseUrl & "/blog", "changefreq" : "daily", "priority" : "0.9" } );
+
+        var pageRows = freshQb().from( "posts" )
             .select( [ "slug", "updated_at" ] )
             .where( "post_type",  "page" )
             .where( "status",     "published" )
@@ -129,9 +289,7 @@ class accessors="true" singleton {
             } );
         }
 
-        // Category archives
-        var catRows = wb.getInstance( "QueryBuilder@qb" ).newQuery()
-            .from( "categories" )
+        var catRows = freshQb().from( "categories" )
             .select( [ "slug", "updated_at" ] )
             .get();
         for ( var c in catRows ) {
@@ -143,9 +301,7 @@ class accessors="true" singleton {
             } );
         }
 
-        // Tag archives
-        var tagRows = wb.getInstance( "QueryBuilder@qb" ).newQuery()
-            .from( "tags" )
+        var tagRows = freshQb().from( "tags" )
             .select( [ "slug", "updated_at" ] )
             .get();
         for ( var t in tagRows ) {
@@ -157,9 +313,9 @@ class accessors="true" singleton {
             } );
         }
 
-        // Author archives — only users who have at least one published post
-        var authorRows = wb.getInstance( "QueryBuilder@qb" ).newQuery()
-            .from( "users" )
+        // Author archives — only users who have at least one
+        // published post.
+        var authorRows = freshQb().from( "users" )
             .select( [ "users.username", "users.updated_at" ] )
             .distinct()
             .join( "posts", "posts.author_id", "=", "users.id" )
@@ -178,8 +334,23 @@ class accessors="true" singleton {
             } );
         }
 
-        // Let modules mutate the URL list before emission.
-        var data = { "baseUrl" : arguments.baseUrl, "urls" : urls };
+        return urls;
+    }
+
+    /**
+     * Assemble a `<urlset>` from a URL list. Fires the interception
+     * hooks so modules can mutate the list / final XML.
+     */
+    private string function assembleUrlset(
+        required string baseUrl,
+        required array  urls,
+        required string scope
+    ) {
+        var data = {
+            "baseUrl" : arguments.baseUrl,
+            "urls"    : arguments.urls,
+            "scope"   : arguments.scope
+        };
         variables.interceptorService.announce( state = "preSitemapGenerate", data = data );
 
         var buf = createObject( "java", "java.lang.StringBuilder" ).init();
@@ -194,8 +365,12 @@ class accessors="true" singleton {
             if ( structKeyExists( u, "lastmod" ) && len( u.lastmod ) ) {
                 buf.append( "    <lastmod>" & xmlSafe( u.lastmod ) & "</lastmod>" & char( 10 ) );
             }
-            buf.append( "    <changefreq>" & xmlSafe( u.changefreq ) & "</changefreq>" & char( 10 ) );
-            buf.append( "    <priority>"   & xmlSafe( u.priority )   & "</priority>"   & char( 10 ) );
+            if ( structKeyExists( u, "changefreq" ) && len( u.changefreq ) ) {
+                buf.append( "    <changefreq>" & xmlSafe( u.changefreq ) & "</changefreq>" & char( 10 ) );
+            }
+            if ( structKeyExists( u, "priority" ) && len( u.priority ) ) {
+                buf.append( "    <priority>" & xmlSafe( u.priority ) & "</priority>" & char( 10 ) );
+            }
             buf.append( "  </url>" & char( 10 ) );
         }
 
@@ -205,11 +380,33 @@ class accessors="true" singleton {
         return data.xml;
     }
 
+    // --------------------------------------------------------------------
+    // Private — helpers
+    // --------------------------------------------------------------------
+
+    private numeric function publishedPostCount() {
+        return freshQb().from( "posts" )
+            .where( "post_type",  "post" )
+            .where( "status",     "published" )
+            .where( "visibility", "public" )
+            .whereNull( "deleted_at" )
+            .count();
+    }
+
+    private string function cacheKey( required string baseUrl ) {
+        return "sitemap:" & arguments.baseUrl;
+    }
+
+    private any function freshQb() {
+        return variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery();
+    }
+
     /**
-     * W3C Datetime (ISO 8601) — YYYY-MM-DD for the `<lastmod>` element.
-     * sitemap.org accepts either date-only or full timestamp; we keep
-     * it date-only so trivial content-version bumps don't cause crawlers
-     * to re-fetch an otherwise unchanged URL too aggressively.
+     * W3C Datetime (ISO 8601) — YYYY-MM-DD for `<lastmod>`.
+     * sitemap.org accepts either date-only or full timestamp; we
+     * keep it date-only so trivial content-version bumps don't
+     * cause crawlers to re-fetch an otherwise unchanged URL too
+     * aggressively.
      */
     private string function w3cDate( required any dt ) {
         if ( isNull( arguments.dt ) || ( isSimpleValue( arguments.dt ) && !len( arguments.dt ) ) ) return "";
@@ -218,11 +415,11 @@ class accessors="true" singleton {
     }
 
     /**
-     * Minimal XML text-safe escape. bx-esapi's `encodeForXML` is more
-     * aggressive — it percent-escapes colons / slashes too, which
-     * turns a clean URL into `http&##x3a;&##x2f;&##x2f;...` in the
-     * <loc>. Crawlers accept both forms, but the tighter five-entity
-     * escape matches what every other CMS emits.
+     * Minimal XML text-safe escape. bx-esapi's `encodeForXML` is
+     * more aggressive — it percent-escapes colons / slashes too,
+     * which turns a clean URL into `http&##x3a;&##x2f;&##x2f;...`
+     * in the `<loc>`. Crawlers accept both forms, but the tighter
+     * five-entity escape matches what every other CMS emits.
      */
     private string function xmlSafe( required string text ) {
         var t = arguments.text;

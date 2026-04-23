@@ -105,6 +105,106 @@ class extends="tests.support.BaseIntegrationSpec" {
                 expect( stg ).toInclude( "staging.example" );
             } );
         } );
+
+        describe( "SitemapService — Phase 7.F index mode (B20)", function() {
+
+            beforeEach( function() {
+                svc.invalidate();
+                svc.setIndexThreshold( 40000 );  // restore default
+            } );
+
+            afterEach( function() {
+                svc.invalidate();
+                svc.setIndexThreshold( 40000 );
+            } );
+
+            it( "stays in single-sitemap mode when below the threshold", function() {
+                // One real published post is enough to assert the
+                // dispatch stayed in `<urlset>` shape.
+                var author = createTestUser();
+                publishNew( author, "Under-threshold post" );
+                svc.invalidate();
+
+                var xml = svc.forBaseUrl( "https://example.test" );
+                expect( xml ).toInclude( "<urlset" );
+                expect( xml ).notToInclude( "<sitemapindex" );
+            } );
+
+            it( "flips to sitemapindex when count exceeds the threshold", function() {
+                // Lower the threshold rather than seed 40k posts. A
+                // single published post trips the split.
+                svc.setIndexThreshold( 0 );
+                var author = createTestUser();
+                publishNew( author, "Over-threshold post" );
+                svc.invalidate();
+
+                var xml = svc.forBaseUrl( "https://example.test" );
+                expect( xml ).toInclude( "<sitemapindex" );
+                expect( xml ).toInclude( "https://example.test/sitemap-static.xml" );
+            } );
+
+            it( "references one per-year sub-sitemap per year with published posts", function() {
+                svc.setIndexThreshold( 0 );
+                var author = createTestUser();
+                var y1 = publishNew( author, "Older",  dateAdd( "yyyy", -1, now() ) );
+                var y2 = publishNew( author, "Newer",  now() );
+                svc.invalidate();
+
+                var xml = svc.forBaseUrl( "https://example.test" );
+                var thisYear  = year( now() );
+                var prevYear  = thisYear - 1;
+                expect( xml ).toInclude( "https://example.test/sitemap-" & thisYear & ".xml" );
+                expect( xml ).toInclude( "https://example.test/sitemap-" & prevYear & ".xml" );
+            } );
+
+            it( "forYear() returns a urlset containing only that year's posts", function() {
+                var author = createTestUser();
+                var oldOne = publishNew( author, "Old-year post", dateAdd( "yyyy", -2, now() ) );
+                var newOne = publishNew( author, "This-year post", now() );
+                svc.invalidate();
+
+                var thisYear = year( now() );
+                var oldYear  = thisYear - 2;
+                var yNow     = svc.forYear( "https://example.test", thisYear );
+                var yOld     = svc.forYear( "https://example.test", oldYear );
+
+                expect( yNow ).toInclude( "<urlset" );
+                expect( yNow ).toInclude( "/blog/" & newOne.getSlug() );
+                expect( yNow ).notToInclude( "/blog/" & oldOne.getSlug() );
+
+                expect( yOld ).toInclude( "/blog/" & oldOne.getSlug() );
+                expect( yOld ).notToInclude( "/blog/" & newOne.getSlug() );
+            } );
+
+            it( "forStatic() holds home + blog + taxonomy + authors but NO post URLs", function() {
+                var author = createTestUser();
+                var post   = publishNew( author, "Should not appear in static" );
+                var cat    = createCategory( "stat-cat-" & left( createUUID(), 6 ) );
+                svc.invalidate();
+
+                var xml = svc.forStatic( "https://example.test" );
+                expect( xml ).toInclude( "<urlset" );
+                expect( xml ).toInclude( "<loc>https://example.test/</loc>" );
+                expect( xml ).toInclude( "/category/" & cat.getSlug() );
+                expect( xml ).notToInclude( "/blog/" & post.getSlug() );
+            } );
+
+            it( "activeYears() returns each distinct published year", function() {
+                var author = createTestUser();
+                publishNew( author, "Old", dateAdd( "yyyy", -1, now() ) );
+                publishNew( author, "New", now() );
+
+                var years = svc.activeYears();
+                // At least two years represented among our fixtures.
+                // The seed post + other specs' rows may contribute more.
+                expect( arrayLen( years ) ).toBeGTE( 2 );
+                // Each entry: { year: numeric, lastmod: string }
+                for ( var y in years ) {
+                    expect( structKeyExists( y, "year"    ) ).toBeTrue();
+                    expect( structKeyExists( y, "lastmod" ) ).toBeTrue();
+                }
+            } );
+        } );
     }
 
     // --------------------------------------------------------------------

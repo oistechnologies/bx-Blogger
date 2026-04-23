@@ -117,18 +117,68 @@ class extends="coldbox.system.EventHandler" {
 	 * that threshold so ops know to schedule the Phase-7 work.
 	 */
 	function sitemap( event, rc, prc ) {
-		var proto   = event.getHTTPHeader( "X-Forwarded-Proto", cgi.server_protocol contains "HTTPS" ? "https" : "http" );
-		var host    = event.getHTTPHeader( "Host", cgi.server_name ?: "localhost" );
-		var baseUrl = proto & "://" & host;
+		var xml = getInstance( "SitemapService" ).forBaseUrl( sitemapBaseUrl( event ) );
+		renderSitemap( event, xml );
+	}
 
-		var xml = getInstance( "SitemapService" ).forBaseUrl( baseUrl );
+	/**
+	 * Phase 7.F — `/sitemap-static.xml` sub-sitemap. Always live
+	 * (not just above threshold) so a crawler following a stale
+	 * index doesn't 404.
+	 */
+	function sitemapStatic( event, rc, prc ) {
+		var xml = getInstance( "SitemapService" ).forStatic( sitemapBaseUrl( event ) );
+		renderSitemap( event, xml );
+	}
 
-		// contentType on renderData wins over a late setHTTPHeader —
-		// ColdBox's plain renderer otherwise reverts the type to
-		// text/html.
-		event.renderData(
+	/**
+	 * Phase 7.F — `/sitemap-{year}.xml` sub-sitemap. Year comes
+	 * from the router as a 4-digit integer; anything malformed
+	 * yields an empty but valid urlset (crawlers handle that
+	 * gracefully).
+	 */
+	function sitemapYear( event, rc, prc ) {
+		// ColdBox placeholders don't bind mid-segment after a dash
+		// in this version, so `rc.year` is empty even when the
+		// router matches `/sitemap-:year`. Parse the digits out of
+		// the routed URL ourselves (ColdBox has already stripped
+		// the `.xml` extension by the time we see it).
+		var routed = arguments.event.getCurrentRoutedURL();
+		// `event.getCurrentRoutedURL()` returns the matched path in
+		// the form `sitemap-2026/` (no leading slash, trailing slash
+		// appended by ColdBox). Regex tolerates both the optional
+		// leading slash and the trailing slash.
+		var m = reFind( "^/?sitemap-([0-9]+)/?$", routed, 1, true );
+		var year = ( m.len[ 1 ] > 0 && arrayLen( m.pos ) > 1 )
+			? val( mid( routed, m.pos[ 2 ], m.len[ 2 ] ) )
+			: 0;
+		if ( year < 1970 || year > 3000 ) year = 0;
+		var xml = getInstance( "SitemapService" ).forYear( sitemapBaseUrl( event ), year );
+		renderSitemap( event, xml );
+	}
+
+	/**
+	 * Derive the site's absolute base URL from the incoming
+	 * request. Honors `X-Forwarded-Proto` / `Host` when running
+	 * behind a reverse proxy (NGINX in prod); falls back to
+	 * `cgi.server_name` otherwise.
+	 */
+	private string function sitemapBaseUrl( required any event ) {
+		var proto = arguments.event.getHTTPHeader( "X-Forwarded-Proto", cgi.server_protocol contains "HTTPS" ? "https" : "http" );
+		var host  = arguments.event.getHTTPHeader( "Host", cgi.server_name ?: "localhost" );
+		return proto & "://" & host;
+	}
+
+	/**
+	 * Single emission path so the three sitemap actions stay in
+	 * sync on content type + status code. `contentType` on
+	 * renderData wins over a late setHTTPHeader — ColdBox's plain
+	 * renderer otherwise reverts the type to text/html.
+	 */
+	private void function renderSitemap( required any event, required string xml ) {
+		arguments.event.renderData(
 			type        = "plain",
-			data        = xml,
+			data        = arguments.xml,
 			contentType = "application/xml; charset=utf-8"
 		);
 	}
