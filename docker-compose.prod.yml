@@ -33,7 +33,7 @@
 
 services:
   app:
-    image: ghcr.io/mrigsby/bx-blogger:${RELEASE_TAG:-latest}
+    image: ghcr.io/oistechnologies/bx-blogger:${RELEASE_TAG:-latest}
     container_name: ${COMPOSE_PROJECT_NAME:-bx-blogger}-app
     env_file: .env
     environment:
@@ -50,7 +50,7 @@ services:
       - proxy          # shared with NPM for inbound traffic
 
   worker:
-    image: ghcr.io/mrigsby/bx-blogger:${RELEASE_TAG:-latest}
+    image: ghcr.io/oistechnologies/bx-blogger:${RELEASE_TAG:-latest}
     container_name: ${COMPOSE_PROJECT_NAME:-bx-blogger}-worker
     env_file: .env
     environment:

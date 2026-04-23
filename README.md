@@ -91,7 +91,7 @@ Running **multiple bx-Blogger sites on one Docker host**: see [docs/operators/MU
 ### Local development
 
 ```bash
-git clone https://github.com/mrigsby/bx-Blogger.git
+git clone https://github.com/oistechnologies/bx-Blogger.git
 cd bx-Blogger
 cp .env.example .env
 docker compose up -d
@@ -213,6 +213,6 @@ See [LICENSE](LICENSE).
 
 ## Contributing
 
-Issues and pull requests welcome at <https://github.com/mrigsby/bx-Blogger>.
+Issues and pull requests welcome at <https://github.com/oistechnologies/bx-Blogger>.
 
 Before opening a PR, `docker compose exec app box testbox run` must be green on the full suite.

@@ -2,9 +2,10 @@
 # Never ships with the application.
 DEV-NOTES/
 
-# Per-developer Claude Code settings (tool permissions, etc.)
-# Team-wide settings (if introduced) would go in .claude/settings.json
-.claude/settings.local.json
+# Per-developer Claude Code state — tool permissions, scratch files,
+# scheduled-task locks, etc. All of `.claude/` is user-local; nothing
+# in here should ever ship.
+.claude/
 
 # Per-developer IDE settings
 .vscode/

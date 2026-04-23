@@ -21,7 +21,7 @@ class {
     // --------------------------------------------------------------------
     this.title             = "bx-Blogger Admin";
     this.author            = "Michael Rigsby";
-    this.webURL            = "https://github.com/mrigsby/bx-Blogger";
+    this.webURL            = "https://github.com/oistechnologies/bx-Blogger";
     this.description       = "Admin/back-office UI for bx-Blogger";
     this.version           = "0.1.0";
     this.viewParentLookup  = true;   // root views/ wins over module views when present

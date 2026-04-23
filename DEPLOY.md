@@ -54,7 +54,7 @@ Propagation takes 5–60 minutes depending on TTL. Let's Encrypt issuance will f
 sudo mkdir -p /opt/bx-blogger
 sudo chown $USER:$USER /opt/bx-blogger
 cd /opt/bx-blogger
-git clone https://github.com/mrigsby/bx-Blogger.git .
+git clone https://github.com/oistechnologies/bx-Blogger.git .
 ```
 
 Pick any directory — `/opt/bx-blogger` is a convention. Keep it somewhere with enough room to grow (media uploads, database, backups all live in Docker-managed volumes by default — ~10 GB is a comfortable start).
@@ -352,4 +352,4 @@ docker compose -f docker-compose.prod.yml logs worker --tail=200
 
 - **[README.md](README.md)** — what bx-Blogger is and what it does
 - **[docs/operators/](docs/operators/)** — the full operator runbook set
-- File an issue at <https://github.com/mrigsby/bx-Blogger/issues> if you hit something this guide didn't cover
+- File an issue at <https://github.com/oistechnologies/bx-Blogger/issues> if you hit something this guide didn't cover

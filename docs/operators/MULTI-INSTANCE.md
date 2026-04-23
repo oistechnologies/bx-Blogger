@@ -85,7 +85,7 @@ Assume site 1 (`blog-site1`) is already up and healthy, domain `blog.example-one
 ```bash
 mkdir -p /opt/bx-blogger-sites/site2
 cd /opt/bx-blogger-sites/site2
-git clone https://github.com/mrigsby/bx-Blogger.git .
+git clone https://github.com/oistechnologies/bx-Blogger.git .
 ```
 
 Keep each site in its own directory. Do NOT try to share one checkout across two stacks — `docker compose` uses the current working directory for the project-default name fallback, and the two stacks' `.env` files are different.
