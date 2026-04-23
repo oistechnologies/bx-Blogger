@@ -1,8 +1,8 @@
 <bx:output>
-<div class="d-flex justify-content-between align-items-center mb-4">
-	<h1 class="h3 mb-0">Review queue</h1>
+<bx:savecontent variable="actions">
 	<a class="btn btn-outline-secondary" href="#event.buildLink( 'admin:Posts.index' )#">← All posts</a>
-</div>
+</bx:savecontent>
+#view( view = "partials/heading", args = { "title" : "Review queue", "actionHtml" : actions } )#
 
 #wire( "posts.reviewQueue" )#
 </bx:output>

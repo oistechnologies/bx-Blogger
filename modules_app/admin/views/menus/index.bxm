@@ -1,5 +1,5 @@
 <bx:output>
-<h1 class="h3 mb-4">Menus</h1>
+#view( view = "partials/heading", args = { "title" : "Menus" } )#
 
 #wire( "menus.manager" )#
 </bx:output>

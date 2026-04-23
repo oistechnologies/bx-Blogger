@@ -1,7 +1,5 @@
 <bx:output>
-<div class="d-flex justify-content-between align-items-center mb-4">
-	<h1 class="h3 mb-0">Media library</h1>
-</div>
+#view( view = "partials/heading", args = { "title" : "Media library" } )#
 
 <bx:if flash.exists( "mediaMessage" )>
 	<div class="alert alert-success">#encodeForHTML( flash.get( "mediaMessage" ) )#</div>
