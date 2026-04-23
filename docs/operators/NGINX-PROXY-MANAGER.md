@@ -25,6 +25,20 @@
 - A domain name with DNS pointing at the NPM host (e.g., `blog.example.com`).
 - Admin credentials for the NPM web UI.
 
+### Worked example
+
+This runbook's worked example assumes an NPM setup like:
+
+| Item | Value |
+| --- | --- |
+| Docker network | `docker-vm-net` (bridge) |
+| Network CIDR | `172.60.0.0/16` |
+| Network gateway | `172.60.0.1` |
+| NPM container | `proxymanager` at `172.60.1.1` |
+| Blog domain | `blog.example.com` |
+
+Substitute your own values throughout. The network name is the most common point of divergence — whatever your NPM stack attached itself to, our `PROXY_NETWORK` env var must match it exactly.
+
 ---
 
 ## 1. Tell bx-Blogger which Docker network NPM is on
@@ -35,7 +49,13 @@ In the production `.env` (the one that ships alongside `docker-compose.prod.yml`
 PROXY_NETWORK=npm_default
 ```
 
-Replace with whatever `docker network ls` reported in step 0. The `docker-compose.prod.yml` reads this variable at the `networks:` section — it attaches the `app` container to that shared network as an **external** network (meaning compose expects it to already exist, and only joins it).
+Replace with whatever `docker network ls` reported in step 0. For the worked example, that line reads:
+
+```dotenv
+PROXY_NETWORK=docker-vm-net
+```
+
+The `docker-compose.prod.yml` reads this variable at the `networks:` section — it attaches the `app` container to that shared network as an **external** network (meaning compose expects it to already exist, and only joins it).
 
 No other networking config is required on our side. The `worker` and `mysql` services stay on the private `bx-blogger` network — they never need to be reachable from NPM.
 
@@ -176,7 +196,7 @@ Some operators prefer a **split-domain admin pattern**: `blog.example.com` for p
 | --- | --- | --- |
 | `502 Bad Gateway` from NPM | NPM can't reach `bx-blogger-app:8080` over the shared network | `docker network inspect ${PROXY_NETWORK}` — confirm both `bx-blogger-app` and NPM's container are listed. If not, check `PROXY_NETWORK` in prod `.env` matches NPM's network name. |
 | `Let's Encrypt` cert request fails | DNS not pointing at NPM host yet, or port 80 blocked | `dig blog.example.com` — should resolve to NPM host's public IP. Check firewall allows 80/443 inbound. |
-| App logs show `last_login_ip` = `172.x.x.x` (Docker internal) | TrustedProxyInterceptor isn't trusting NPM's IP | Add NPM's docker-network CIDR (typically `172.16.0.0/12`) to `TRUSTED_PROXIES` in prod `.env`. Default is `127.0.0.1/32,172.16.0.0/12` which should cover it. |
+| App logs show `last_login_ip` = `172.x.x.x` (Docker internal) | TrustedProxyInterceptor isn't trusting NPM's IP | Add NPM's docker-network CIDR to `TRUSTED_PROXIES` in prod `.env`. Default is `127.0.0.1/32,172.16.0.0/12` (covers the standard Docker bridge range). For the worked-example setup above: `TRUSTED_PROXIES=127.0.0.1/32,172.60.0.0/16`. |
 | Websockets (CBWire) fail in production | Websockets Support toggle off in NPM proxy host | Edit proxy host → Details → turn Websockets Support **on** → Save. NPM reloads nginx instantly. |
 | Cert renewal fails silently | NPM's renewal cron healthy? | NPM dashboard → SSL Certificates → check expiry dates. Manual renew via the certificate's "Renew" button. |
 

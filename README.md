@@ -1,110 +1,217 @@
 # bx-Blogger
 
-A self-hosted content management system for pages and a blog, built on [BoxLang](https://boxlang.io) and [ColdBox 8](https://www.coldbox.org).
+A self-hosted content management system for pages and a blog. Built on [BoxLang](https://boxlang.io) + [ColdBox 8](https://www.coldbox.org), runs in Docker, talks to MySQL, stores media on any S3-compatible backend (or a local disk), and ships as a single tagged container image.
 
-## Status
+bx-Blogger is for single-site operators — bloggers, small teams, publishers — who want full control over their stack without running a multi-tenant SaaS.
 
-**Pre-development — planning phase.** No runnable code yet. Detailed architectural design has been worked through; implementation starts at Phase 0 (template scaffold + Docker stack + smoke test). Watch the repo to follow along.
+---
 
-## What it is
+## What it does
 
-bx-Blogger is a production-quality CMS you run yourself. The goals:
+### Writing + publishing
 
-- Ship a real, modern blog platform on BoxLang and ColdBox 8.
-- Authors write in Markdown in a clean web editor; readers see fast, syntax-highlighted, SEO-friendly pages.
-- Designers drop in new themes without touching application code.
-- Operators deploy locally with a single `docker compose up` and in production with a tagged container image.
+- **Markdown editor** with live server-rendered preview, autosave, and per-post revision history
+- **Scheduled publishes** — set a future date/time, the platform flips the post live
+- **Share-a-draft links** — signed 24h preview URLs for unpublished posts
+- **Contributor → editor review workflow** — contributors write, editors publish
+- **Per-post SEO fields** — override title, description, OG image, canonical, robots directive
+- **Embedded media** from YouTube, Vimeo, Spotify, CodePen, Twitter/X, GitHub Gist — paste a URL on its own line, it auto-oEmbed expands
 
-It is not trying to be WordPress, Ghost, or a multi-tenant SaaS. It is aimed at single-site operators — bloggers, small teams, publishers — who want control over their own stack.
+### Reading
 
-## Who it's for
+- **Bootstrap 5 theme system** — swappable, extensible, schema-validated for compatibility
+- **Always-on fallback theme** — a broken theme never leaves the site blank
+- **Prism.js** per-language syntax highlighting, lazy-loaded
+- **Full-text search** over published posts
+- **RSS + Atom feeds** site-wide, per-category, per-tag, per-author
+- **Category archives, tag archives, author archives, date archives** — all first-class
 
-- Developers who want a CMS they can run, read, modify, and extend in BoxLang.
-- Writers who prefer Markdown to visual page builders.
-- Solo authors and small editorial teams publishing long-form content.
-- The BoxLang and ColdBox community — this is a proof point for the ecosystem on a non-trivial application.
+### SEO, social, operations
 
-## Planned architecture
+- **OpenGraph + Twitter Card + JSON-LD structured data** (Article, WebSite + SearchAction, BreadcrumbList, Person) — auto-populated per page type
+- **Automatic share-card generation** — Java2D 1200×630 PNG rendered from the post title + author + site logo when no image is picked, cached by content version
+- **XML sitemap** with automatic sitemap-index split at 40k published posts, per-year sub-sitemaps
+- **Admin-editable `robots.txt`** driven by a settings row; handler injects the real `Sitemap:` line
+- **301/302 redirects table** — slug changes on published posts auto-push the old URL into the redirects table with chain-collapse semantics; admin CRUD surface for manual entries
+- **Broken-link tracker (404 report)** — admin can promote a frequently-hit 404 into a redirect with one click
+- **Audit log** — filterable viewer covering logins, post lifecycle, and other admin actions, with CSV export for compliance
 
-### Runtime and framework
+### Admin + security
 
-- **BoxLang 1.6+** (JVM, native)
-- **ColdBox 8.1** (HMVC, interceptors, scheduler)
-- **CommandBox 6+** with the BoxLang MiniServer for local development
-- **MySQL 8** for persistence
+- **CBWIRE** reactive admin UI with no heavy JavaScript framework
+- **cbauth + cbsecurity** — login, logout, session management, firewall rules
+- **bcrypt** passwords (cost factor 12), two-factor schema-ready
+- **Email verification** on signup and on email change
+- **Password-reset flow** with time-limited signed tokens
+- **Rate-limited login** (5 attempts / 15 min per IP) with durable per-user lockout
+- **Role-based permissions** (super_admin, admin, editor, author, contributor) with fine-grained permission slugs
+- **CSRF protection** on forms
+- **Input sanitization** via AntiSamy on all Markdown-rendered HTML
 
-### Domain layer
+### GDPR + privacy
 
-- **Quick ORM** for entities (User, Post, Page, Category, Tag, Comment, Media, Setting, AuditLog)
-- **qb** query builder for ad-hoc queries
-- **cfmigrations** for schema evolution
+- **Export user data** — download a ZIP of everything the platform holds about a user (profile, posts, revisions, audit slice, media manifest)
+- **Right-to-be-forgotten purge** — two-step admin confirm; reassigns authored posts to a sentinel "Deleted User" account, redacts audit IPs, hard-deletes orphan notifications and unreferenced media
+- **Self-serve "Download my data"** on the user's account page
 
-### Admin UI
+### Background jobs
 
-- **CBWIRE** — server-rendered reactive components, no heavy JavaScript framework in the admin
-- **EasyMDE** Markdown editor with live preview rendered on the server
-- **bx-ai** authoring assistance in the editor — "Create from Idea" generates a draft from a short description, "Review & Suggest" offers per-paragraph editorial suggestions the author accepts or rejects, and "Generate Image" produces previews for inline or featured images that the author picks from a grid. Provider-agnostic (OpenAI, Anthropic, Google, etc.); text and image providers can be configured independently so the best model for each task can be chosen. Operator configures provider(s), API key(s), and per-user monthly budgets (separate caps for text tokens and image generations). Both text assistance and image generation are off by default and independently toggleable; operator opts into each.
-- **cbauth** + **cbsecurity** for authentication and authorization
-- **cbvalidation** for input validation
-- **bcrypt** for password hashing, two-factor auth schema-ready from Phase 1
+- **cbq-powered** job queue with DB provider (no external queue dependency)
+- **Built-in jobs:** send email, generate thumbnails + WebP variants, ping search engines on publish, record post views (off-thread), warm the page cache, prune old data, rebuild sitemap, backup the database, send notification digests
+- **Scheduler** fires jobs on cron-like schedules; timezone-aware
+- **Graceful handling of non-request threads** — jobs use `writeLog()` so they work correctly on worker threads where WireBox-injected loggers may not resolve
 
-### Public site
+### Media + assets
 
-- Swappable theme system — themes extend Bootstrap 5 but never replace it, and are schema-validated for compatibility
-- A lightweight always-on fallback theme so a broken theme never leaves the site blank
-- Prism.js for lazy-loaded, per-language code highlighting
-- SEO built in — Open Graph, Twitter Cards, JSON-LD structured data, XML sitemap, RSS and Atom feeds
-- MySQL FULLTEXT search at MVP, with a swap seam for Elasticsearch later
+- **Inline media library** picker in the editor — search, upload, reuse existing
+- **Auto-generated thumbnails** + WebP variants on upload
+- **Alt-text + focal-point** per image
+- **Featured image + OG image fields** per post, with fallback chain (post → featured → first category → site default → generated share card)
+- **Pluggable storage** via cbfs — local disk by default; switch to AWS S3, Cloudflare R2, DigitalOcean Spaces, Backblaze B2, Wasabi, or self-hosted MinIO via env vars alone (no code change)
 
-### Media
+### Performance + reliability
 
-- **cbfs** file abstraction — endpoint-configurable S3-compatible backend, selected by a single `.env` variable. Defaults: MinIO container in dev, AWS S3 + CloudFront in production
-- **Operator choice of backend in prod:** AWS S3 (the documented default, private bucket served through CloudFront with Origin Access Control), self-hosted MinIO (no cloud bill, NGINX-proxied), Cloudflare R2 (zero egress), DigitalOcean Spaces, Backblaze B2, Wasabi — all supported without any application code changes
-- Auto-generated thumbnails, WebP variants, and Open Graph share cards per post
+- **Full-page HTML cache** on public anonymous GETs, flushed on post / setting / theme / category mutations
+- **60-minute cache** on sitemap, RSS feeds, and related-post lookups
+- **Content-version–keyed cache** on generated OG images so updates don't serve stale art
+- **Daily database backup job** with 14-day rotation; optional S3 off-host sync
+- **Prune-old-data job** for login audits, page views, notifications
+- **Nightly table-optimize** pass on high-churn tables
 
-### Deployment
+---
 
-- **Docker-first.** `docker compose up` spins a full local stack: app, MySQL, MinIO, Mailpit.
-- Production image tagged in CI, deployable to any VPS or container platform. NGINX is the reverse-proxy default; Caddy and Apache configs ship as alternatives.
-- Schema migrations run automatically on container start.
+## Getting started
 
-### Extension points
+### Production deployment
 
-Designed for MVP, reserved for later phases:
+See **[DEPLOY.md](DEPLOY.md)** — a 15-minute walkthrough from `git clone` to first admin login.
 
-- **`MediaService`** — image backend is swappable (bx-image today, Thumbnailator via cbjavaloader later).
-- **`ISearchProvider`** — MySQL FULLTEXT today, Elasticsearch later.
-- **`Authenticator`** strategy — form login today, OAuth / Google / Microsoft / GitHub SSO later.
-- **`AiAssistantService`** — the Phase-2 editor buttons are the first uses; later phases add alt-text auto-suggest, SEO meta generation, tag suggestion, translation, and comment moderation on the same seam.
-- Interception points for comments, newsletters, passkeys, AI actions, and real-time features are named up front so the roadmap work doesn't require core rewrites.
+Running **multiple bx-Blogger sites on one Docker host**: see [docs/operators/MULTI-INSTANCE.md](docs/operators/MULTI-INSTANCE.md).
 
-## Principles
+### Local development
 
-- **Production-quality, not demoware.** Backups, rate limiting, CSP, accessibility, observability — all MVP concerns, not afterthoughts.
-- **Self-hostable on one box.** A single-VPS deployment is a first-class target, alongside container platforms.
-- **Swappable, not monolithic.** Every third-party dependency the app leans on (ORM, image backend, search, storage, auth) sits behind an interface with a documented fallback.
-- **Themes extend Bootstrap, they do not replace it.** This constraint is mechanically enforced by theme schema validation, not by convention.
+```bash
+git clone https://github.com/mrigsby/bx-Blogger.git
+cd bx-Blogger
+cp .env.example .env
+docker compose up -d
+docker compose exec app box migrate up
+open http://localhost:8080
+```
 
-## Roadmap
+The dev stack runs the app + MySQL + MinIO (local S3 emulator) + MailHog (captures outbound email at <http://localhost:8025>). Default admin: `admin@bx-blogger.local` / `ChangeMe-Admin-4242!`.
 
-MVP is broken into phases. High-level:
+### Running tests
 
-- **Phase 0** — Bootstrap: template scaffold, Vite, Docker Compose stack, smoke test
-- **Phase 1** — Identity and authentication
-- **Phase 2** — Posts and pages CRUD, media management, editorial workflow
-- **Phase 3** — Public site v1 with the fallback and default themes
-- **Phase 4** — Theming system and theme options UI
-- **Phase 5** — Caching and performance
-- **Phase 6** — Background jobs, scheduling, notifications
-- **Phase 7** — SEO polish and Open Graph image generation
-- **Phase 8** — Audit log and admin tooling
-- **Phases 9–10** — Hardening, accessibility, operator documentation
-- **Phase 11** — Roadmap: SSO, passkeys, Elasticsearch, comments, newsletter, editorial calendar
+```bash
+docker compose exec app box testbox run
+```
+
+---
+
+## Configuration
+
+Every runtime knob is in `.env` — `.env.example` is the exhaustive reference. Key areas:
+
+| Section | Controls |
+| --- | --- |
+| **Identity** | `APP_KEY`, `APP_URL`, `APP_TIMEZONE`, `APPNAME` |
+| **Database** | `DB_*` — host, port, database, username, password, driver |
+| **Email** | `SMTP_*`, `MAIL_FROM_ADDRESS`, `MAIL_FROM_NAME` |
+| **Storage** | `S3_*` — endpoint, credentials, buckets, path-style override |
+| **Reverse proxy** | `PROXY_NETWORK`, `TRUSTED_PROXIES` |
+| **Admin seed** | `ADMIN_EMAIL`, `ADMIN_PASSWORD` — used on first boot when `users` is empty |
+| **AI features** | `AI_ENABLED` + per-provider keys (opt-in, off by default) |
+
+Settings that operators tune *after* deploy — robots.txt body, site default OG image, notification destination, etc. — live in the `settings` table and are managed via the admin UI rather than env vars.
+
+---
+
+## Themes
+
+Themes ship as self-contained packs under `themes/`. Each declares a `theme.json` manifest with name, options, and supported templates. Three themes ship in the box:
+
+- `bx-blogger-default` — the primary theme
+- `bx-blogger-magazine` — alternate look
+- `bx-blogger-fallback` — always-on safety net (never remove)
+
+Writing a custom theme is a matter of copying an existing one, renaming, and editing the SCSS + `.bxm` layouts. The theme system extends Bootstrap 5 but never replaces it — your theme's CSS layers on top of the core bundle.
+
+---
+
+## Project layout
+
+```text
+bx-Blogger/
+├── Application.bx               Web-root bootstrap
+├── index.bxm                    Front-controller placeholder
+├── config/                      Coldbox, WireBox, Cachebox, Router, Scheduler, cbq
+├── handlers/                    Public-site ColdBox handlers
+├── modules_app/admin/           Admin HMVC module
+├── models/
+│   ├── entities/                Quick ORM entities
+│   ├── services/                Business-logic services
+│   └── jobs/                    cbq background jobs
+├── interceptors/                Cross-cutting request-lifecycle logic
+├── views/                       Handler views (.bxm)
+├── layouts/                     Top-level page layouts
+├── themes/                      Theme packs
+├── includes/helpers/            App-wide UDFs
+├── resources/database/          Migrations + seeds
+├── tests/specs/                 TestBox integration + unit specs
+├── docker/                      Dockerfile + entrypoint
+├── docker-compose.yml           Dev stack
+├── docker-compose.prod.yml      Production stack (no ports published; reverse-proxy-fronted)
+├── docs/                        Public operator + developer documentation
+└── DEPLOY.md                    Production deployment guide
+```
+
+---
+
+## Documentation
+
+### For operators
+
+- **[DEPLOY.md](DEPLOY.md)** — single-site production deploy
+- **[docs/operators/NGINX-PROXY-MANAGER.md](docs/operators/NGINX-PROXY-MANAGER.md)** — NPM proxy-host setup, field-by-field
+- **[docs/operators/MULTI-INSTANCE.md](docs/operators/MULTI-INSTANCE.md)** — multiple sites on one Docker host
+- **[docs/operators/S3-BACKUP-SETUP.md](docs/operators/S3-BACKUP-SETUP.md)** — AWS S3 with bucket + IAM + CloudFront
+- **[docs/operators/S3-COMPATIBLE-PROVIDERS.md](docs/operators/S3-COMPATIBLE-PROVIDERS.md)** — env-var blocks for every supported S3 backend
+- **[docs/operators/MINIO-SELF-HOSTED.md](docs/operators/MINIO-SELF-HOSTED.md)** — self-hosted MinIO as a prod S3 replacement
+
+### For developers
+
+- **[CLAUDE.md](CLAUDE.md)** — repo conventions, Docker-only workflow rules, BoxLang / ColdBox / Quick / qb gotchas collected during development
+
+---
+
+## Tech stack
+
+- **Runtime:** BoxLang 1.12+ on the JVM
+- **Framework:** ColdBox 8.1 (HMVC, interceptors, scheduler)
+- **Admin UI:** CBWIRE (server-rendered reactive components)
+- **ORM:** Quick entities + qb query builder
+- **Migrations:** cfmigrations
+- **Auth:** cbauth + cbsecurity
+- **Validation:** cbvalidation
+- **Jobs:** cbq with DB provider
+- **Storage:** cbfs (local + S3-compatible)
+- **Email:** cbmailservices
+- **Testing:** TestBox
+- **Database:** MySQL 8.4
+- **Container:** Ortus Solutions' CommandBox Docker image
+- **Reverse proxy:** NGINX Proxy Manager (reference) — any proxy that speaks HTTP 1.1 + websockets + `X-Forwarded-*` works
+
+---
 
 ## License
 
-TBD — no `LICENSE` file ships until decided.
+See [LICENSE](LICENSE).
+
+---
 
 ## Contributing
 
-Contribution guidelines will be published once Phase 0 is complete and there is runnable code to build against. Until then, watch or star the repo to follow progress.
+Issues and pull requests welcome at <https://github.com/mrigsby/bx-Blogger>.
+
+Before opening a PR, `docker compose exec app box testbox run` must be green on the full suite.
