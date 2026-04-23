@@ -35,6 +35,12 @@ class accessors="true" singleton {
     variables.positiveTtlMinutes = 24 * 60;
     variables.negativeTtlMinutes = 5;
     variables.httpTimeoutSeconds = 4;
+    // Send `maxwidth` to every oEmbed endpoint so providers that
+    // default to thumbnail-sized iframes (YouTube's default is
+    // 200x113!) return something reasonable in the raw HTML —
+    // important for feed readers / email previews where the
+    // responsive wrapper CSS may not apply.
+    variables.oembedMaxWidth = 1200;
 
     // Provider registry. Each entry:
     //   name          — provider slug (identifies the embed origin)
@@ -226,6 +232,17 @@ class accessors="true" singleton {
         variables.cache.clear( cacheKey( arguments.url ) );
     }
 
+    /**
+     * Nuke every cached oEmbed entry. Intended for operator use
+     * (e.g., after a provider format change, or rolling out the
+     * responsive-wrapper fix to previously-cached small iframes).
+     * Uses cachebox's key-prefix clear; quickly targets only
+     * oembed-owned entries without touching page / setting caches.
+     */
+    function invalidateAll() {
+        variables.cache.clearByKeySnippet( keySnippet = "oembed:", regex = false );
+    }
+
     // --------------------------------------------------------------------
     // Provider implementations (private)
     // --------------------------------------------------------------------
@@ -267,7 +284,9 @@ class accessors="true" singleton {
 
         var endpoint = arguments.provider.endpoint;
         var joiner   = endpoint contains "?" ? "&" : "?";
-        var target   = endpoint & joiner & "url=" & urlEncodedFormat( arguments.url );
+        var target   = endpoint & joiner
+            & "url=" & urlEncodedFormat( arguments.url )
+            & "&maxwidth=" & variables.oembedMaxWidth;
 
         var client = HttpClient.newBuilder()
             .connectTimeout( Duration.ofSeconds( javaCast( "long", variables.httpTimeoutSeconds ) ) )
@@ -292,7 +311,48 @@ class accessors="true" singleton {
 
         var parsed = jsonDeserialize( body );
         if ( !isStruct( parsed ) ) return "";
-        return parsed.html ?: "";
+        return makeIframeResponsive( parsed.html ?: "" );
+    }
+
+    /**
+     * Wrap iframe-bearing oEmbed HTML in a 16:9 responsive container.
+     * Strips the fixed width/height attrs providers love to hard-code
+     * (YouTube's default is 200x113!) and relies on both:
+     *
+     *   - inline styles on the wrapper + iframe, so the embed works
+     *     in RSS readers, email newsletters, and any other
+     *     CSS-stripped context
+     *   - `.oembed-embed` class hooks so theme SCSS can override
+     *     margins / max-width / etc.
+     *
+     * Non-iframe responses (Twitter blockquote + widgets.js script,
+     * Gist's script tag) pass through untouched — they're already
+     * fluid-width by design.
+     */
+    string function makeIframeResponsive( required string html ) {
+        var h = arguments.html;
+        if ( !len( trim( h ) ) ) return h;
+        if ( !reFindNoCase( "<iframe\b", h ) ) return h;
+
+        // Drop hard-coded width/height attributes on iframes so the
+        // wrapper's CSS can drive the size instead.
+        h = reReplaceNoCase( h, "\s(width|height)=""[^""]*""", "", "all" );
+
+        // Inject inline width/height on the iframe element — survives
+        // the CSS-less contexts where the wrapper class won't apply.
+        // Prepended style= may coexist with a pre-existing one on
+        // exotic providers; later-wins is harmless.
+        h = reReplaceNoCase(
+            h,
+            "<iframe\b",
+            "<iframe style=""position:absolute;inset:0;width:100%;height:100%;border:0;""",
+            "one"
+        );
+
+        return '<div class="oembed-embed oembed-embed--video" ' &
+               'style="position:relative;padding-bottom:56.25%;height:0;overflow:hidden;margin:1.5rem 0;">' &
+               h &
+               '</div>';
     }
 
     // --------------------------------------------------------------------

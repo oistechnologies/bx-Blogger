@@ -59,6 +59,27 @@
             margin: 1.25rem 0;
         }
         h2, h3 { margin-top: 1.75rem; }
+
+        // Phase 7.E — oEmbed responsive wrapper. OembedService emits
+        // `<div class="oembed-embed oembed-embed--video">` around
+        // iframe-bearing providers (YouTube, Vimeo, Spotify, CodePen,
+        // Twitter/X). The service also sets inline styles so the
+        // fallback works in CSS-less contexts (RSS, email); the rules
+        // below refine the visual treatment when the theme CSS loads.
+        .oembed-embed {
+            max-width: 100%;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .oembed-embed--video {
+            // Modern aspect-ratio + padding-bottom fallback. The
+            // inline styles on the service's wrapper div already
+            // provide padding-bottom:56.25% for older browsers; this
+            // block just keeps the CSS path tidy for anyone who
+            // strips the inline style (e.g. a Content-Security-Policy
+            // policy that forbids inline style).
+            aspect-ratio: 16 / 9;
+        }
     }
 
     // Footer text a touch quieter

@@ -64,6 +64,31 @@ class extends="tests.support.BaseIntegrationSpec" {
                 } );
             } );
 
+            describe( "makeIframeResponsive()", function() {
+                it( "wraps an iframe response in a 16:9 responsive container", function() {
+                    var input = '<iframe width="200" height="113" src="https://www.youtube.com/embed/abc" frameborder="0" allowfullscreen></iframe>';
+                    var out   = svc.makeIframeResponsive( input );
+                    expect( out ).toInclude( 'class="oembed-embed' );
+                    expect( out ).toInclude( 'padding-bottom:56.25%' );
+                    // Fixed pixel dimensions stripped so CSS drives size.
+                    expect( out ).notToInclude( 'width="200"' );
+                    expect( out ).notToInclude( 'height="113"' );
+                    // Iframe gets inline sizing so CSS-less contexts
+                    // (RSS, email) still render a usable iframe.
+                    expect( out ).toInclude( 'width:100%' );
+                } );
+
+                it( "leaves a non-iframe response (Twitter blockquote, Gist script) untouched", function() {
+                    var input = '<blockquote class="twitter-tweet">...</blockquote><script async src="//platform.twitter.com/widgets.js"></script>';
+                    expect( svc.makeIframeResponsive( input ) ).toBe( input );
+                } );
+
+                it( "passes empty / whitespace-only input through", function() {
+                    expect( svc.makeIframeResponsive( "" ) ).toBe( "" );
+                    expect( svc.makeIframeResponsive( "   " ) ).toBe( "   " );
+                } );
+            } );
+
             describe( "embed() — general", function() {
                 it( "returns empty for an unknown host", function() {
                     expect( svc.embed( "https://example.com/page" ) ).toBe( "" );
