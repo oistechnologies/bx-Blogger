@@ -1,0 +1,224 @@
+/**
+ * bx-Blogger — SeoMetaInterceptor (Phase 7.A)
+ *
+ * Populates `prc.seoMeta` per request by inspecting what the
+ * handler put in `prc` — no coordination required between
+ * handlers and the SEO service, no per-handler boilerplate. The
+ * detection rules:
+ *
+ *   prc.post        (post_type = "post")  → buildForPost
+ *   prc.post        (post_type = "page")  → buildForPage
+ *   prc.category | prc.tag | prc.author |
+ *                 prc.archiveLabel        → buildForArchive
+ *   event == "main.index"                 → buildForHome
+ *   prc.pageTitle == "Not Found …"        → buildForNotFound
+ *
+ * Falls through to no-op on anything that doesn't match (admin
+ * pages, feed.xml, sitemap.xml, __health, etc.). Those either
+ * build their own markup or emit no HTML at all.
+ *
+ * Fires at `preRender` so the handler has finished setting
+ * `prc.post` / `prc.pageTitle` / etc. by the time we run.
+ *
+ * Lazy service resolution (see RateLimitInterceptor gotcha note
+ * in CLAUDE.md) — SeoService injected via `getInstance()` inside
+ * the hook rather than a property, since interceptors are built
+ * before the WireBox model scan finishes.
+ */
+class extends="coldbox.system.Interceptor" {
+
+    function configure() {}
+
+    /**
+     * `postEvent` fires after the handler action populates prc
+     * but before any layout/view rendering begins — the correct
+     * spot to stamp `prc.seoMeta` so the layout's `#seoHead(prc)#`
+     * call sees it. (Earlier attempts used `preRender`, which
+     * fires *after* the layout has already been parsed on some
+     * ColdBox lifecycle paths — any prc writes there don't
+     * propagate to the rendered HTML.)
+     */
+    function postEvent( event, data, buffer, rc, prc ) {
+        try {
+            var ev = arguments.event.getCurrentEvent();
+            // Prevent double-firing if something ahead of us in the
+            // chain already built meta (tests, downstream plugins).
+            if ( structKeyExists( arguments.prc, "seoMeta" ) ) return;
+
+            // Never inject SEO meta on admin / auth / preview routes
+            // — they have their own head chrome and the public-site
+            // builders don't apply anyway.
+            if ( left( ev, 6 ) == "admin:" || left( ev, 9 ) == "security." ) return;
+            if ( left( ev, 15 ) == "passwordReset." || left( ev, 20 ) == "emailVerification." ) return;
+            if ( left( ev, 8 ) == "account." || left( ev, 8 ) == "preview." ) return;
+            // Feeds / sitemap / health — not HTML.
+            if ( ev == "main.robots" || ev == "main.health" || ev == "main.sitemap"
+                 || left( ev, 9 ) == "blog.feed" || ev == "blog.categoryFeed"
+                 || ev == "blog.tagFeed" || ev == "blog.authorFeed" ) return;
+
+            var svc        = getInstance( "SeoService" );
+            var baseUrl    = resolveBaseUrl( arguments.event );
+            var siteName   = arguments.event.getController().getSetting( "AppName" );
+            var siteLocale = localeTag();
+
+            // --- 404 page --- //
+            if ( isNotFound( arguments.prc ) ) {
+                arguments.prc.seoMeta = svc.buildForNotFound( baseUrl = baseUrl, siteName = siteName );
+                return;
+            }
+
+            // --- Single post / page --- //
+            if ( structKeyExists( arguments.prc, "post" ) && !isNull( arguments.prc.post ) ) {
+                var post     = arguments.prc.post;
+                var postType = post.getPostType() ?: "post";
+
+                if ( postType == "page" ) {
+                    arguments.prc.seoMeta = svc.buildForPage(
+                        post       = post,
+                        baseUrl    = baseUrl,
+                        siteName   = siteName,
+                        siteLocale = siteLocale
+                    );
+                    return;
+                }
+
+                var cats = arguments.prc.postCategories ?: [];
+                var tags = arguments.prc.postTags ?: [];
+                if ( !isArray( cats ) ) cats = queryToArrayOfStructs( cats );
+                if ( !isArray( tags ) ) tags = queryToArrayOfStructs( tags );
+
+                arguments.prc.seoMeta = svc.buildForPost(
+                    post        = post,
+                    authorName  = arguments.prc.authorName ?: "",
+                    categories  = cats,
+                    tags        = tags,
+                    baseUrl     = baseUrl,
+                    siteName    = siteName,
+                    siteLocale  = siteLocale
+                );
+                return;
+            }
+
+            // --- Archive pages (blog index, category, tag, author, date) --- //
+            if ( isArchivePage( arguments.prc, ev ) ) {
+                arguments.prc.seoMeta = svc.buildForArchive(
+                    title       = stripAppSuffix( arguments.prc.pageTitle ?: "", siteName ),
+                    description = arguments.prc.pageDescription ?: "",
+                    canonical   = baseUrl & arguments.event.getCurrentRoutedURL(),
+                    breadcrumbs = arguments.prc.breadcrumbs ?: [],
+                    baseUrl     = baseUrl,
+                    siteName    = siteName,
+                    siteLocale  = siteLocale
+                );
+                return;
+            }
+
+            // --- Home page --- //
+            if ( ev == "main.index" ) {
+                arguments.prc.seoMeta = svc.buildForHome(
+                    baseUrl         = baseUrl,
+                    siteName        = siteName,
+                    siteDescription = arguments.prc.siteTagline ?: "",
+                    siteLocale      = siteLocale
+                );
+                return;
+            }
+        }
+        catch ( any e ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "SeoMetaInterceptor: " & ( e.Message ?: "(no message)" )
+            );
+        }
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    private boolean function isNotFound( required any prc ) {
+        return structKeyExists( arguments.prc, "pageTitle" )
+            && left( arguments.prc.pageTitle ?: "", 9 ) == "Not Found";
+    }
+
+    private boolean function isArchivePage( required any prc, required string event ) {
+        if ( structKeyExists( arguments.prc, "category" ) ) return true;
+        if ( structKeyExists( arguments.prc, "tag"      ) ) return true;
+        if ( structKeyExists( arguments.prc, "author"   ) ) return true;
+        if ( structKeyExists( arguments.prc, "archiveLabel" ) ) return true;
+        if ( structKeyExists( arguments.prc, "searchQuery"  ) ) return true;
+        // blog index: no single subject, but pagination array is there.
+        if ( arguments.event == "blog.index" ) return true;
+        return false;
+    }
+
+    /**
+     * Trim trailing " · SiteName" from the handler-built page
+     * title so the archive builder's meta doesn't double up
+     * the site name (it'll re-add via og:site_name).
+     */
+    private string function stripAppSuffix( required string raw, required string siteName ) {
+        var needle = " &middot; " & arguments.siteName;
+        if ( arguments.raw contains needle ) {
+            return reReplace( arguments.raw, "\s*\&middot;\s*" & reEscape( arguments.siteName ) & "$", "", "one" );
+        }
+        return arguments.raw;
+    }
+
+    /**
+     * Build an absolute site base URL from the incoming request.
+     * Mirrors the logic in Blog.feed / Main.sitemap — protocol +
+     * host, no trailing slash. Falls back to the `APP_URL` env
+     * var when headers are missing (happens for some non-request
+     * invocations in specs).
+     */
+    private string function resolveBaseUrl( required any event ) {
+        try {
+            var proto = arguments.event.getHTTPHeader( "X-Forwarded-Proto", cgi.server_protocol contains "HTTPS" ? "https" : "http" );
+            var host  = arguments.event.getHTTPHeader( "Host", cgi.server_name ?: "" );
+            if ( len( host ) ) return proto & "://" & host;
+        }
+        catch ( any e ) {}
+        return getSystemSetting( "APP_URL", "http://localhost:8080" );
+    }
+
+    /**
+     * Resolve the OG locale tag ("en_US"-style). Derived from
+     * ColdBox's `cbi18n` active locale when the module is loaded;
+     * otherwise a safe default. Kept in a helper so Phase 7.B can
+     * swap in a setting-driven override.
+     */
+    private string function localeTag() {
+        try {
+            var i18n = getInstance( "i18n@cbi18n" );
+            var locale = i18n.getfwLocale();
+            if ( len( locale ) ) return replace( locale, "-", "_", "all" );
+        }
+        catch ( any e ) {}
+        return "en_US";
+    }
+
+    /**
+     * qb returns query-like structures; when the handler stashed
+     * a Query rather than an array-of-structs on
+     * `prc.postCategories`, rehydrate.
+     */
+    private array function queryToArrayOfStructs( required any q ) {
+        var out = [];
+        if ( isQuery( arguments.q ) ) {
+            for ( var row in arguments.q ) out.append( row );
+        }
+        return out;
+    }
+
+    /**
+     * Minimal regex-escape — the only character we really need to
+     * protect in the app-name suffix regex is `.`, but belt+
+     * suspenders for anyone with punctuation in their AppName.
+     */
+    private string function reEscape( required string s ) {
+        return reReplace( arguments.s, "([\\.^$*+?()\[\]{}|])", "\\\1", "all" );
+    }
+
+}

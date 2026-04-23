@@ -261,7 +261,15 @@ class {
 			// IndexNow ping via PingSearchEnginesJob. No-ops
 			// cleanly when the `seo.indexnow_key` setting or
 			// `APP_URL` env var is unset.
-			{ class : "interceptors.SearchEnginePingInterceptor" }
+			{ class : "interceptors.SearchEnginePingInterceptor" },
+			// 7.A — on every public render, populate `prc.seoMeta`
+			// with the full SEO + OG + Twitter + JSON-LD payload.
+			// Themes render it via `#seoHead( prc )#` in their
+			// layout `<head>`. Detects page type by inspecting
+			// what the handler stashed in prc (post / category /
+			// tag / author / archive / search / 404). Admin,
+			// feed, sitemap, and health events are skipped.
+			{ class : "interceptors.SeoMetaInterceptor" }
 		];
 
 		/**

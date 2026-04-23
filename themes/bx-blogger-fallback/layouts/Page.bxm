@@ -4,9 +4,13 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>#encodeForHTML( prc.pageTitle ?: getSetting( "AppName" ) )#</title>
-    <bx:if len( prc.pageDescription ?: "" )>
-        <meta name="description" content="#encodeForHTMLAttribute( prc.pageDescription )#">
+    <bx:if structKeyExists( prc, "seoMeta" )>
+        #seoHead( prc )#
+    <bx:else>
+        <title>#encodeForHTML( prc.pageTitle ?: getSetting( "AppName" ) )#</title>
+        <bx:if len( prc.pageDescription ?: "" )>
+            <meta name="description" content="#encodeForHTMLAttribute( prc.pageDescription )#">
+        </bx:if>
     </bx:if>
     <link
         rel="stylesheet"

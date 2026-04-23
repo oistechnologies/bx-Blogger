@@ -1,0 +1,194 @@
+/**
+ * bx-Blogger — SeoServiceSpec (Phase 7.A)
+ *
+ * Validates that each `buildFor*` method returns a meta struct
+ * with the tags that matter for Google + OG / Twitter + schema.org
+ * crawlers. We don't assert on every minor field — the renderer
+ * spec covers those — just that each builder fills the right
+ * shape for its page type.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc = getInstance( "SeoService" );
+    }
+
+    function run() {
+        describe( "SeoService", function() {
+
+            describe( "buildForPost()", function() {
+                it( "produces Article JSON-LD + article-type OG for a published post", function() {
+                    var author = createTestUser();
+                    var postService = getInstance( "PostService" );
+                    var post = postService.create( {
+                        "authorId"     : author.getId(),
+                        "title"        : "Spec article",
+                        "slug"         : "spec-article-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                        "bodyMarkdown" : "Hello world. This is the body.",
+                        "excerpt"      : "The excerpt."
+                    } );
+                    postService.publish( post );
+
+                    var meta = variables.svc.buildForPost(
+                        post       = post,
+                        authorName = "Spec Author",
+                        baseUrl    = "https://example.com",
+                        siteName   = "Example"
+                    );
+
+                    expect( meta.title ).toBe( "Spec article" );
+                    expect( meta.description ).toBe( "The excerpt." );
+                    expect( meta.canonical ).toBe( "https://example.com/blog/" & post.getSlug() );
+                    expect( meta.robots ).toBe( "index, follow" );
+                    expect( meta.og.type ).toBe( "article" );
+                    expect( meta.og.title ).toBe( "Spec article" );
+                    expect( meta.og.article_author ).toBe( "Spec Author" );
+                    expect( meta.twitter.card ).toBeTypeOf( "string" );
+
+                    // JSON-LD: at least an Article node.
+                    var hasArticle = false;
+                    for ( var ld in meta.jsonLd ) {
+                        if ( ld[ "@type" ] == "Article" ) {
+                            hasArticle = true;
+                            expect( ld.headline ).toBe( "Spec article" );
+                            expect( ld.author.name ).toBe( "Spec Author" );
+                        }
+                    }
+                    expect( hasArticle ).toBeTrue();
+                } );
+
+                it( "marks a draft post as noindex even if asked to build meta", function() {
+                    var author = createTestUser();
+                    var postService = getInstance( "PostService" );
+                    var post = postService.create( {
+                        "authorId"     : author.getId(),
+                        "title"        : "Draft spec",
+                        "slug"         : "draft-spec-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                        "bodyMarkdown" : "unreleased"
+                    } );
+                    // Don't publish — status stays "draft".
+
+                    var meta = variables.svc.buildForPost(
+                        post       = post,
+                        authorName = "Draft Author",
+                        baseUrl    = "https://example.com"
+                    );
+                    expect( meta.robots ).toBe( "noindex, nofollow" );
+                } );
+
+                it( "honors per-post allow_indexing=false on a published post", function() {
+                    var author = createTestUser();
+                    var postService = getInstance( "PostService" );
+                    var post = postService.create( {
+                        "authorId"      : author.getId(),
+                        "title"         : "Hidden",
+                        "slug"          : "hidden-spec-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                        "bodyMarkdown"  : "body",
+                        "allowIndexing" : 0
+                    } );
+                    postService.publish( post );
+
+                    var meta = variables.svc.buildForPost( post = post, authorName = "A", baseUrl = "https://example.com" );
+                    expect( meta.robots ).toBe( "noindex, nofollow" );
+                } );
+            } );
+
+            describe( "buildForHome()", function() {
+                it( "emits WebSite JSON-LD with a SearchAction", function() {
+                    var meta = variables.svc.buildForHome(
+                        baseUrl         = "https://example.com",
+                        siteName        = "Example",
+                        siteDescription = "A great site"
+                    );
+                    expect( meta.canonical ).toBe( "https://example.com/" );
+
+                    var foundSearch = false;
+                    for ( var ld in meta.jsonLd ) {
+                        if ( ld[ "@type" ] == "WebSite" && structKeyExists( ld, "potentialAction" ) ) {
+                            foundSearch = true;
+                            expect( ld.potentialAction[ "@type" ] ).toBe( "SearchAction" );
+                        }
+                    }
+                    expect( foundSearch ).toBeTrue();
+                } );
+            } );
+
+            describe( "buildForArchive()", function() {
+                it( "builds a BreadcrumbList JSON-LD from handler breadcrumbs", function() {
+                    var meta = variables.svc.buildForArchive(
+                        title       = "Dev News",
+                        description = "Dev-news posts",
+                        canonical   = "https://example.com/category/dev-news",
+                        breadcrumbs = [
+                            { "label" : "Categories", "url" : "/category" },
+                            { "label" : "Dev News",   "url" : "/category/dev-news" }
+                        ],
+                        baseUrl     = "https://example.com"
+                    );
+
+                    var foundCrumbs = false;
+                    for ( var ld in meta.jsonLd ) {
+                        if ( ld[ "@type" ] == "BreadcrumbList" ) {
+                            foundCrumbs = true;
+                            // Home is prepended by the builder → 3 items.
+                            expect( ld.itemListElement.len() ).toBe( 3 );
+                            expect( ld.itemListElement[ 1 ].name ).toBe( "Home" );
+                            expect( ld.itemListElement[ 3 ].name ).toBe( "Dev News" );
+                        }
+                    }
+                    expect( foundCrumbs ).toBeTrue();
+                } );
+            } );
+
+            describe( "buildForNotFound()", function() {
+                it( "always returns noindex, nofollow", function() {
+                    var meta = variables.svc.buildForNotFound(
+                        baseUrl  = "https://example.com",
+                        siteName = "Example"
+                    );
+                    expect( meta.robots ).toBe( "noindex, nofollow" );
+                } );
+            } );
+
+            describe( "renderHead()", function() {
+                it( "emits title, description, canonical, og, twitter, and JSON-LD in order", function() {
+                    var meta = {
+                        "title"       : "Rendered Title",
+                        "description" : "A description",
+                        "canonical"   : "https://example.com/page",
+                        "robots"      : "index, follow",
+                        "og"          : { "type" : "website", "title" : "Rendered Title" },
+                        "twitter"     : { "card" : "summary", "title" : "Rendered Title" },
+                        "jsonLd"      : [ { "@context" : "https://schema.org", "@type" : "Thing", "name" : "x" } ],
+                        "links"       : [ { "rel" : "alternate", "type" : "application/rss+xml", "href" : "https://example.com/feed.xml" } ]
+                    };
+                    var html = variables.svc.renderHead( meta );
+
+                    expect( html contains "<title>Rendered Title</title>" ).toBeTrue( "title present" );
+                    expect( html contains '<meta name="description"'     ).toBeTrue( "description meta present" );
+                    expect( html contains '<link rel="canonical"'        ).toBeTrue( "canonical present" );
+                    expect( html contains "example.com"                  ).toBeTrue( "hostname present in markup" );
+                    expect( html contains '<meta name="robots"'          ).toBeTrue( "robots present" );
+                    expect( html contains '<meta property="og:type"'     ).toBeTrue( "og:type present" );
+                    expect( html contains '<meta name="twitter:card"'    ).toBeTrue( "twitter:card present" );
+                    expect( html contains 'application/ld+json'          ).toBeTrue( "JSON-LD present" );
+                    expect( html contains 'application/rss+xml'          ).toBeTrue( "RSS alternate present" );
+                } );
+
+                it( "skips empty og/twitter fields rather than emitting empty content=''", function() {
+                    var html = variables.svc.renderHead( {
+                        "title"       : "X",
+                        "description" : "",
+                        "og"          : { "type" : "website", "title" : "" }
+                    } );
+                    // og:title with empty content should NOT appear.
+                    expect( html contains '<meta property="og:title"' ).toBeFalse();
+                    expect( html contains '<meta property="og:type"' ).toBeTrue();
+                } );
+            } );
+
+        } );
+    }
+
+}

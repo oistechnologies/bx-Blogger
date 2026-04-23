@@ -1,0 +1,630 @@
+/**
+ * bx-Blogger — SeoService (Phase 7.A)
+ *
+ * Produces the full SEO meta payload for a public page — title,
+ * meta description, canonical, robots directive, OpenGraph tags,
+ * Twitter Card tags, and schema.org JSON-LD. One service,
+ * several entry points (one per page type):
+ *
+ *   - `buildForPost(...)`     — /blog/:slug         → Article
+ *   - `buildForPage(...)`     — /:slug (CMS page)   → WebPage
+ *   - `buildForArchive(...)`  — /blog, /category/*, /tag/*, /author/*,
+ *                               /archive/:year[/:month]
+ *   - `buildForHome(...)`     — site root           → WebSite + SearchAction
+ *   - `buildForNotFound()`    — 404                 → minimal noindex
+ *
+ * Each returns the same shape:
+ *
+ *   {
+ *     title:       "...",
+ *     description: "...",
+ *     canonical:   "https://.../absolute/path",
+ *     robots:      "index, follow",
+ *     og:          { title, description, type, url, image, site_name, locale, article_author? },
+ *     twitter:     { card, title, description, image },
+ *     jsonLd:      [ { @context, @type, ... }, ... ],   // array of schema.org objects
+ *     links:       [ { rel, href, type? }, ... ]        // feed alternates, etc.
+ *   }
+ *
+ * `renderHead(meta)` turns the struct into the HTML chunk that
+ * goes inside the theme's `<head>`. Themes emit it via
+ * `#prc.theme.seoHead()#` which pulls `prc.seoMeta` and delegates
+ * back here — so the rendering contract lives in one place.
+ *
+ * Not wired into markup generation in this chunk; the
+ * `SeoMetaInterceptor` populates `prc.seoMeta` per request and
+ * the theme helper renders it. 7.B+ will slot individual fields
+ * (robots, default og_image, etc.) behind the settings service.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox" inject="wirebox";
+    property name="log"     inject="logbox:logger:{this}";
+
+    // --------------------------------------------------------------------
+    // Builders — one per page type
+    // --------------------------------------------------------------------
+
+    /**
+     * Build meta for a single post render (`Blog.show` — post type
+     * "post"). Populates Article JSON-LD using the author + primary
+     * category (first by path, same ordering the template uses).
+     */
+    struct function buildForPost(
+        required any    post,
+        required string authorName,
+                 array  categories = [],
+                 array  tags       = [],
+        required string baseUrl,
+                 string siteName   = "",
+                 string siteLocale = "en_US"
+    ) {
+        var slug        = arguments.post.getSlug();
+        var canonical   = arguments.baseUrl & "/blog/" & slug;
+        var title       = truncateTitle( firstNonEmpty( [
+            arguments.post.getSeoTitle() ?: "",
+            arguments.post.getTitle()    ?: ""
+        ] ) );
+        var description = truncateDescription( firstNonEmpty( [
+            arguments.post.getSeoDescription() ?: "",
+            arguments.post.getExcerpt() ?: "",
+            stripMarkdownLight( arguments.post.getBodyMarkdown() ?: "" )
+        ] ) );
+
+        var robots    = robotsFor( arguments.post );
+        var imageUrl  = ogImageForPost( arguments.post );
+
+        var og = {
+            "title"       : title,
+            "description" : description,
+            "type"        : "article",
+            "url"         : canonical,
+            "site_name"   : arguments.siteName,
+            "locale"      : arguments.siteLocale
+        };
+        if ( len( imageUrl ) ) og[ "image" ] = imageUrl;
+        if ( len( arguments.authorName ) ) og[ "article_author" ] = arguments.authorName;
+
+        var tw = {
+            "card"        : len( imageUrl ) ? "summary_large_image" : "summary",
+            "title"       : title,
+            "description" : description
+        };
+        if ( len( imageUrl ) ) tw[ "image" ] = imageUrl;
+
+        var jsonLd = [
+            buildArticleJsonLd(
+                post        = arguments.post,
+                authorName  = arguments.authorName,
+                canonical   = canonical,
+                imageUrl    = imageUrl,
+                siteName    = arguments.siteName,
+                description = description
+            )
+        ];
+        if ( arguments.categories.len() ) {
+            jsonLd.append( buildBreadcrumbsForPost( arguments.post, arguments.categories, arguments.baseUrl ) );
+        }
+
+        return {
+            "title"       : title,
+            "description" : description,
+            "canonical"   : canonical,
+            "robots"      : robots,
+            "og"          : og,
+            "twitter"     : tw,
+            "jsonLd"      : jsonLd,
+            "links"       : [
+                { "rel" : "alternate", "type" : "application/rss+xml", "href" : arguments.baseUrl & "/feed.xml" }
+            ]
+        };
+    }
+
+    /**
+     * Build meta for a CMS page — `/`{slug}`. Uses WebPage JSON-LD
+     * rather than Article.
+     */
+    struct function buildForPage(
+        required any    post,
+        required string baseUrl,
+                 string siteName   = "",
+                 string siteLocale = "en_US"
+    ) {
+        var canonical   = arguments.baseUrl & "/" & arguments.post.getSlug();
+        var title       = truncateTitle( firstNonEmpty( [
+            arguments.post.getSeoTitle() ?: "",
+            arguments.post.getTitle()    ?: ""
+        ] ) );
+        var description = truncateDescription( firstNonEmpty( [
+            arguments.post.getSeoDescription() ?: "",
+            arguments.post.getExcerpt() ?: "",
+            stripMarkdownLight( arguments.post.getBodyMarkdown() ?: "" )
+        ] ) );
+
+        var robots   = robotsFor( arguments.post );
+        var imageUrl = ogImageForPost( arguments.post );
+
+        var og = {
+            "title"       : title,
+            "description" : description,
+            "type"        : "website",
+            "url"         : canonical,
+            "site_name"   : arguments.siteName,
+            "locale"      : arguments.siteLocale
+        };
+        if ( len( imageUrl ) ) og[ "image" ] = imageUrl;
+
+        var tw = {
+            "card"        : len( imageUrl ) ? "summary_large_image" : "summary",
+            "title"       : title,
+            "description" : description
+        };
+        if ( len( imageUrl ) ) tw[ "image" ] = imageUrl;
+
+        return {
+            "title"       : title,
+            "description" : description,
+            "canonical"   : canonical,
+            "robots"      : robots,
+            "og"          : og,
+            "twitter"     : tw,
+            "jsonLd"      : [ {
+                "@context"    : "https://schema.org",
+                "@type"       : "WebPage",
+                "name"        : title,
+                "description" : description,
+                "url"         : canonical
+            } ],
+            "links"       : []
+        };
+    }
+
+    /**
+     * Build meta for any list / archive page — blog index,
+     * category, tag, author, or date archive. Caller passes the
+     * resolved title / description / canonical + optional
+     * breadcrumb path.
+     */
+    struct function buildForArchive(
+        required string title,
+        required string description,
+        required string canonical,
+                 array  breadcrumbs = [],
+        required string baseUrl,
+                 string siteName    = "",
+                 string siteLocale  = "en_US",
+                 string robots      = "index, follow"
+    ) {
+        var og = {
+            "title"       : arguments.title,
+            "description" : arguments.description,
+            "type"        : "website",
+            "url"         : arguments.canonical,
+            "site_name"   : arguments.siteName,
+            "locale"      : arguments.siteLocale
+        };
+        var tw = {
+            "card"        : "summary",
+            "title"       : arguments.title,
+            "description" : arguments.description
+        };
+
+        var jsonLd = [];
+        if ( arguments.breadcrumbs.len() ) {
+            jsonLd.append( buildBreadcrumbsFromCrumbs( arguments.breadcrumbs, arguments.baseUrl ) );
+        }
+
+        return {
+            "title"       : arguments.title,
+            "description" : arguments.description,
+            "canonical"   : arguments.canonical,
+            "robots"      : arguments.robots,
+            "og"          : og,
+            "twitter"     : tw,
+            "jsonLd"      : jsonLd,
+            "links"       : [
+                { "rel" : "alternate", "type" : "application/rss+xml", "href" : arguments.baseUrl & "/feed.xml" }
+            ]
+        };
+    }
+
+    /**
+     * Build meta for the site root (`/`). Emits WebSite JSON-LD
+     * with a SearchAction so Google's sitelinks search box can
+     * populate. Canonical is bare `/`.
+     */
+    struct function buildForHome(
+        required string baseUrl,
+                 string siteName        = "",
+                 string siteDescription = "",
+                 string siteLocale      = "en_US"
+    ) {
+        var canonical = arguments.baseUrl & "/";
+
+        var og = {
+            "title"       : arguments.siteName,
+            "description" : arguments.siteDescription,
+            "type"        : "website",
+            "url"         : canonical,
+            "site_name"   : arguments.siteName,
+            "locale"      : arguments.siteLocale
+        };
+        var tw = {
+            "card"        : "summary",
+            "title"       : arguments.siteName,
+            "description" : arguments.siteDescription
+        };
+
+        var webSiteLd = {
+            "@context" : "https://schema.org",
+            "@type"    : "WebSite",
+            "name"     : arguments.siteName,
+            "url"      : canonical
+        };
+        if ( len( arguments.siteDescription ) ) webSiteLd[ "description" ] = arguments.siteDescription;
+        webSiteLd[ "potentialAction" ] = {
+            "@type"       : "SearchAction",
+            "target"      : {
+                "@type"       : "EntryPoint",
+                "urlTemplate" : arguments.baseUrl & "/search?q={search_term_string}"
+            },
+            "query-input" : "required name=search_term_string"
+        };
+
+        return {
+            "title"       : arguments.siteName,
+            "description" : arguments.siteDescription,
+            "canonical"   : canonical,
+            "robots"      : "index, follow",
+            "og"          : og,
+            "twitter"     : tw,
+            "jsonLd"      : [ webSiteLd ],
+            "links"       : [
+                { "rel" : "alternate", "type" : "application/rss+xml", "href" : arguments.baseUrl & "/feed.xml" }
+            ]
+        };
+    }
+
+    /**
+     * 404 page — always noindex (Google explicitly recommends
+     * this so 404s don't end up in SERPs).
+     */
+    struct function buildForNotFound( required string baseUrl, string siteName = "" ) {
+        return {
+            "title"       : "Not Found",
+            "description" : "The requested page could not be found.",
+            "canonical"   : arguments.baseUrl,
+            "robots"      : "noindex, nofollow",
+            "og"          : { "type" : "website", "site_name" : arguments.siteName },
+            "twitter"     : { "card" : "summary" },
+            "jsonLd"      : [],
+            "links"       : []
+        };
+    }
+
+    // --------------------------------------------------------------------
+    // Rendering
+    // --------------------------------------------------------------------
+
+    /**
+     * Turn the meta struct into the HTML fragment that lives
+     * inside `<head>`. Emits in a stable order (title, meta
+     * description / canonical / robots, OG block, Twitter block,
+     * links, JSON-LD) so a site's head stays predictable — some
+     * SEO tooling parses by position.
+     *
+     * Everything user-supplied flows through encoder BIFs; JSON-LD
+     * goes through `jsonSerialize` which handles string escaping.
+     */
+    string function renderHead( required struct meta ) {
+        var b = createObject( "java", "java.lang.StringBuilder" ).init();
+        var nl = char( 10 );
+
+        b.append( '<title>' & encodeForHTML( arguments.meta.title ?: "" ) & '</title>' & nl );
+        if ( len( arguments.meta.description ?: "" ) ) {
+            b.append( '<meta name="description" content="' & encodeForHTMLAttribute( arguments.meta.description ) & '">' & nl );
+        }
+        if ( len( arguments.meta.canonical ?: "" ) ) {
+            b.append( '<link rel="canonical" href="' & attrSafe( arguments.meta.canonical ) & '">' & nl );
+        }
+        if ( len( arguments.meta.robots ?: "" ) ) {
+            b.append( '<meta name="robots" content="' & attrSafe( arguments.meta.robots ) & '">' & nl );
+        }
+
+        // OpenGraph. Keys are known tokens (type/title/url/image/...);
+        // values split: URL-ish keys (url, image, *_url) get the light
+        // attrSafe encoder so URLs stay readable, prose keys keep the
+        // aggressive ESAPI encoder.
+        if ( isStruct( arguments.meta.og ?: "" ) ) {
+            for ( var k in structKeyArray( arguments.meta.og ) ) {
+                var v = arguments.meta.og[ k ];
+                if ( !isSimpleValue( v ) || !len( v ) ) continue;
+                var encoded = isUrlishOgKey( k ) ? attrSafe( v ) : encodeForHTMLAttribute( v );
+                b.append( '<meta property="og:' & attrSafe( k ) & '" content="' & encoded & '">' & nl );
+            }
+        }
+
+        // Twitter Card — same split as OG.
+        if ( isStruct( arguments.meta.twitter ?: "" ) ) {
+            for ( var k in structKeyArray( arguments.meta.twitter ) ) {
+                var v = arguments.meta.twitter[ k ];
+                if ( !isSimpleValue( v ) || !len( v ) ) continue;
+                var encoded = isUrlishTwitterKey( k ) ? attrSafe( v ) : encodeForHTMLAttribute( v );
+                b.append( '<meta name="twitter:' & attrSafe( k ) & '" content="' & encoded & '">' & nl );
+            }
+        }
+
+        // Additional <link> elements (feeds, etc.) — rel / type / href
+        // are all structured tokens or URLs.
+        if ( isArray( arguments.meta.links ?: "" ) ) {
+            for ( var l in arguments.meta.links ) {
+                if ( !isStruct( l ) || !len( l.href ?: "" ) ) continue;
+                var typeAttr = len( l.type ?: "" ) ? ( ' type="' & attrSafe( l.type ) & '"' ) : "";
+                b.append( '<link rel="' & attrSafe( l.rel ?: "" ) & '"' & typeAttr
+                    & ' href="' & attrSafe( l.href ) & '">' & nl );
+            }
+        }
+
+        // JSON-LD — one <script> tag per item.
+        if ( isArray( arguments.meta.jsonLd ?: "" ) ) {
+            for ( var ld in arguments.meta.jsonLd ) {
+                if ( !isStruct( ld ) || structIsEmpty( ld ) ) continue;
+                b.append( '<script type="application/ld+json">' & jsonSerialize( ld ) & '</script>' & nl );
+            }
+        }
+
+        return b.toString();
+    }
+
+    // --------------------------------------------------------------------
+    // Private helpers
+    // --------------------------------------------------------------------
+
+    /**
+     * Per-post robots directive. `allow_indexing = 0` → noindex,
+     * otherwise the default "index, follow". Draft/pending/
+     * scheduled/trashed posts should never render publicly in the
+     * first place, but if they somehow do, noindex them.
+     */
+    private string function robotsFor( required any post ) {
+        var status = arguments.post.getStatus() ?: "";
+        if ( status != "published" ) return "noindex, nofollow";
+        var allow = arguments.post.getAllowIndexing();
+        if ( !isNull( allow ) && !allow ) return "noindex, nofollow";
+        return "index, follow";
+    }
+
+    /**
+     * OG image URL for a post: post.og_image_id → post
+     * .featured_media_id → empty. Phase 7.D will extend this with
+     * category + settings fallbacks + Playwright-rendered default.
+     */
+    private string function ogImageForPost( required any post ) {
+        var candidateId = arguments.post.getOgImageId() ?: "";
+        if ( !len( candidateId ?: "" ) ) candidateId = arguments.post.getFeaturedMediaId() ?: "";
+        if ( !len( candidateId ?: "" ) ) return "";
+
+        try {
+            var media = variables.wirebox.getInstance( "Media" ).find( candidateId );
+            if ( isNull( media ) ) return "";
+            return variables.wirebox.getInstance( "MediaService" ).urlFor( media );
+        }
+        catch ( any e ) {
+            return "";
+        }
+    }
+
+    /**
+     * schema.org Article JSON-LD for a published post. `author`
+     * becomes a Person node; published_at + updated_at go in
+     * ISO-8601 form.
+     */
+    private struct function buildArticleJsonLd(
+        required any    post,
+        required string authorName,
+        required string canonical,
+        required string imageUrl,
+        required string siteName,
+        required string description
+    ) {
+        var ld = {
+            "@context"      : "https://schema.org",
+            "@type"         : "Article",
+            "headline"      : arguments.post.getTitle(),
+            "mainEntityOfPage" : {
+                "@type" : "WebPage",
+                "@id"   : arguments.canonical
+            },
+            "url"           : arguments.canonical
+        };
+        if ( len( arguments.description ) ) ld[ "description" ] = arguments.description;
+        if ( len( arguments.imageUrl )    ) ld[ "image"       ] = arguments.imageUrl;
+
+        if ( len( arguments.authorName ) ) {
+            ld[ "author" ] = {
+                "@type" : "Person",
+                "name"  : arguments.authorName
+            };
+        }
+        if ( len( arguments.siteName ) ) {
+            ld[ "publisher" ] = {
+                "@type" : "Organization",
+                "name"  : arguments.siteName
+            };
+        }
+
+        var publishedAt = arguments.post.getPublishedAt();
+        if ( !isNull( publishedAt ) && len( publishedAt ?: "" ) ) {
+            ld[ "datePublished" ] = dateTimeFormat( publishedAt, "iso" );
+        }
+        var updatedAt = arguments.post.getUpdatedAt();
+        if ( !isNull( updatedAt ) && len( updatedAt ?: "" ) ) {
+            ld[ "dateModified" ] = dateTimeFormat( updatedAt, "iso" );
+        }
+
+        return ld;
+    }
+
+    /**
+     * BreadcrumbList JSON-LD rooted at Home → Blog → <primary
+     * category path> → <post>. Primary category is the first
+     * entry in the passed array (caller sorts by `path` asc, so
+     * shallowest ancestor first).
+     */
+    private struct function buildBreadcrumbsForPost(
+        required any   post,
+        required array categories,
+        required string baseUrl
+    ) {
+        var items = [
+            { "@type" : "ListItem", "position" : 1, "name" : "Home", "item" : arguments.baseUrl & "/" },
+            { "@type" : "ListItem", "position" : 2, "name" : "Blog", "item" : arguments.baseUrl & "/blog" }
+        ];
+        var pos = 3;
+        var primaryCat = arguments.categories[ 1 ];
+        if ( isStruct( primaryCat ) && len( primaryCat.slug ?: "" ) ) {
+            items.append( {
+                "@type"    : "ListItem",
+                "position" : pos,
+                "name"     : primaryCat.name ?: primaryCat.slug,
+                "item"     : arguments.baseUrl & "/category/" & primaryCat.slug
+            } );
+            pos++;
+        }
+        items.append( {
+            "@type"    : "ListItem",
+            "position" : pos,
+            "name"     : arguments.post.getTitle(),
+            "item"     : arguments.baseUrl & "/blog/" & arguments.post.getSlug()
+        } );
+
+        return {
+            "@context"        : "https://schema.org",
+            "@type"           : "BreadcrumbList",
+            "itemListElement" : items
+        };
+    }
+
+    /**
+     * BreadcrumbList JSON-LD from the generic `breadcrumbs` array
+     * handlers build for archive pages. Each entry has `{ label,
+     * url }`; positions are 1-indexed starting from Home.
+     */
+    private struct function buildBreadcrumbsFromCrumbs( required array crumbs, required string baseUrl ) {
+        var items = [ { "@type" : "ListItem", "position" : 1, "name" : "Home", "item" : arguments.baseUrl & "/" } ];
+        var pos = 2;
+        for ( var c in arguments.crumbs ) {
+            if ( !isStruct( c ) || !len( c.url ?: "" ) ) continue;
+            items.append( {
+                "@type"    : "ListItem",
+                "position" : pos,
+                "name"     : c.label ?: c.url,
+                "item"     : left( c.url, 4 ) == "http" ? c.url : ( arguments.baseUrl & c.url )
+            } );
+            pos++;
+        }
+        return {
+            "@context"        : "https://schema.org",
+            "@type"           : "BreadcrumbList",
+            "itemListElement" : items
+        };
+    }
+
+    /**
+     * Clip a title at 60 chars (Google's typical SERP limit).
+     * Word-boundary aware — never cuts mid-word.
+     */
+    private string function truncateTitle( required string raw ) {
+        return clipAtWord( arguments.raw, 60 );
+    }
+
+    /**
+     * Clip a description at 160 chars (SERP snippet default).
+     */
+    private string function truncateDescription( required string raw ) {
+        return clipAtWord( arguments.raw, 160 );
+    }
+
+    private string function clipAtWord( required string text, required numeric max ) {
+        var t = trim( arguments.text );
+        if ( len( t ) <= arguments.max ) return t;
+        var clipped = left( t, arguments.max );
+        var lastSpace = clipped.listLastNoCase( " " );
+        if ( len( lastSpace ) && len( clipped ) > len( lastSpace ) + 10 ) {
+            // Only step back to the last space if doing so doesn't
+            // lose more than 10 trailing characters.
+            clipped = left( t, len( clipped ) - len( lastSpace ) - 1 );
+        }
+        return reReplace( clipped, "\s+$", "", "all" ) & "…";
+    }
+
+    /**
+     * Lightly strip markdown fences + common inline syntax so the
+     * body can be used as a fallback meta description when neither
+     * `seo_description` nor `excerpt` are populated.
+     *
+     * Not a full renderer — just good enough to produce a plain-
+     * text paragraph-ish string. Image markup, headings, lists,
+     * and formatting markers are dropped; the remaining text is
+     * collapsed to single-spaced.
+     */
+    private string function stripMarkdownLight( required string md ) {
+        var s = arguments.md;
+        s = reReplace( s, "`{3}[^`]*`{3}",      "",  "all" );   // fenced code blocks
+        s = reReplace( s, "^##{1,6}\s+",        "",  "all" );   // heading markers
+        s = reReplace( s, "!?\[([^\]]*)\]\([^)]*\)", "\1", "all" ); // links / images
+        s = reReplace( s, "[*_`>~##]",           "",  "all" );   // inline formatting markers
+        s = reReplace( s, "\s+",                 " ", "all" );   // collapse whitespace
+        return trim( s );
+    }
+
+    private string function firstNonEmpty( required array candidates ) {
+        for ( var c in arguments.candidates ) {
+            if ( isSimpleValue( c ) && len( trim( c ) ) ) return trim( c );
+        }
+        return "";
+    }
+
+    /**
+     * Minimal attribute encoder for trusted structured tokens —
+     * URLs, MIME types, fixed keywords like "alternate" or
+     * "summary". `encodeForHTMLAttribute` is too aggressive here:
+     * it turns `application/rss+xml` into
+     * `application&##x2f;rss&##x2b;xml`, valid HTML but useless
+     * for downstream tools that substring-match the source
+     * (feed readers, SEO crawlers). We only guard the chars that
+     * can break out of a double-quoted attribute: `&`, `"`, `<`,
+     * `>`. Prose values that might carry arbitrary user input
+     * (title, description, og:title) still go through
+     * `encodeForHTMLAttribute`.
+     */
+    /**
+     * OG keys whose values are URLs (or URL-ish tokens like a
+     * locale identifier `en_US`). Keeps percent-encoded URLs
+     * readable in the rendered HTML source.
+     */
+    private boolean function isUrlishOgKey( required string key ) {
+        var k = lCase( arguments.key );
+        if ( k == "url" || k == "image" || k == "locale" || k == "type" ) return true;
+        return right( k, 4 ) == "_url" || right( k, 6 ) == "_image" || right( k, 7 ) == "_secure";
+    }
+
+    /**
+     * Twitter Card keys whose values are URLs or fixed tokens.
+     */
+    private boolean function isUrlishTwitterKey( required string key ) {
+        var k = lCase( arguments.key );
+        if ( k == "card" || k == "site" || k == "creator" || k == "image" || k == "url" ) return true;
+        return right( k, 4 ) == "_url" || right( k, 6 ) == "_image";
+    }
+
+    private string function attrSafe( required string raw ) {
+        var s = arguments.raw;
+        s = replace( s, "&", "&amp;",  "all" );
+        s = replace( s, """", "&quot;", "all" );
+        s = replace( s, "<", "&lt;",   "all" );
+        s = replace( s, ">", "&gt;",   "all" );
+        return s;
+    }
+
+}

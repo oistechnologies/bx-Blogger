@@ -98,4 +98,17 @@
             "nextUrl"     : nextUrl
         };
     }
+
+    /**
+     * Phase 7.A — render the SEO meta + JSON-LD fragment for a
+     * theme layout's `<head>`. `prc.seoMeta` is populated per
+     * request by `SeoMetaInterceptor`; if it's absent (should not
+     * happen on a public page) we emit nothing rather than a
+     * half-baked head. Themes opt in by dropping
+     * `#seoHead( prc )#` into their `<head>` element.
+     */
+    function seoHead( required any prc ) {
+        if ( !structKeyExists( arguments.prc, "seoMeta" ) || !isStruct( arguments.prc.seoMeta ) ) return "";
+        return getInstance( "SeoService" ).renderHead( arguments.prc.seoMeta );
+    }
 </bx:script>
