@@ -21,7 +21,15 @@
 </bx:script>
 
 <div class="d-flex justify-content-between align-items-center mb-4">
-    <h1 class="h3 mb-0">Welcome back, #encodeForHTML( prc.user.getDisplayName() )#</h1>
+    <div class="d-flex align-items-center gap-3">
+        <img src="/includes/public/branding/logo-mark-light.png"
+             srcset="/includes/public/branding/logo-mark-light.png 1x, /includes/public/branding/logo-mark-light@2x.png 2x"
+             alt=""
+             width="48"
+             height="48"
+             class="flex-shrink-0">
+        <h1 class="h3 mb-0">Welcome back, #encodeForHTML( prc.user.getDisplayName() )#</h1>
+    </div>
 </div>
 
 <div class="row g-3 mb-4">
