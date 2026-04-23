@@ -1,0 +1,59 @@
+/**
+ * bx-Blogger — WarmPageCacheJobSpec (Phase 6.G)
+ *
+ * Exercises the HTTP-warm loop in isolation. PageCache storage
+ * behavior is already covered by PageCacheServiceSpec +
+ * PageCacheInterceptor integration tests; this spec just proves
+ * the warm job visits the expected URLs and degrades cleanly
+ * when a URL is unreachable.
+ *
+ * Calls `handle()` directly rather than dispatching via cbq so
+ * we can assert on the per-URL counters the method returns.
+ * Dispatch semantics are covered by SendEmailJobSpec /
+ * GenerateThumbnailsJobSpec already.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function run() {
+        describe( "WarmPageCacheJob", function() {
+
+            it( "visits home + /blog + N recent posts and counts successes", function() {
+                // handle() returns `{ warmed, failed, total }`. Dev
+                // app is up on localhost:8080 — home and /blog always
+                // respond 200, so warmed should equal total.
+                var job = getInstance( "WarmPageCacheJob" );
+                job.setProperties( {
+                    "baseUrl" : "http://localhost:8080",
+                    "topN"    : 2
+                } );
+                var result = job.handle();
+
+                expect( result.total ).toBeGTE( 2, "always at least home + /blog" );
+                expect( result.warmed ).toBe( result.total, "every live URL warmed" );
+                expect( result.failed ).toBe( 0 );
+            } );
+
+            it( "counts unreachable URLs as failures without throwing", function() {
+                // Point at a port that's definitely not listening so
+                // Java HttpClient throws on connect. The catch path
+                // must NOT propagate.
+                var job = getInstance( "WarmPageCacheJob" );
+                job.setProperties( {
+                    "baseUrl" : "http://127.0.0.1:1",
+                    "topN"    : 0   // just home + /blog
+                } );
+
+                var threw = false;
+                var result = "";
+                try { result = job.handle(); }
+                catch ( any e ) { threw = true; }
+
+                expect( threw ).toBeFalse();
+                expect( result.failed ).toBeGTE( 1, "connection refusals land in the failure counter" );
+                expect( result.warmed ).toBe( 0 );
+            } );
+
+        } );
+    }
+
+}

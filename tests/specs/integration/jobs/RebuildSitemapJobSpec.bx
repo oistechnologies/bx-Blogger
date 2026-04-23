@@ -1,0 +1,82 @@
+/**
+ * bx-Blogger — RebuildSitemapJobSpec (Phase 6.G)
+ *
+ * Exercises the cache-invalidate + rebuild path. SitemapService is
+ * already spec'd — this file just proves the job wires through
+ * correctly.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.cache       = getInstance( "cachebox:default" );
+        variables.sitemapSvc  = getInstance( "SitemapService" );
+    }
+
+    function afterAll() {
+        try {
+            getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "cbq_jobs" ).where( "queue", "default" ).delete();
+        }
+        catch ( any e ) {}
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "RebuildSitemapJob", function() {
+
+            beforeEach( function() {
+                variables.sitemapSvc.invalidate();
+            } );
+
+            it( "populates the sitemap cache on a fresh call", function() {
+                var key = "sitemap:http://spec.local";
+                expect( isNull( variables.cache.get( key ) ) ).toBeTrue( "cache empty before job" );
+
+                getInstance( "RebuildSitemapJob" )
+                    .onConnection( "sync" )
+                    .setProperties( { "baseUrl" : "http://spec.local" } )
+                    .dispatch();
+
+                var cached = variables.cache.get( key );
+                expect( isNull( cached ) ).toBeFalse();
+                expect( cached ).toInclude( "<urlset" );
+                expect( cached ).toInclude( "http://spec.local/" );
+            } );
+
+            it( "refreshes a stale cache entry", function() {
+                var key = "sitemap:http://spec.local";
+                // Seed a stale value manually; the job should replace it.
+                variables.cache.set( key, "<?xml version='1.0'?><stale/>", 60, 0 );
+
+                getInstance( "RebuildSitemapJob" )
+                    .onConnection( "sync" )
+                    .setProperties( { "baseUrl" : "http://spec.local" } )
+                    .dispatch();
+
+                var cached = variables.cache.get( key );
+                expect( cached ).notToInclude( "stale" );
+                expect( cached ).toInclude( "<urlset" );
+            } );
+
+            it( "falls back to APP_URL when baseUrl is omitted", function() {
+                // With no explicit baseUrl the job reads APP_URL from
+                // env. Whatever is configured at spec time becomes the
+                // cache key — we only need to assert SOMETHING landed.
+                getInstance( "RebuildSitemapJob" )
+                    .onConnection( "sync" )
+                    .setProperties( {} )
+                    .dispatch();
+
+                // Any sitemap: key counts as proof — don't assume
+                // the test env has APP_URL pointing at a specific host.
+                var bucket = variables.cache.getKeys().filter( function( k ) {
+                    return left( k, 8 ) == "sitemap:";
+                } );
+                expect( bucket.len() ).toBeGTE( 1 );
+            } );
+
+        } );
+    }
+
+}

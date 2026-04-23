@@ -23,13 +23,18 @@ LABEL repository="https://github.com/mrigsby/bx-Blogger"
 # ${PORT} is provided by the base image (default 8080).
 ENV HEALTHCHECK_URI="http://127.0.0.1:${PORT}/__health"
 
-# 6.F — cwebp CLI for WebpConvertJob. Java ImageIO's stock writers don't
-# support WebP, and bundling a Java WebP JAR via cbjavaloader means
-# tracking yet another third-party artifact. Shelling out to the stock
-# `webp` Debian package is ~500KB and stable (libwebp is Google-
-# maintained).
+# Image + DB CLI tools for the Phase 6 job suite:
+#   - `webp` — cwebp CLI for WebpConvertJob (6.F). Java ImageIO doesn't
+#     ship a WebP writer and bundling a third-party Java WebP JAR adds
+#     maintenance overhead; libwebp's CLI is Google-maintained.
+#   - `default-mysql-client` — `mysqldump` for BackupDatabaseJob (6.G).
+#     Same logic: shelling out to the vendor client is cheaper than
+#     pulling in a JDBC-driven dump library and produces identical
+#     output to what an operator would get running the command by hand.
+#   - `gzip` — already in the base image, but listed here for clarity
+#     since BackupDatabaseJob pipes through it.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends webp \
+    && apt-get install -y --no-install-recommends webp default-mysql-client gzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the full project — .dockerignore filters out .git, DEV-NOTES, .env, etc.

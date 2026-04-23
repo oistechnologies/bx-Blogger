@@ -1,0 +1,58 @@
+/**
+ * bx-Blogger — RebuildSitemapJob (Phase 6.G / B20)
+ *
+ * Regenerates `/sitemap.xml` by invalidating SitemapService's cache
+ * and triggering a fresh build. Called two ways:
+ *   1. Scheduled hourly from `config/Scheduler.bx` so newly-
+ *      published content hits crawlers without waiting out the 60-
+ *      min cache TTL.
+ *   2. Manually via `.dispatch()` from admin tooling or the
+ *      `cacheInvalidate` hook when content changes dramatically
+ *      (theme switch, bulk import, etc.).
+ *
+ * `baseUrl` is optional — the job reads `APP_URL` from the
+ * environment when the caller doesn't pass one. Scheduled runs
+ * rely on that default; explicit `.dispatch()` calls can override
+ * (e.g., a multi-host setup rebuilding for each host).
+ *
+ * No-op if the site has no published content — SitemapService
+ * still produces a minimal sitemap with just the home + /blog
+ * entries. That's still worth caching (crawlers hit it hard).
+ */
+class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
+
+    function handle() {
+        var props   = variables.properties ?: {};
+        var baseUrl = structKeyExists( props, "baseUrl" ) && len( props.baseUrl )
+            ? props.baseUrl
+            : resolveBaseUrl();
+
+        var wirebox  = application.wireBox;
+        var sitemaps = wirebox.getInstance( "SitemapService" );
+
+        // Drop the cached entry first so `forBaseUrl` falls through
+        // to the build path. Eagerly rebuild so the next /sitemap.xml
+        // hit serves from the warmed cache instead of incurring the
+        // 100ms+ build on a live request.
+        sitemaps.invalidate();
+        var xml = sitemaps.forBaseUrl( baseUrl );
+
+        writeLog(
+            file = "bxblogger",
+            type = "information",
+            text = "RebuildSitemapJob: regenerated sitemap for " & baseUrl & " (" & len( xml ) & " bytes)"
+        );
+    }
+
+    /**
+     * Default base URL for scheduled runs. Pulled from the `APP_URL`
+     * env var (set in .env / .env.example); falls back to localhost
+     * so dev specs that don't have the full env don't throw.
+     */
+    private string function resolveBaseUrl() {
+        var fromEnv = getSystemSetting( "APP_URL", "" );
+        if ( len( fromEnv ) ) return fromEnv;
+        return "http://localhost:8080";
+    }
+
+}

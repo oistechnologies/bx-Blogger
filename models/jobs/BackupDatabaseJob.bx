@@ -1,0 +1,205 @@
+/**
+ * bx-Blogger — BackupDatabaseJob (Phase 6.G / A5)
+ *
+ * Nightly mysqldump of the app database, gzip-compressed, landing
+ * in `/var/backups/bx-blogger/` (mapped to the `backup-data`
+ * Docker named volume in dev; operator-supplied bind mount in
+ * prod). Scheduled daily at 02:00 via `config/Scheduler.bx`; also
+ * dispatchable manually for admin "take a backup now" tooling.
+ *
+ * Dump strategy: shell out to `mysqldump` → stream through
+ * `gzip` → write to disk. Single-statement transactional dump
+ * (`--single-transaction`) so the database isn't locked during
+ * the backup. `--no-tablespaces` dodges a MySQL 8.0+ permissions
+ * wrinkle that some managed providers impose. `--set-gtid-purged=
+ * OFF` keeps the output restore-safe on any install regardless
+ * of replication topology.
+ *
+ * Retention: keeps the most recent N files (default 30) and
+ * deletes older ones. Operators who need longer retention should
+ * snapshot the volume out-of-band; this job is the daily-working-
+ * set window, not the archive policy.
+ *
+ * Optional S3 sync: if `BACKUP_S3_BUCKET` env var is set, the
+ * produced file is uploaded to s3://<bucket>/<filename> via
+ * cbfs's S3 provider. Dev default leaves it empty, so backups
+ * stay local. Phase 8's GDPR work reuses the same S3 bucket
+ * for user-data exports.
+ *
+ * Non-request-thread rules apply — uses `writeLog`, resolves
+ * services via `application.wireBox`.
+ */
+class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
+
+    variables.defaultOutputDir = "/var/backups/bx-blogger";
+    variables.retentionCount   = 30;
+    variables.dumpTimeoutMs    = 10 * 60 * 1000;   // 10 min — sane for a blog-sized DB
+
+    function handle() {
+        var props     = variables.properties ?: {};
+        var outputDir = structKeyExists( props, "outputDir" ) && len( props.outputDir )
+            ? props.outputDir
+            : variables.defaultOutputDir;
+
+        // cbq reuses worker JVMs across jobs; ensure the backup
+        // directory exists on every run so a fresh volume doesn't
+        // need operator hand-holding before the first dump.
+        if ( !directoryExists( outputDir ) ) directoryCreate( outputDir, true );
+
+        var stamp    = dateTimeFormat( now(), "yyyy-mm-dd_HH-nn-ss" );
+        var dumpPath = outputDir & "/bx-blogger-" & stamp & ".sql.gz";
+
+        runDumpToFile( dumpPath );
+
+        var dumpSize = getFileInfo( dumpPath ).size;
+        writeLog(
+            file = "bxblogger",
+            type = "information",
+            text = "BackupDatabaseJob: wrote " & dumpPath & " (" & dumpSize & " bytes)"
+        );
+
+        pruneOldBackups( outputDir, variables.retentionCount );
+        maybeSyncToS3( dumpPath );
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    /**
+     * Run `mysqldump ... | gzip > outPath`. ProcessBuilder doesn't
+     * do shell pipelines, so we build a /bin/sh -c invocation that
+     * runs the whole pipe under one shell process. Wraps MYSQL_PWD
+     * into the environment rather than passing `--password=` on
+     * the command line, which would leak the password to anyone
+     * with `ps` visibility.
+     */
+    private void function runDumpToFile( required string outPath ) {
+        var dbHost = getSystemSetting( "DB_HOST",     "mysql" );
+        var dbPort = getSystemSetting( "DB_PORT",     "3306" );
+        var dbName = getSystemSetting( "DB_DATABASE", "bx_blogger" );
+        var dbUser = getSystemSetting( "DB_USERNAME", "root" );
+        var dbPass = getSystemSetting( "DB_PASSWORD", "" );
+
+        var cmd = "mysqldump"
+            & " --host=" & dbHost
+            & " --port=" & dbPort
+            & " --user=" & dbUser
+            & " --single-transaction"
+            & " --no-tablespaces"
+            & " --set-gtid-purged=OFF"
+            & " --default-character-set=utf8mb4"
+            & " " & dbName
+            & " | gzip -c > " & escapeShell( arguments.outPath );
+
+        var ProcessBuilder = createObject( "java", "java.lang.ProcessBuilder" );
+        var pb = ProcessBuilder.init( [ "/bin/sh", "-c", cmd ] );
+        pb.redirectErrorStream( javaCast( "boolean", true ) );
+
+        // MYSQL_PWD in env keeps the password off the command line
+        // (and thus out of ps, /proc, and any audit tooling).
+        var env = pb.environment();
+        env.put( "MYSQL_PWD", dbPass );
+
+        var proc = pb.start();
+        var finished = proc.waitFor( javaCast( "long", variables.dumpTimeoutMs ), createObject( "java", "java.util.concurrent.TimeUnit" ).MILLISECONDS );
+        if ( !finished ) {
+            proc.destroyForcibly();
+            throw(
+                type    = "bxBlogger.BackupDatabaseJob.Timeout",
+                message = "mysqldump did not finish within " & ( variables.dumpTimeoutMs / 1000 ) & "s."
+            );
+        }
+
+        if ( proc.exitValue() != 0 ) {
+            var stderr = "";
+            try {
+                var Scanner = createObject( "java", "java.util.Scanner" );
+                var s = Scanner.init( proc.getInputStream() ).useDelimiter( javaCast( "string", "\\A" ) );
+                stderr = s.hasNext() ? s.next() : "";
+            }
+            catch ( any readErr ) { /* best-effort */ }
+
+            throw(
+                type    = "bxBlogger.BackupDatabaseJob.DumpFailed",
+                message = "mysqldump exited " & proc.exitValue() & ": " & stderr
+            );
+        }
+    }
+
+    /**
+     * Keep the newest `keep` files; delete older ones. Files are
+     * sorted by filename (timestamped, so lex-sort == chrono-sort)
+     * rather than by mtime so a filesystem clock-skew doesn't
+     * corrupt the retention window.
+     */
+    private void function pruneOldBackups( required string dir, required numeric keep ) {
+        var list = directoryList(
+            arguments.dir,
+            false,
+            "name",
+            "*.sql.gz",
+            "name"   // sort by name (chrono via timestamp)
+        );
+
+        if ( list.len() <= arguments.keep ) return;
+
+        // Delete the oldest `len - keep` entries. directoryList returns
+        // ascending; oldest first.
+        var deleteCount = list.len() - arguments.keep;
+        for ( var i = 1; i <= deleteCount; i++ ) {
+            try { fileDelete( arguments.dir & "/" & list[ i ] ); }
+            catch ( any e ) {
+                writeLog(
+                    file = "bxblogger",
+                    type = "warning",
+                    text = "BackupDatabaseJob: could not prune " & list[ i ] & ": " & e.message
+                );
+            }
+        }
+    }
+
+    /**
+     * Upload the backup to S3 when `BACKUP_S3_BUCKET` is configured.
+     * Uses cbfs's S3 provider registered as the `backups` disk in
+     * config/Coldbox.bx (added in Phase 6.G when this job ships).
+     * Silent no-op if the bucket isn't set — local-only is a valid
+     * deployment.
+     */
+    private void function maybeSyncToS3( required string localPath ) {
+        var bucket = getSystemSetting( "BACKUP_S3_BUCKET", "" );
+        if ( !len( bucket ) ) return;
+
+        try {
+            var cbfs = application.wireBox.getInstance( "DiskService@cbfs" );
+            if ( !cbfs.has( "backups" ) ) return;
+
+            var disk = cbfs.get( "backups" );
+            var filename = listLast( arguments.localPath, "/" );
+            var Files = createObject( "java", "java.nio.file.Files" );
+            var Paths = createObject( "java", "java.nio.file.Paths" );
+            var bytes = Files.readAllBytes(
+                Paths.get( arguments.localPath, javaCast( "String[]", [] ) )
+            );
+            disk.create( path = filename, contents = bytes, overwrite = true );
+        }
+        catch ( any e ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "BackupDatabaseJob: S3 sync failed for " & arguments.localPath & ": " & e.message
+            );
+        }
+    }
+
+    /**
+     * Minimal shell-metacharacter escape for a filesystem path the
+     * operator controls. Wraps in single quotes + escapes any stray
+     * single quote. Keeps the path safe even if someone sneaks one
+     * into an env var.
+     */
+    private string function escapeShell( required string raw ) {
+        return "'" & replace( arguments.raw, "'", "'\\''", "all" ) & "'";
+    }
+
+}

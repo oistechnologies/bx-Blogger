@@ -1,86 +1,96 @@
 /**
  * bx-Blogger — Scheduled Tasks
  *
- * Phase 0: empty. Tasks registered in the phase that introduces their consumer:
- *   - Phase 6: ScheduledPostPublishTask, GenerateThumbnailsJob, BackupDatabaseJob,
- *              SitemapWarmingTask, NotificationDigestEmailJob
- *   - Phase 7: OgImageRefreshTask
- *   - Phase 11: NewsletterDigestTask
+ * ColdBox Scheduler configuration. Each task() entry registers a
+ * recurring executor that fires on the declared schedule (server
+ * local time — set via `setTimezone()` below).
+ *
+ * Phase 6.G tasks (this iteration):
+ *   - hourly         → rebuild sitemap + warm top-N page cache
+ *   - daily 02:00    → mysqldump backup
+ *
+ * Later phases fill in the rest:
+ *   - Phase 6.H      → RecordPostViewJob flush, SendNotificationDigestJob
+ *   - Phase 7 (B20)  → OG image refresh + per-year sitemap rebuild
+ *   - Phase 11       → NewsletterDigestTask
+ *   - Phase 8        → retention prune (audit_log, page_views, revisions)
+ *   - Phase 9        → weekly OPTIMIZE TABLE on heavy-write tables
+ *
+ * Tasks here dispatch a cbq job rather than doing real work inline —
+ * keeps the scheduler thread responsive (it's shared across tasks)
+ * and lets the retry / failure-logging pipeline that cbq already
+ * wraps jobs with also cover scheduled work.
+ *
+ * The tasks only make sense once their consumer ships, so new
+ * entries get uncommented/added in the chunk that needs them
+ * rather than stubbed out up front.
  */
 class {
 
-    /**
-     * Configure the ColdBox Scheduler
-     */
     function configure() {
-        /**
-         * --------------------------------------------------------------------------
-         * Configuration Methods
-         * --------------------------------------------------------------------------
-         * From here you can set global configurations for the scheduler
-         * - setTimezone( ) : change the timezone for ALL tasks
-         * - setExecutor( executorObject ) : change the executor if needed
-         * - setCacheName( "template" ) : Change the cachename for ALL tasks
-         * - setServerFixation( true ) : Set all tasks to run on one server
-         */
+        // Server-local time keeps "02:00" readable for ops without
+        // mental TZ arithmetic. Prod containers should run in the
+        // host's preferred TZ (usually UTC — revisit if that changes).
+        setTimezone( "UTC" );
 
+        // Hourly: rebuild the sitemap + warm the top-10 public URLs.
+        // Two separate tasks rather than a composite one so a failure
+        // in one doesn't block the other — cbq retries each job on its
+        // own attempt-counter.
+        task( "rebuild-sitemap-hourly" )
+            .call( function() {
+                getInstance( "RebuildSitemapJob" ).dispatch();
+            } )
+            .everyHour();
 
+        task( "warm-page-cache-hourly" )
+            .call( function() {
+                getInstance( "WarmPageCacheJob" ).dispatch();
+            } )
+            .everyHour();
 
-        /**
-         * --------------------------------------------------------------------------
-         * Register Scheduled Tasks
-         * --------------------------------------------------------------------------
-         * You register tasks with the task() method and get back a ColdBoxScheduledTask object
-         * that you can use to register your tasks configurations.
-         */
-
+        // Daily 02:00 — mysqldump backup. 2am is the common low-
+        // traffic slot on English-language blogs; adjust if the
+        // install's audience is elsewhere.
+        task( "backup-database-daily" )
+            .call( function() {
+                getInstance( "BackupDatabaseJob" ).dispatch();
+            } )
+            .everyDayAt( "02:00" );
     }
+
+    function onShutdown() {}
+    function onStartup() {}
 
     /**
-     * Called before the scheduler is going to be shutdown
+     * Called whenever ANY task fails. Lands a warning-severity admin
+     * notification so operators see the failure in the bell without
+     * having to scrape log files. Emails also fire if the channel
+     * is configured (see 6.D).
      */
-    function onShutdown(){
+    function onAnyTaskError( required task, required exception ) {
+        try {
+            getInstance( "NotificationService" ).notifyAllAdmins(
+                type     = "scheduled_task_failed",
+                title    = "Scheduled task failed: " & arguments.task.getName(),
+                body     = arguments.exception.message & char( 10 ) & ( arguments.exception.detail ?: "" ),
+                severity = "error",
+                channels = [ "db", "email" ]
+            );
+        }
+        catch ( any notifyErr ) {
+            // NotificationService might not be resolvable here if the
+            // scheduler fires before WireBox is fully warm. Swallow.
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "Scheduler onAnyTaskError notify failed: " & notifyErr.message
+            );
+        }
     }
 
-    /**
-     * Called after the scheduler has registered all schedules
-     */
-    function onStartup(){
-    }
-
-    /**
-     * Called whenever ANY task fails
-     *
-     * @task The task that got executed
-     * @exception The ColdFusion exception object
-     */
-    function onAnyTaskError( required task, required exception ){
-    }
-
-    /**
-     * Called whenever ANY task succeeds
-     *
-     * @task The task that got executed
-     * @result The result (if any) that the task produced
-     */
-    function onAnyTaskSuccess( required task, result ){
-    }
-
-    /**
-     * Called before ANY task runs
-     *
-     * @task The task about to be executed
-     */
-    function beforeAnyTask( required task ){
-    }
-
-    /**
-     * Called after ANY task runs
-     *
-     * @task The task that got executed
-     * @result The result (if any) that the task produced
-     */
-    function afterAnyTask( required task, result ){
-    }
+    function onAnyTaskSuccess( required task, result ) {}
+    function beforeAnyTask( required task ) {}
+    function afterAnyTask( required task, result ) {}
 
 }

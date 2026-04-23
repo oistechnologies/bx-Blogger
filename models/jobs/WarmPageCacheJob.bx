@@ -1,0 +1,141 @@
+/**
+ * bx-Blogger — WarmPageCacheJob (Phase 6.G)
+ *
+ * Primes `pageCache` by hitting the highest-traffic public URLs
+ * over HTTP. Runs on the hourly Scheduler tick (via
+ * `config/Scheduler.bx`) and on-demand after events that bulk-
+ * invalidate the cache (theme switch, post publish) so the next
+ * real visitor reads from a warm cache instead of waiting for
+ * the uncached render.
+ *
+ * Scope note: "top N by traffic" requires the `page_views` table
+ * that `RecordPostViewJob` will populate (Phase 6 later chunk).
+ * Until then, this job warms the N most-recently-published posts
+ * plus the home + /blog archive. Those cover ~80% of traffic on a
+ * typical blog; swapping in the traffic-driven list is a one-line
+ * query change once page_views has data.
+ *
+ * Invocation: standard `cbq` dispatch. Scheduled calls read
+ * `APP_URL` from the env. Manual `.dispatch()` calls can override
+ * via the `baseUrl` property (useful for multi-host setups and
+ * for specs that point at a mock server).
+ */
+class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
+
+    variables.defaultTopN = 10;
+    variables.warmTimeoutSeconds = 20;
+
+    function handle() {
+        var props   = variables.properties ?: {};
+        var baseUrl = structKeyExists( props, "baseUrl" ) && len( props.baseUrl )
+            ? props.baseUrl
+            : resolveBaseUrl();
+        var topN    = structKeyExists( props, "topN" ) && isNumeric( props.topN )
+            ? int( props.topN )
+            : variables.defaultTopN;
+
+        var paths = buildWarmList( topN );
+
+        // Java 11+ HttpClient — used directly rather than via hyper
+        // because hyper's `HyperRequest.setUrl()` chokes on simple
+        // URLs when called from a WireBox-managed job class (threw
+        // "Can't cast Struct to a string" inside parseOutQueryString
+        // during 6.G shake-out). The native client is lower-level but
+        // has predictable semantics and zero CFML-BIF-dispatch risk.
+        var HttpClient  = createObject( "java", "java.net.http.HttpClient" );
+        var HttpRequest = createObject( "java", "java.net.http.HttpRequest" );
+        var URI         = createObject( "java", "java.net.URI" );
+        var Duration    = createObject( "java", "java.time.Duration" );
+        var BodyHandlers = createObject( "java", "java.net.http.HttpResponse$BodyHandlers" );
+
+        var client = HttpClient.newBuilder()
+            .connectTimeout( Duration.ofSeconds( javaCast( "long", variables.warmTimeoutSeconds ) ) )
+            .build();
+
+        var warmed = 0;
+        var failed = 0;
+
+        // NOTE: use `targetUrl` (not `url`) — `url` is a reserved
+        // BoxLang scope name, and BoxLang silently resolves bare
+        // `url` references inside this method back to the URL scope
+        // struct instead of the local variable. The symptom was
+        // `URI.init( url )` throwing "No such constructor ... of
+        // types [[class ortus.boxlang.web.scopes.URLScope]]". See
+        // the "Reserved Scope Name Collisions" section of global
+        // CLAUDE.md.
+        for ( var path in paths ) {
+            var targetUrl = baseUrl & path;
+            try {
+                var req = HttpRequest.newBuilder()
+                    .uri( URI.init( targetUrl ) )
+                    .timeout( Duration.ofSeconds( javaCast( "long", variables.warmTimeoutSeconds ) ) )
+                    .GET()
+                    .build();
+                var res = client.send( req, BodyHandlers.discarding() );
+                var status = res.statusCode();
+                if ( status >= 200 && status < 400 ) {
+                    warmed++;
+                }
+                else {
+                    failed++;
+                    writeLog(
+                        file = "bxblogger",
+                        type = "warning",
+                        text = "WarmPageCacheJob: " & targetUrl & " returned " & status
+                    );
+                }
+            }
+            catch ( any e ) {
+                failed++;
+                try {
+                    writeLog(
+                        file = "bxblogger",
+                        type = "warning",
+                        text = "WarmPageCacheJob: " & targetUrl & " failed: " & toString( e.Message ?: "" )
+                    );
+                }
+                catch ( any logErr ) { /* swallow — failure count still tracks it */ }
+            }
+        }
+        writeLog(
+            file = "bxblogger",
+            type = "information",
+            text = "WarmPageCacheJob: warmed=" & warmed & " failed=" & failed & " total=" & paths.len() & " baseUrl=" & baseUrl
+        );
+
+        return { "warmed" : warmed, "failed" : failed, "total" : paths.len() };
+    }
+
+    /**
+     * The paths to warm. Home + /blog are always included — they're
+     * the two most-linked URLs on any site. The rest are the N most
+     * recently published posts as a proxy for "popular" until
+     * page_views data is available.
+     */
+    private array function buildWarmList( required numeric topN ) {
+        var paths = [ "/", "/blog" ];
+
+        var rows = application.wireBox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "posts" )
+            .select( [ "slug" ] )
+            .where( "post_type",  "post" )
+            .where( "status",     "published" )
+            .where( "visibility", "public" )
+            .whereNull( "deleted_at" )
+            .orderBy( "published_at", "desc" )
+            .limit( arguments.topN )
+            .get();
+
+        for ( var r in rows ) {
+            if ( len( r.slug ?: "" ) ) paths.append( "/blog/" & r.slug );
+        }
+        return paths;
+    }
+
+    private string function resolveBaseUrl() {
+        var fromEnv = getSystemSetting( "APP_URL", "" );
+        if ( len( fromEnv ) ) return fromEnv;
+        return "http://localhost:8080";
+    }
+
+}
