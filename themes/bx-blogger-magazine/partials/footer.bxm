@@ -1,9 +1,18 @@
 <bx:output>
 <footer class="border-top bg-body py-4 mt-5 site-footer">
-    <div class="container d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-2">
-        <p class="text-secondary small mb-0 letter-spaced">
-            &copy; #dateFormat( now(), "yyyy" )# #encodeForHTML( getSetting( "AppName" ) )#
-        </p>
+    <div class="container d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+        <div class="d-flex align-items-center gap-3">
+            <a href="/" class="d-inline-block">
+                <img src="/includes/public/branding/logo-dark.png"
+                     srcset="/includes/public/branding/logo-dark.png 1x, /includes/public/branding/logo-dark@2x.png 2x"
+                     alt="#encodeForHTMLAttribute( getSetting( "AppName" ) )#"
+                     height="36"
+                     style="width:auto;">
+            </a>
+            <p class="text-secondary small mb-0 letter-spaced">
+                &copy; #dateFormat( now(), "yyyy" )# #encodeForHTML( getSetting( "AppName" ) )#
+            </p>
+        </div>
         <p class="text-secondary small mb-0 text-uppercase letter-spaced">
             <a href="/feed.xml" class="link-secondary">RSS</a>
             &middot;
