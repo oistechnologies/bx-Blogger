@@ -395,19 +395,72 @@ class accessors="true" singleton {
     }
 
     /**
-     * OG image URL for a post: post.og_image_id → post
-     * .featured_media_id → empty. Phase 7.D will extend this with
-     * category + settings fallbacks + Playwright-rendered default.
+     * OG image URL for a post with the Phase-7.D fallback chain:
+     *
+     *   1. post.og_image_id             — author explicitly picked one
+     *   2. post.featured_media_id       — same image used on the site
+     *   3. first category's og_image_id — taxonomy-default branding
+     *   4. settings.site.default_og_image_id — site-wide fallback
+     *   5. empty (SeoService ends up emitting summary card, not
+     *      summary_large_image) — 7.D.2 replaces this with a
+     *      Java2D-rendered 1200×630 default keyed on post.contentVersion
+     *
+     * Each step short-circuits the next, so posts with a direct
+     * image cost one Media lookup and nothing else. Database reads
+     * for steps 3-4 only fire when the earlier candidates missed.
      */
     private string function ogImageForPost( required any post ) {
         var candidateId = arguments.post.getOgImageId() ?: "";
         if ( !len( candidateId ?: "" ) ) candidateId = arguments.post.getFeaturedMediaId() ?: "";
+        if ( !len( candidateId ?: "" ) ) candidateId = firstCategoryOgImageId( arguments.post );
+        if ( !len( candidateId ?: "" ) ) candidateId = siteDefaultOgImageId();
         if ( !len( candidateId ?: "" ) ) return "";
 
         try {
             var media = variables.wirebox.getInstance( "Media" ).find( candidateId );
             if ( isNull( media ) ) return "";
             return variables.wirebox.getInstance( "MediaService" ).urlFor( media );
+        }
+        catch ( any e ) {
+            return "";
+        }
+    }
+
+    /**
+     * Single indexed join to pick the OG image from the post's
+     * *first* category (alphabetized by `path` so the result is
+     * deterministic across multi-category posts). Returns empty
+     * string when none of the post's categories have an
+     * og_image_id. Private so the service stays the only place
+     * that encodes the category→post→og_image wiring.
+     */
+    private string function firstCategoryOgImageId( required any post ) {
+        try {
+            var row = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "post_categories" )
+                .join( "categories", "categories.id", "post_categories.category_id" )
+                .where( "post_categories.post_id", arguments.post.getId() )
+                .whereNotNull( "categories.og_image_id" )
+                .orderBy( "categories.path", "asc" )
+                .select( "categories.og_image_id AS og_image_id" )
+                .first();
+            if ( isNull( row ) || ( isStruct( row ) && structIsEmpty( row ) ) ) return "";
+            return row.og_image_id ?: "";
+        }
+        catch ( any e ) {
+            return "";
+        }
+    }
+
+    /**
+     * Read the sitewide default OG image id from the settings
+     * table. Empty when unset; the Phase-8 admin Settings → SEO
+     * tab will expose a media picker that writes this key.
+     */
+    private string function siteDefaultOgImageId() {
+        try {
+            var v = variables.wirebox.getInstance( "SettingService" ).get( "site.default_og_image_id", "" );
+            return val( v ) > 0 ? toString( val( v ) ) : "";
         }
         catch ( any e ) {
             return "";

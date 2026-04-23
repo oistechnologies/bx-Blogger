@@ -1,0 +1,151 @@
+/**
+ * bx-Blogger — OgImageFallbackSpec (Phase 7.D.1)
+ *
+ * Exercises the OG-image resolution chain inside
+ * `SeoService.buildForPost`:
+ *
+ *   post.og_image_id
+ *     → post.featured_media_id
+ *     → first category's og_image_id
+ *     → settings.site.default_og_image_id
+ *     → empty (→ 7.D.2 replaces this with a rendered default)
+ *
+ * The chain is exercised end-to-end through `buildForPost` so the
+ * spec catches any drift in how `ogImageForPost` is wired from the
+ * public surface (signature, argument order, etc.) — not just the
+ * internal helper. Each test sets up exactly one layer of the
+ * fallback so the assertion pins the chosen layer unambiguously.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc        = getInstance( "SeoService" );
+        variables.postSvc    = getInstance( "PostService" );
+        variables.Media      = getInstance( "Media" );
+        variables.mediaSvc   = getInstance( "MediaService" );
+        variables.settingSvc = getInstance( "SettingService" );
+    }
+
+    function afterAll() {
+        try {
+            // Boundary-cleanup handles posts/media/categories rows, but
+            // the site-default setting lives outside the `id > boundary`
+            // check — delete it explicitly so a spec failure doesn't
+            // leak the value into later specs in the same run.
+            variables.settingSvc.delete( "site.default_og_image_id" );
+        }
+        catch ( any e ) {}
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "SeoService OG image fallback chain", function() {
+
+            it( "uses post.og_image_id first", function() {
+                var author = createTestUser();
+                var media  = createMedia( author.getId() );
+                var post   = publishedPost( author.getId(), { "ogImageId" : media.getId() } );
+
+                var meta = svc.buildForPost( post = post, authorName = "A", baseUrl = "https://e.co", siteName = "E" );
+                expect( meta.og.image ?: "" ).toBe( mediaSvc.urlFor( media ) );
+                expect( meta.twitter.card ).toBe( "summary_large_image" );
+            } );
+
+            it( "falls back to featured_media_id when og_image_id is unset", function() {
+                var author = createTestUser();
+                var media  = createMedia( author.getId() );
+                var post   = publishedPost( author.getId(), { "featuredMediaId" : media.getId() } );
+
+                var meta = svc.buildForPost( post = post, authorName = "A", baseUrl = "https://e.co", siteName = "E" );
+                expect( meta.og.image ?: "" ).toBe( mediaSvc.urlFor( media ) );
+            } );
+
+            it( "falls back to the first category's og_image_id", function() {
+                var author   = createTestUser();
+                var media    = createMedia( author.getId() );
+                var category = createCategory( { "ogImageId" : media.getId() } );
+                var post     = publishedPost( author.getId(), {} );
+                attachCategory( post.getId(), category.getId() );
+
+                var meta = svc.buildForPost( post = post, authorName = "A", baseUrl = "https://e.co", siteName = "E" );
+                expect( meta.og.image ?: "" ).toBe( mediaSvc.urlFor( media ) );
+            } );
+
+            it( "falls back to the site-wide default_og_image_id setting", function() {
+                var author = createTestUser();
+                var media  = createMedia( author.getId() );
+                variables.settingSvc.set(
+                    key   = "site.default_og_image_id",
+                    value = media.getId(),
+                    type  = "int"
+                );
+
+                var post = publishedPost( author.getId(), {} );
+                var meta = svc.buildForPost( post = post, authorName = "A", baseUrl = "https://e.co", siteName = "E" );
+                expect( meta.og.image ?: "" ).toBe( mediaSvc.urlFor( media ) );
+            } );
+
+            it( "emits no image (summary card) when every layer is empty", function() {
+                var author = createTestUser();
+                variables.settingSvc.delete( "site.default_og_image_id" );
+
+                var post = publishedPost( author.getId(), {} );
+                var meta = svc.buildForPost( post = post, authorName = "A", baseUrl = "https://e.co", siteName = "E" );
+                expect( structKeyExists( meta.og, "image" ) ).toBeFalse( "no og:image" );
+                expect( meta.twitter.card ).toBe( "summary" );
+            } );
+
+        } );
+    }
+
+    // --------------------------------------------------------------------
+    // Fixtures
+    // --------------------------------------------------------------------
+
+    private any function publishedPost( required numeric authorId, required struct extraAttrs ) {
+        var attrs = {
+            "authorId"     : arguments.authorId,
+            "title"        : "OG fallback spec",
+            "slug"         : "ogfb-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+            "bodyMarkdown" : "Body."
+        };
+        structAppend( attrs, arguments.extraAttrs, true );
+        var post = variables.postSvc.create( attrs );
+        variables.postSvc.publish( post );
+        return post;
+    }
+
+    private any function createMedia( required numeric uploaderId ) {
+        return variables.Media.create( {
+            "uploaderId"       : arguments.uploaderId,
+            "disk"             : "local",
+            "path"             : "uploads/ogfb-" & createUUID() & ".png",
+            "filename"         : "og.png",
+            "originalFilename" : "og.png",
+            "mimeType"         : "image/png",
+            "sizeBytes"        : 1024,
+            "width"            : 1200,
+            "height"           : 630
+        } );
+    }
+
+    private any function createCategory( required struct attrs ) {
+        var Category = getInstance( "Category" );
+        var slug     = "cat-" & lCase( replace( createUUID(), "-", "", "all" ) );
+        var row      = {
+            "name" : "Cat " & slug,
+            "slug" : slug,
+            "path" : slug
+        };
+        structAppend( row, arguments.attrs, true );
+        return Category.create( row );
+    }
+
+    private void function attachCategory( required numeric postId, required numeric categoryId ) {
+        getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "post_categories" )
+            .insert( { "post_id" : arguments.postId, "category_id" : arguments.categoryId } );
+    }
+
+}
