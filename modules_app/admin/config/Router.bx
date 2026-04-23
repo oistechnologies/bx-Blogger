@@ -32,8 +32,10 @@ class {
         // (previously /account at the app root). Specific sub-routes
         // first so the base /admin/account GET/POST pair doesn't
         // swallow them.
-        route( "account/email"    ).to( "Account.updateEmail"    );
-        route( "account/password" ).to( "Account.updatePassword" );
+        route( "account/email"      ).to( "Account.updateEmail"   );
+        route( "account/password"   ).to( "Account.updatePassword" );
+        // Phase 8.D.1 — self-serve GDPR export (ZIP download).
+        route( "account/exportMyData" ).to( "Account.exportMyData" );
         route( "account" )
             .withAction( {
                 "GET"  : "show",

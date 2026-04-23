@@ -41,6 +41,45 @@ class extends="coldbox.system.EventHandler" {
     }
 
     /**
+     * GET /admin/account/exportMyData — Phase 8.D.1 self-serve GDPR
+     * export. Bundles the signed-in user's own data into a ZIP
+     * and streams it back. No `users.export_data` permission check
+     * — a user exporting their own data is a self-serve right
+     * that doesn't need admin privileges.
+     */
+    function exportMyData( event, rc, prc ) {
+        var user   = cbauth.getUser();
+        var bundle = userService.exportData( user );
+        streamBinaryDownload( event, bundle.bytes, bundle.filename, "application/zip" );
+    }
+
+    /**
+     * Write a binary payload directly to the servlet output
+     * stream as an attachment. ColdBox's `renderData` doesn't
+     * accept `type="binary"` in this runtime ("Invalid rendering
+     * type" on send); writing via the response output stream
+     * + `noExecution` is the idiomatic bypass.
+     */
+    private void function streamBinaryDownload(
+        required any    event,
+        required any    bytes,
+        required string filename,
+        required string contentType
+    ) {
+        arguments.event.setHTTPHeader(
+            name  = "Content-Disposition",
+            value = 'attachment; filename="' & arguments.filename & '"'
+        );
+        var response = getPageContext().getResponse();
+        response.setContentType( arguments.contentType );
+        response.setContentLength( javaCast( "int", arrayLen( arguments.bytes ) ) );
+        response.getOutputStream().write( arguments.bytes );
+        response.flushBuffer();
+        arguments.event.noExecution();
+        arguments.event.noRender();
+    }
+
+    /**
      * POST /admin/account — update display name.
      */
     function updateProfile( event, rc, prc ) {

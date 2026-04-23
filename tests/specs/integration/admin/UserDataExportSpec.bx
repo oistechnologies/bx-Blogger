@@ -1,0 +1,195 @@
+/**
+ * bx-Blogger — UserDataExportSpec (Phase 8.D.1 / B11)
+ *
+ * Covers `UserService.exportData()` + `dataSummaryFor()`:
+ *
+ *   - dataSummaryFor returns row counts per relevant table
+ *   - exportData returns `{ bytes, filename }` where bytes is a
+ *     valid ZIP containing the expected entries
+ *   - each JSON file inside the ZIP parses cleanly + includes the
+ *     expected user's rows
+ *   - filename includes a safe slug of the email + a date stamp
+ *
+ * ZIP verification goes through java.util.zip.ZipFile via a
+ * short-lived tmp-file roundtrip. BoxLang's
+ * `ByteArrayOutputStream.init()` is flaky inside spec closures
+ * (same class of BIF-dispatch quirk documented elsewhere in
+ * this repo); routing through ZipFile + `Files.readAllBytes`
+ * sidesteps it entirely.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.userSvc  = getInstance( "UserService" );
+        variables.postSvc  = getInstance( "PostService" );
+        variables.auditSvc = getInstance( "AuditLogService" );
+    }
+
+    function run() {
+        describe( "UserService GDPR export", function() {
+
+            describe( "dataSummaryFor()", function() {
+                it( "returns zero counts for a brand-new user", function() {
+                    var fresh = createTestUser();
+                    var s     = userSvc.dataSummaryFor( fresh );
+                    expect( s.posts ).toBe( 0 );
+                    expect( s.revisions ).toBe( 0 );
+                    expect( s.auditRows ).toBe( 0 );
+                    expect( s.media ).toBe( 0 );
+                } );
+
+                it( "counts posts + revisions + audit rows authored by the user", function() {
+                    var fixture = seedActiveUser();
+                    var s       = userSvc.dataSummaryFor( fixture.user );
+                    expect( s.posts ).toBeGTE( 1 );
+                    expect( s.revisions ).toBeGTE( 1 );
+                    expect( s.auditRows ).toBeGTE( 1 );
+                } );
+            } );
+
+            describe( "exportData()", function() {
+                it( "returns a filename with a date stamp + email slug", function() {
+                    var u = createTestUser( { "email" : "export-spec-" & createUUID() & "@bx-blogger.local" } );
+                    var bundle = userSvc.exportData( u );
+                    expect( bundle.filename ).toInclude( "bx-blogger-export-" );
+                    expect( bundle.filename contains dateFormat( now(), "yyyymmdd" ) ).toBeTrue();
+                    expect( bundle.filename ).toInclude( ".zip" );
+                } );
+
+                it( "produces a valid ZIP with the expected entry names", function() {
+                    var u       = createTestUser();
+                    var bundle  = userSvc.exportData( u );
+                    var entries = readZipEntries( bundle.bytes );
+                    expect( entries ).toInclude( "README.txt" );
+                    expect( entries ).toInclude( "profile.json" );
+                    expect( entries ).toInclude( "posts.json" );
+                    expect( entries ).toInclude( "revisions.json" );
+                    expect( entries ).toInclude( "audit_log.json" );
+                    expect( entries ).toInclude( "media_manifest.json" );
+                } );
+
+                it( "profile.json contains the user's id + email + role slugs", function() {
+                    var u = createTestUser(
+                        overrides = { "email" : "roleseed-" & createUUID() & "@bx-blogger.local" },
+                        roleSlug  = "author"
+                    );
+                    var contents = readZipContents( userSvc.exportData( u ).bytes );
+                    var profile  = jsonDeserialize( contents[ "profile.json" ] );
+                    expect( profile.id ).toBe( u.getId() );
+                    expect( profile.email ).toBe( u.getEmail() );
+                    expect( profile.roles ).toInclude( "author" );
+                } );
+
+                it( "posts.json + revisions.json + audit_log.json contain only this user's rows", function() {
+                    var fixture  = seedActiveUser();
+                    var contents = readZipContents( userSvc.exportData( fixture.user ).bytes );
+                    var posts    = jsonDeserialize( contents[ "posts.json" ] );
+                    var revs     = jsonDeserialize( contents[ "revisions.json" ] );
+                    var audit    = jsonDeserialize( contents[ "audit_log.json" ] );
+
+                    expect( arrayLen( posts ) ).toBeGTE( 1 );
+                    for ( var p in posts ) expect( val( p.author_id ) ).toBe( fixture.user.getId() );
+
+                    expect( arrayLen( revs ) ).toBeGTE( 1 );
+                    for ( var r in revs ) expect( val( r.editor_id ) ).toBe( fixture.user.getId() );
+
+                    expect( arrayLen( audit ) ).toBeGTE( 1 );
+                    for ( var a in audit ) expect( val( a.user_id ) ).toBe( fixture.user.getId() );
+                } );
+
+                it( "README.txt is plain text and mentions the user email", function() {
+                    var u        = createTestUser( { "email" : "readmecheck-" & createUUID() & "@bx-blogger.local" } );
+                    var contents = readZipContents( userSvc.exportData( u ).bytes );
+                    expect( contents[ "README.txt" ] ).toInclude( u.getEmail() );
+                    expect( contents[ "README.txt" ] ).toInclude( "bx-Blogger" );
+                } );
+            } );
+
+        } );
+    }
+
+    // --------------------------------------------------------------------
+    // Fixtures
+    // --------------------------------------------------------------------
+
+    private struct function seedActiveUser() {
+        var user = createTestUser( { "email" : "active-" & createUUID() & "@bx-blogger.local" } );
+        var post = postSvc.create( {
+            "authorId"     : user.getId(),
+            "title"        : "Export spec post",
+            "slug"         : "exp-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+            "bodyMarkdown" : "body"
+        } );
+        postSvc.publish( post = post, actorId = user.getId() );
+        // Publish writes `post.publish` audit row tied to the
+        // acting user. An explicit row is belt-and-suspenders in
+        // case the publish-side recording changes shape later.
+        auditSvc.record( action = "spec.audit.for.export", userId = user.getId() );
+        return { "user" : user, "post" : post };
+    }
+
+    // --------------------------------------------------------------------
+    // ZIP inspection — tmp-file roundtrip to sidestep BoxLang's
+    // ByteArrayOutputStream dispatch quirk in spec closures.
+    // --------------------------------------------------------------------
+
+    private array function readZipEntries( required any zipBytes ) {
+        var tmpPath = writeZipToTmp( arguments.zipBytes );
+        try {
+            var zf   = createObject( "java", "java.util.zip.ZipFile" ).init( tmpPath );
+            var out  = [];
+            try {
+                var iter = zf.entries();
+                while ( iter.hasMoreElements() ) {
+                    out.append( iter.nextElement().getName() );
+                }
+            }
+            finally {
+                zf.close();
+            }
+            return out;
+        }
+        finally {
+            try { fileDelete( tmpPath ); } catch ( any e ) {}
+        }
+    }
+
+    private struct function readZipContents( required any zipBytes ) {
+        var tmpPath = writeZipToTmp( arguments.zipBytes );
+        try {
+            var zf      = createObject( "java", "java.util.zip.ZipFile" ).init( tmpPath );
+            var Charset = createObject( "java", "java.nio.charset.StandardCharsets" );
+            var out     = {};
+            try {
+                var iter = zf.entries();
+                while ( iter.hasMoreElements() ) {
+                    var entry = iter.nextElement();
+                    var in    = zf.getInputStream( entry );
+                    try {
+                        var bytes = in.readAllBytes();
+                    }
+                    finally {
+                        in.close();
+                    }
+                    out[ entry.getName() ] =
+                        createObject( "java", "java.lang.String" ).init( bytes, Charset.UTF_8 );
+                }
+            }
+            finally {
+                zf.close();
+            }
+            return out;
+        }
+        finally {
+            try { fileDelete( tmpPath ); } catch ( any e ) {}
+        }
+    }
+
+    private string function writeZipToTmp( required any zipBytes ) {
+        var tmpPath = "/tmp/bx-export-spec-" & createUUID() & ".zip";
+        fileWrite( tmpPath, arguments.zipBytes );
+        return tmpPath;
+    }
+
+}

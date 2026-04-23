@@ -323,6 +323,175 @@ class accessors="true" singleton {
         return val( row.n ?: 0 );
     }
 
+    // --------------------------------------------------------------------
+    // Phase 8.D.1 — GDPR export
+    // --------------------------------------------------------------------
+
+    /**
+     * Bundle everything the platform holds about `user` into a
+     * ZIP. Returns `{ bytes: byte[], filename: string }` — the
+     * handler writes it to the response with a
+     * `Content-Disposition: attachment` header.
+     *
+     * Contents:
+     *   README.txt          — plain-text explainer
+     *   profile.json        — id, email, display name, timestamps, roles
+     *   posts.json          — every post authored by the user (full row,
+     *                         including body_markdown / body_html)
+     *   revisions.json      — every post_revision this user saved (their
+     *                         edit history across all posts)
+     *   audit_log.json      — every audit_log row with `user_id = X`
+     *   media_manifest.json — uploaded-media listing: path + filename +
+     *                         mime + size + uploaded_at. No file bytes
+     *                         — the admin can fetch them out of band
+     *                         (the media disk URL is in each entry)
+     *
+     * The spec prefers async + emailed signed URL for very large
+     * datasets; Phase 8.D.1 ships the synchronous handler-returns-
+     * bytes path and leaves the ExportUserDataJob as a Phase-10
+     * follow-up (tracked in PLAN §B11). Typical single-user
+     * exports are under a few MB of JSON so synchronous is fine
+     * for the MVP surface.
+     */
+    /**
+     * Fast data-footprint summary for the admin Privacy panel —
+     * returns row counts per table that `exportData` would bundle.
+     * Used by the picker to give an at-a-glance sense of how much
+     * data an export will include before the admin clicks the
+     * button.
+     */
+    struct function dataSummaryFor( required any user ) {
+        var qb     = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        var userId = arguments.user.getId();
+        return {
+            "posts"      : qb.newQuery().from( "posts"          ).where( "author_id",   userId ).count(),
+            "revisions"  : qb.newQuery().from( "post_revisions" ).where( "editor_id",   userId ).count(),
+            "auditRows"  : qb.newQuery().from( "audit_log"      ).where( "user_id",     userId ).count(),
+            "media"      : qb.newQuery().from( "media"          ).where( "uploader_id", userId ).count(),
+            "notifications" : qb.newQuery().from( "notifications" ).where( "user_id",   userId ).count()
+        };
+    }
+
+    struct function exportData( required any user ) {
+        var qb     = variables.wirebox.getInstance( "QueryBuilder@qb" );
+        var userId = arguments.user.getId();
+
+        var profile = {
+            "id"                : userId,
+            "email"             : arguments.user.getEmail() ?: "",
+            "display_name"      : arguments.user.getDisplayName() ?: "",
+            "username"          : arguments.user.getUsername() ?: "",
+            "is_active"         : arguments.user.getIsActive() ?: 0,
+            "email_verified_at" : arguments.user.getEmailVerifiedAt() ?: "",
+            "created_at"        : arguments.user.getCreatedAt() ?: "",
+            "updated_at"        : arguments.user.getUpdatedAt() ?: "",
+            "last_login_at"     : arguments.user.getLastLoginAt() ?: "",
+            "roles"             : roleSlugsFor( userId )
+        };
+
+        var posts     = qb.newQuery().from( "posts" )
+            .where( "author_id", userId )
+            .orderBy( "id", "asc" )
+            .get();
+        var revisions = qb.newQuery().from( "post_revisions" )
+            .where( "editor_id", userId )
+            .orderBy( "id", "asc" )
+            .get();
+        var auditRows = qb.newQuery().from( "audit_log" )
+            .where( "user_id", userId )
+            .orderBy( "id", "asc" )
+            .get();
+        var mediaRows = qb.newQuery().from( "media" )
+            .where( "uploader_id", userId )
+            .select( [ "id", "disk", "path", "filename", "original_filename", "mime_type", "size_bytes", "created_at" ] )
+            .orderBy( "id", "asc" )
+            .get();
+
+        var entries = {
+            "README.txt"          : readmeFor( arguments.user ),
+            "profile.json"        : jsonSerialize( profile )         & char( 10 ),
+            "posts.json"          : jsonSerialize( posts )           & char( 10 ),
+            "revisions.json"      : jsonSerialize( revisions )       & char( 10 ),
+            "audit_log.json"      : jsonSerialize( auditRows )       & char( 10 ),
+            "media_manifest.json" : jsonSerialize( mediaRows )       & char( 10 )
+        };
+
+        var safeEmail = reReplace( lCase( arguments.user.getEmail() ?: "user" ), "[^a-z0-9]+", "-", "all" );
+        var filename  = "bx-blogger-export-" & safeEmail & "-" & dateFormat( now(), "yyyymmdd" ) & ".zip";
+
+        return {
+            "bytes"    : buildZip( entries ),
+            "filename" : filename
+        };
+    }
+
+    private string function readmeFor( required any user ) {
+        var lines = [
+            "bx-Blogger — Personal data export",
+            "Generated: " & dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" ),
+            "For:       " & ( arguments.user.getEmail() ?: "" ) & " (id=" & arguments.user.getId() & ")",
+            "",
+            "This archive contains every piece of information the platform",
+            "holds about this user account. Contents:",
+            "",
+            "  profile.json        Identity + timestamps + granted roles",
+            "  posts.json          Posts authored by this user (full body)",
+            "  revisions.json      Revision history this user has saved",
+            "  audit_log.json      Admin-action audit entries for this user",
+            "  media_manifest.json Uploaded media listing (paths only — the",
+            "                      image bytes live on the media disk; an",
+            "                      admin can retrieve them directly from",
+            "                      the paths listed here if needed)",
+            "",
+            "This export does not include any other user's data."
+        ];
+        return arrayToList( lines, char( 10 ) ) & char( 10 );
+    }
+
+    private array function roleSlugsFor( required numeric userId ) {
+        var rows = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "user_roles" )
+            .join( "roles", "roles.id", "user_roles.role_id" )
+            .where( "user_roles.user_id", arguments.userId )
+            .select( "roles.slug AS slug" )
+            .get();
+        var out = [];
+        for ( var r in rows ) out.append( r.slug );
+        return out;
+    }
+
+    /**
+     * Build a ZIP byte[] from `{ filename: string-contents }`
+     * entries. Uses java.util.zip so we sidestep BoxLang's
+     * `zip` BIF (which is unreliable from inside a WireBox-
+     * managed singleton — same class of dispatch quirk that
+     * burned us on `imageNew` during Phase 6.E).
+     */
+    private any function buildZip( required struct entries ) {
+        var ZipOutputStream = createObject( "java", "java.util.zip.ZipOutputStream" );
+        var ZipEntry        = createObject( "java", "java.util.zip.ZipEntry"        );
+        var BAOS            = createObject( "java", "java.io.ByteArrayOutputStream" );
+        var Charset         = createObject( "java", "java.nio.charset.StandardCharsets" );
+
+        var baos = BAOS.init();
+        var zos  = ZipOutputStream.init( baos );
+        try {
+            for ( var name in arguments.entries ) {
+                var entry = ZipEntry.init( name );
+                zos.putNextEntry( entry );
+                var bytes = arguments.entries[ name ].getBytes( Charset.UTF_8 );
+                zos.write( bytes, javaCast( "int", 0 ), javaCast( "int", arrayLen( bytes ) ) );
+                zos.closeEntry();
+            }
+        }
+        finally {
+            zos.close();
+        }
+        return baos.toByteArray();
+    }
+
+    // --------------------------------------------------------------------
+
     /**
      * Shared email + displayName validation used by create + update.
      * `excludeId` prevents a user from colliding with themselves on

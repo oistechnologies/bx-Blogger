@@ -1,0 +1,99 @@
+<bx:output>
+#view( view = "partials/heading", args = { "title" : "Privacy" } )#
+
+<p class="text-muted small mb-3">
+    GDPR data-rights surface. Enter a user id or email to focus on one
+    user's data footprint, then export a ZIP of everything the platform
+    holds about them. The purge (right-to-be-forgotten) action lands in
+    Phase 8.D.2.
+</p>
+
+<bx:if flash.exists( "adminError" )>
+    <div class="alert alert-danger">#encodeForHTML( flash.get( "adminError" ) )#</div>
+</bx:if>
+
+<!--- User picker --->
+<form method="get" action="#event.buildLink( 'admin:Privacy.show' )#" class="card stat-card stat-card-info mb-3">
+    <div class="card-body">
+        <label for="p-q" class="form-label small">Find user (id or email)</label>
+        <div class="input-group">
+            <input type="text" id="p-q" name="q"
+                   class="form-control"
+                   value="#encodeForHTMLAttribute( prc.query ?: '' )#"
+                   placeholder="admin@bx-blogger.local">
+            <button type="submit" class="btn btn-primary">Find</button>
+        </div>
+        <bx:if len( prc.lookupError ?: '' )>
+            <p class="text-danger small mb-0 mt-2">#encodeForHTML( prc.lookupError )#</p>
+        </bx:if>
+    </div>
+</form>
+
+<!--- User focus card — `prc.user` is only set when the handler
+     resolved a user from the query. `structKeyExists` because
+     BoxLang silently strips struct keys assigned to null, so we
+     don't set the key at all when there's no match. --->
+<bx:if structKeyExists( prc, "user" )>
+    <div class="card stat-card stat-card-secondary">
+        <div class="card-header card-header-soft card-header-soft-secondary d-flex justify-content-between align-items-center">
+            <div>
+                <div class="h6 mb-0">#encodeForHTML( prc.user.getDisplayName() ?: prc.user.getEmail() )#</div>
+                <div class="small text-muted">
+                    #encodeForHTML( prc.user.getEmail() ?: '' )# &middot;
+                    id <strong>#val( prc.user.getId() )#</strong>
+                </div>
+            </div>
+            <div class="d-flex gap-2">
+                <a class="btn btn-primary"
+                   href="#event.buildLink( event = 'admin:Privacy.exportUser', queryString = 'id=' & prc.user.getId() )#">
+                    Download export (ZIP)
+                </a>
+                <!--- 8.D.2 will light this up. Keep the button
+                      visually present today as a read-only hint so
+                      the surface feels complete, but disable it. --->
+                <button type="button" class="btn btn-outline-danger" disabled
+                        title="Purge ships in Phase 8.D.2">
+                    Purge (8.D.2)
+                </button>
+            </div>
+        </div>
+        <div class="card-body">
+            <p class="small text-muted mb-3">
+                Data footprint &mdash; these counts will land in the export ZIP.
+            </p>
+            <div class="row g-3">
+                <div class="col-6 col-md-2">
+                    <div class="border rounded p-3 text-center">
+                        <div class="h4 mb-0">#val( prc.dataSummary.posts ?: 0 )#</div>
+                        <div class="small text-muted">posts</div>
+                    </div>
+                </div>
+                <div class="col-6 col-md-2">
+                    <div class="border rounded p-3 text-center">
+                        <div class="h4 mb-0">#val( prc.dataSummary.revisions ?: 0 )#</div>
+                        <div class="small text-muted">revisions</div>
+                    </div>
+                </div>
+                <div class="col-6 col-md-2">
+                    <div class="border rounded p-3 text-center">
+                        <div class="h4 mb-0">#val( prc.dataSummary.auditRows ?: 0 )#</div>
+                        <div class="small text-muted">audit rows</div>
+                    </div>
+                </div>
+                <div class="col-6 col-md-2">
+                    <div class="border rounded p-3 text-center">
+                        <div class="h4 mb-0">#val( prc.dataSummary.media ?: 0 )#</div>
+                        <div class="small text-muted">media uploads</div>
+                    </div>
+                </div>
+                <div class="col-6 col-md-2">
+                    <div class="border rounded p-3 text-center">
+                        <div class="h4 mb-0">#val( prc.dataSummary.notifications ?: 0 )#</div>
+                        <div class="small text-muted">notifications</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</bx:if>
+</bx:output>

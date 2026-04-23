@@ -117,6 +117,25 @@
 					<button type="submit" class="btn btn-primary">Change password</button>
 				</form>
 			</div>
+
+			<!---------- Phase 8.D.1 — GDPR self-serve data export ---------->
+			<div class="card stat-card stat-card-secondary mt-4">
+				<div class="card-header card-header-soft card-header-soft-secondary">
+					<span class="h6 mb-0">Download my data</span>
+				</div>
+				<div class="card-body">
+					<p class="text-muted small mb-3">
+						Download a ZIP of every piece of information the platform holds about
+						your account &mdash; profile, posts, revisions, audit-log entries,
+						and a manifest of media you&rsquo;ve uploaded. Nothing is deleted;
+						the export is a read-only snapshot.
+					</p>
+					<a class="btn btn-outline-primary"
+					   href="#event.buildLink( 'admin:Account.exportMyData' )#">
+						Download my data (ZIP)
+					</a>
+				</div>
+			</div>
 		</div>
 	</div>
 </div>

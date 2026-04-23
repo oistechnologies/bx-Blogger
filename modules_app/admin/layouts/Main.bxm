@@ -188,6 +188,10 @@
 						<a class="nav-link #( currentEvent.startsWith( 'admin:AuditLog.' ) ? 'active' : '' )#"
 						   href="#event.buildLink( 'admin:AuditLog.index' )#">Audit Log</a>
 					</bx:if>
+					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "users.export_data" )>
+						<a class="nav-link #( currentEvent.startsWith( 'admin:Privacy.' ) ? 'active' : '' )#"
+						   href="#event.buildLink( 'admin:Privacy.show' )#">Privacy</a>
+					</bx:if>
 					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "settings.manage" )>
 						<a class="nav-link #( currentEvent.startsWith( 'admin:Settings.' ) ? 'active' : '' )#"
 						   href="#event.buildLink( 'admin:Settings.index' )#">Settings</a>

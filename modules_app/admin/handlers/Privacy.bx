@@ -1,0 +1,118 @@
+/**
+ * bx-Blogger — admin:Privacy (Phase 8.D.1 / B11)
+ *
+ * GDPR right-to-access + right-to-be-forgotten surface. Phase 8.D.1
+ * ships the export path (`show` + `exportUser`); the 8.D.2 chunk
+ * will layer in the purge path + the two-step confirm UI for it.
+ *
+ * Permission split:
+ *   users.export_data — super_admin + admin (seeded in Phase 1)
+ *   users.purge       — super_admin only    (seeded in Phase 1;
+ *                       wired in 8.D.2)
+ */
+class extends="coldbox.system.EventHandler" {
+
+    property name="cbauth"      inject="AuthenticationService@cbauth";
+    property name="userService" inject="UserService";
+
+    this.layouts = { "Main.bxm" : "*" };
+
+    function preHandler( event, rc, prc, action, eventArguments ) {
+        if ( !cbauth.isLoggedIn() ) {
+            relocate( url = "/security/login" );
+            return;
+        }
+        if ( !cbauth.getUser().hasPermission( "users.export_data" ) ) {
+            relocate( event = "admin:Dashboard.index" );
+            return;
+        }
+    }
+
+    /**
+     * GET /admin/privacy — picker. Admin enters a user id or email
+     * to focus on one user's data footprint + export / purge
+     * buttons. Renders an empty state when no user is selected.
+     *
+     * Named `index` (not `show`) so the bare `/admin/privacy` URL
+     * hits this action via ColdBox's default-action convention.
+     */
+    function index( event, rc, prc ) {
+        prc.pageTitle   = "Privacy";
+        prc.query       = trim( rc.q ?: "" );
+        prc.lookupError = "";
+        // Absence of prc.user is the "no user selected" state —
+        // the view checks `structKeyExists(prc, "user")` (BoxLang
+        // removes struct keys assigned to null, so we just don't
+        // set the key in that path).
+
+        if ( len( prc.query ) ) {
+            var picked = javaCast( "null", "" );
+            if ( isNumeric( prc.query ) ) {
+                picked = userService.retrieveUserById( val( prc.query ) );
+            }
+            else {
+                picked = userService.retrieveUserByUsername( prc.query );
+            }
+            if ( isNull( picked ) ) {
+                prc.lookupError = "No user found for ‘" & prc.query & "’.";
+            }
+            else {
+                prc.user        = picked;
+                prc.dataSummary = userService.dataSummaryFor( picked );
+            }
+        }
+        event.setView( view = "privacy/show" );
+    }
+
+    /**
+     * GET /admin/privacy/exportUser?id={id} — bundles the user's
+     * data into a ZIP and streams it back as a download. Response
+     * is binary; Content-Disposition carries a dated filename so
+     * multiple exports don't collapse into one entry in the
+     * browser's download list.
+     */
+    function exportUser( event, rc, prc ) {
+        var id = val( rc.id ?: 0 );
+        if ( id <= 0 ) {
+            flash.put( "adminError", "Missing user id." );
+            relocate( event = "admin:Privacy.show" );
+            return;
+        }
+        var target = userService.retrieveUserById( id );
+        if ( isNull( target ) ) {
+            flash.put( "adminError", "User not found." );
+            relocate( event = "admin:Privacy.show" );
+            return;
+        }
+
+        streamExport( event, target );
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    /**
+     * Shared ZIP-download path. Writes bytes directly to the
+     * servlet response — ColdBox's `renderData` doesn't accept
+     * `type="binary"` in this runtime (throws "Invalid rendering
+     * type"). `Account.exportMyData` uses the same pattern; a
+     * shared helper service isn't worth the indirection for two
+     * ~10-line download methods.
+     */
+    private void function streamExport( required any event, required any target ) {
+        var bundle   = userService.exportData( arguments.target );
+        arguments.event.setHTTPHeader(
+            name  = "Content-Disposition",
+            value = 'attachment; filename="' & bundle.filename & '"'
+        );
+        var response = getPageContext().getResponse();
+        response.setContentType( "application/zip" );
+        response.setContentLength( javaCast( "int", arrayLen( bundle.bytes ) ) );
+        response.getOutputStream().write( bundle.bytes );
+        response.flushBuffer();
+        arguments.event.noExecution();
+        arguments.event.noRender();
+    }
+
+}
