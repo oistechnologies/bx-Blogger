@@ -1,0 +1,11 @@
+<bx:output>
+<bx:savecontent variable="actions">
+    <a class="btn btn-outline-secondary btn-sm"
+       href="/admin/posts/editor?id=#prc.postId#">
+        &larr; Back to editor
+    </a>
+</bx:savecontent>
+#view( view = "partials/heading", args = { "title" : "Revisions: " & prc.postTitle, "actionHtml" : actions } )#
+
+#wire( name = "posts.revisions", params = { "postId" : prc.postId } )#
+</bx:output>

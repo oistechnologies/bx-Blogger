@@ -1,0 +1,288 @@
+<bx:script>
+// @startWire
+/**
+ * posts.revisions — Phase 8.A revision viewer.
+ *
+ * Lists every revision of a post newest-first, lets the admin
+ * click one to compare it side-by-side against the current post
+ * body, and offers a one-click "Restore" that re-routes through
+ * `PostService.update` — same chain the editor uses, so
+ * content-version bumps, redirect-slug hooks, and page-cache
+ * invalidations all fire correctly.
+ *
+ * Autosave revisions are hidden by default (the autosave
+ * firehose is noise when an editor is looking for a deliberate
+ * save point); a toggle pulls them back in.
+ *
+ * Permission model: whoever can edit the post can view + restore
+ * its revisions — a restore is just an edit that copies an old
+ * title/body forward. The same `canEdit` split the editor uses
+ * applies here.
+ */
+
+property name="postService" inject="PostService";
+property name="cbauth"      inject="AuthenticationService@cbauth";
+
+data = {
+    "postId"           : 0,
+    "includeAutosaves" : false,
+    "selectedId"       : 0,
+    "flashOk"          : "",
+    "flashError"       : ""
+};
+
+function onMount( event, rc, prc, params ) {
+    data.postId = val( arguments.params.postId ?: 0 );
+}
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function toggleAutosaves() {
+    data.includeAutosaves = !data.includeAutosaves;
+    data.selectedId       = 0;
+}
+
+function select( required id ) {
+    clearFlashes();
+    data.selectedId = int( arguments.id );
+}
+
+function clearSelection() {
+    data.selectedId = 0;
+}
+
+function restore( required id ) {
+    clearFlashes();
+    if ( !canEdit() ) {
+        data.flashError = "You don't have permission to edit this post.";
+        return;
+    }
+    try {
+        postService.revertToRevision(
+            postId     = data.postId,
+            revisionId = int( arguments.id ),
+            editorId   = cbauth.getUser().getId()
+        );
+        data.flashOk    = "Restored. A new revision tagged 'restored from ##" & arguments.id & "' marks the rollback.";
+        data.selectedId = 0;
+    }
+    catch ( any e ) {
+        data.flashError = "Couldn't restore: " & ( e.message ?: "unknown error" );
+    }
+}
+
+// --------------------------------------------------------------------
+// View helpers
+// --------------------------------------------------------------------
+
+array function revisions() {
+    if ( data.postId <= 0 ) return [];
+    return postService.listRevisions(
+        postId           = data.postId,
+        includeAutosaves = data.includeAutosaves
+    );
+}
+
+struct function currentPost() {
+    if ( data.postId <= 0 ) return {};
+    var p = getInstance( "Post" ).find( data.postId );
+    if ( isNull( p ) ) return {};
+    return {
+        "id"           : p.getId(),
+        "title"        : p.getTitle() ?: "",
+        "bodyMarkdown" : p.getBodyMarkdown() ?: "",
+        "bodyHtml"     : p.getBodyHtml()     ?: ""
+    };
+}
+
+struct function selectedRevision() {
+    if ( data.selectedId <= 0 ) return {};
+    var rows = revisions();
+    for ( var r in rows ) if ( val( r.id ) == data.selectedId ) return r;
+    return {};
+}
+
+boolean function canEdit() {
+    if ( data.postId <= 0 ) return false;
+    if ( !cbauth.isLoggedIn() ) return false;
+    var user = cbauth.getUser();
+    var post = getInstance( "Post" ).find( data.postId );
+    if ( isNull( post ) ) return false;
+    return post.getAuthorId() == user.getId()
+        ? user.hasPermission( "posts.edit.own" )
+        : user.hasPermission( "posts.edit.others" );
+}
+
+// --------------------------------------------------------------------
+// Private
+// --------------------------------------------------------------------
+
+private void function clearFlashes() {
+    data.flashOk    = "";
+    data.flashError = "";
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:script>
+    revs    = revisions();
+    current = currentPost();
+    picked  = selectedRevision();
+    writeAuth = canEdit();
+</bx:script>
+
+<div>
+    <bx:if len( args.flashOk )>
+        <div class="alert alert-success alert-dismissible">
+            #encodeForHTML( args.flashOk )#
+            <button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+        </div>
+    </bx:if>
+    <bx:if len( args.flashError )>
+        <div class="alert alert-danger alert-dismissible">
+            #encodeForHTML( args.flashError )#
+            <button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+        </div>
+    </bx:if>
+
+    <div class="row g-4">
+
+        <!--- Revision list --->
+        <div class="col-12 col-xl-4">
+            <div class="card stat-card stat-card-info">
+                <div class="card-header card-header-soft card-header-soft-info d-flex justify-content-between align-items-center">
+                    <span class="h6 mb-0">History &mdash; #arrayLen( revs )# entries</span>
+                    <div class="form-check form-switch m-0">
+                        <input class="form-check-input"
+                               type="checkbox"
+                               id="toggle-autosaves"
+                               wire:click="toggleAutosaves"
+                               <bx:if args.includeAutosaves>checked</bx:if>>
+                        <label class="form-check-label small" for="toggle-autosaves">
+                            Show autosaves
+                        </label>
+                    </div>
+                </div>
+                <div class="card-body p-0" style="max-height: 70vh; overflow-y: auto;">
+                    <bx:if !arrayLen( revs )>
+                        <p class="text-muted p-3 mb-0">
+                            <bx:if args.includeAutosaves>
+                                No revisions yet.
+                            <bx:else>
+                                No deliberate saves recorded. Toggle &ldquo;Show autosaves&rdquo; to see the autosave history.
+                            </bx:if>
+                        </p>
+                    <bx:else>
+                        <ul class="list-group list-group-flush">
+                            <bx:loop array="#revs#" item="r">
+                                <bx:set isSelected = ( val( r.id ) == args.selectedId )>
+                                <bx:set summary    = trim( r.change_summary ?: "" )>
+                                <bx:set isAuto     = summary == "autosave">
+                                <li class="list-group-item #( isSelected ? 'active' : '' )#"
+                                    style="cursor: pointer;"
+                                    wire:click="select(#val( r.id )#)">
+                                    <div class="d-flex justify-content-between align-items-start gap-2">
+                                        <div class="flex-grow-1">
+                                            <div class="small fw-semibold">
+                                                #encodeForHTML( dateTimeFormat( r.created_at, "mmm. d, yyyy h:nn tt" ) )#
+                                            </div>
+                                            <div class="small #( isSelected ? '' : 'text-muted' )#">
+                                                #encodeForHTML( r.editor_display_name ?: "Unknown" )#
+                                                <bx:if isAuto>
+                                                    <span class="badge text-bg-secondary ms-1">autosave</span>
+                                                <bx:elseif len( summary )>
+                                                    <span class="ms-1">&middot; #encodeForHTML( summary )#</span>
+                                                </bx:if>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </li>
+                            </bx:loop>
+                        </ul>
+                    </bx:if>
+                </div>
+            </div>
+        </div>
+
+        <!--- Side-by-side compare --->
+        <div class="col-12 col-xl-8">
+            <bx:if structIsEmpty( picked )>
+                <div class="card stat-card stat-card-secondary">
+                    <div class="card-body text-muted">
+                        <p class="mb-1"><strong>Pick a revision</strong> from the list to see a side-by-side compare.</p>
+                        <p class="small mb-0">
+                            The left pane shows the current post body; the right pane shows the selected revision.
+                            Line-level diff highlighting is on the roadmap &mdash; for now the compare is visual.
+                        </p>
+                    </div>
+                </div>
+            <bx:else>
+
+                <!--- Actions bar --->
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <div>
+                        <span class="text-muted small">
+                            Revision <strong>##args.selectedId</strong>
+                            &middot;
+                            #encodeForHTML( dateTimeFormat( picked.created_at, "mmm. d, yyyy h:nn tt" ) )#
+                            by #encodeForHTML( picked.editor_display_name ?: "Unknown" )#
+                        </span>
+                    </div>
+                    <div class="d-flex gap-2">
+                        <button type="button"
+                                class="btn btn-outline-secondary btn-sm"
+                                wire:click="clearSelection">
+                            Close
+                        </button>
+                        <bx:if writeAuth>
+                            <button type="button"
+                                    class="btn btn-primary btn-sm"
+                                    wire:click="restore(#val( args.selectedId )#)"
+                                    wire:confirm="Restore this revision? The current post body will be overwritten (but a new revision is written, so nothing is lost).">
+                                Restore this version
+                            </button>
+                        </bx:if>
+                    </div>
+                </div>
+
+                <!--- Title compare --->
+                <bx:if ( current.title ?: "" ) != ( picked.title ?: "" )>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                            <div class="form-text small mb-1">Current title</div>
+                            <div class="p-2 bg-body-tertiary rounded border">
+                                #encodeForHTML( current.title )#
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="form-text small mb-1">Revision title</div>
+                            <div class="p-2 bg-body-tertiary rounded border">
+                                #encodeForHTML( picked.title )#
+                            </div>
+                        </div>
+                    </div>
+                </bx:if>
+
+                <!--- Body markdown compare --->
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <div class="form-text small mb-1">Current body (markdown)</div>
+                        <pre class="p-3 rounded bg-body-tertiary border small"
+                             style="max-height: 60vh; overflow: auto; white-space: pre-wrap;">#encodeForHTML( current.bodyMarkdown )#</pre>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="form-text small mb-1">Revision body (markdown)</div>
+                        <pre class="p-3 rounded bg-body-tertiary border small"
+                             style="max-height: 60vh; overflow: auto; white-space: pre-wrap;">#encodeForHTML( picked.body_markdown ?: "" )#</pre>
+                    </div>
+                </div>
+
+            </bx:if>
+        </div>
+
+    </div>
+</div>
+</bx:output>

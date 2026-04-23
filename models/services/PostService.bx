@@ -640,6 +640,116 @@ class accessors="true" singleton {
      * Persist a snapshot into `post_revisions`. Called from create()
      * and from update() when title or body changed.
      */
+    /**
+     * Phase 8.A — revision history for a post, newest first.
+     * `includeAutosaves=false` (the default) hides rows with
+     * `change_summary='autosave'`, matching the admin UI's
+     * default view (the autosave firehose is noise when an editor
+     * is looking for a deliberate save point).
+     *
+     * Returns full row structs (not Quick entities) so the wire
+     * can render editor-name + body markdown without hitting the
+     * ORM once per row. Body columns are included — the wire's
+     * compare pane renders them directly.
+     */
+    array function listRevisions( required numeric postId, boolean includeAutosaves = false ) {
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery();
+        var q  = qb.from( "post_revisions" )
+            .leftJoin( "users", "users.id", "post_revisions.editor_id" )
+            .where( "post_revisions.post_id", arguments.postId )
+            .select( [
+                "post_revisions.id AS id",
+                "post_revisions.title AS title",
+                "post_revisions.body_markdown AS body_markdown",
+                "post_revisions.body_html AS body_html",
+                "post_revisions.change_summary AS change_summary",
+                "post_revisions.created_at AS created_at",
+                "users.id AS editor_id",
+                "users.display_name AS editor_display_name"
+            ] )
+            .orderBy( "post_revisions.created_at", "desc" )
+            .orderBy( "post_revisions.id", "desc" );
+
+        if ( !arguments.includeAutosaves ) {
+            // Tight filter — PostService always sets change_summary
+            // explicitly (manual / autosave / restored from ## / etc.),
+            // so a simple `!= 'autosave'` suffices without the
+            // NULL-handling dance. MySQL's ANSI semantics excludes
+            // NULL from `!=`, which would be wrong for legitimately-
+            // null rows, but we don't produce those.
+            q.where( "post_revisions.change_summary", "!=", "autosave" );
+        }
+        return q.get();
+    }
+
+    /**
+     * Phase 8.A — restore a post to a prior revision. Copies the
+     * revision's `title` + `body_markdown` onto the live post,
+     * re-compiles the HTML from current markdown (not the stored
+     * body_html — compilation rules may have changed since the
+     * revision was written), bumps `content_version`, and writes
+     * a fresh revision tagged "restored from ##{rev.id}" so the
+     * history retains the full trail.
+     *
+     * Returns the new revision's id so the caller can surface a
+     * flash referencing it.
+     */
+    numeric function revertToRevision(
+        required numeric postId,
+        required numeric revisionId,
+        required numeric editorId
+    ) {
+        var qb  = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery();
+        var rev = qb.from( "post_revisions" )
+            .where( "id", arguments.revisionId )
+            .where( "post_id", arguments.postId )
+            .first();
+        if ( isNull( rev ) || ( isStruct( rev ) && structIsEmpty( rev ) ) ) {
+            throw(
+                type    = "bxBlogger.PostService.RevisionNotFound",
+                message = "Revision id=" & arguments.revisionId & " not found for post=" & arguments.postId
+            );
+        }
+
+        var post = variables.wirebox.getInstance( "Post" ).find( arguments.postId );
+        if ( isNull( post ) ) {
+            throw(
+                type    = "bxBlogger.PostService.NotFound",
+                message = "Post id=" & arguments.postId & " not found"
+            );
+        }
+
+        // Route the mutation through `update()` so the
+        // slug-change / content-version / page-cache invalidation /
+        // redirect-hook chain all fire, exactly as if the editor
+        // had typed these values into the form and saved. No
+        // explicit transaction — each step is individually
+        // atomic + idempotent; a failure between them would leave
+        // the post half-restored at worst, recoverable by the
+        // admin re-running revert.
+        update(
+            post          = post,
+            attrs         = {
+                "title"        : rev.title,
+                "bodyMarkdown" : rev.body_markdown
+            },
+            editorId      = arguments.editorId,
+            changeSummary = "restored from ##" & arguments.revisionId
+        );
+
+        // `update()` already wrote a revision when title-or-body
+        // changed; pull the most recent one back out to return
+        // its id so the caller can reference it in a flash msg.
+        var fresh = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "post_revisions" )
+            .where( "post_id", arguments.postId )
+            .orderBy( "id", "desc" )
+            .first();
+        return ( isNull( fresh ) || ( isStruct( fresh ) && structIsEmpty( fresh ) ) )
+            ? 0
+            : val( fresh.id ?: 0 );
+    }
+
     private void function writeRevision(
         required any    post,
         required numeric editorId,

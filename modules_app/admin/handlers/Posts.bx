@@ -54,6 +54,31 @@ class extends="coldbox.system.EventHandler" {
      * filtered via the service call inside the wire — contributors
      * can't reach the route directly (this handler checks).
      */
+    /**
+     * GET /admin/posts/:id/revisions — Phase 8.A. Renders the
+     * revision list + side-by-side compare wire. Wire owns the
+     * per-revision permission checks (via canSave on the post);
+     * handler just titles the page and seeds `prc.postId`.
+     */
+    function revisions( event, rc, prc ) {
+        var pid = val( rc.id ?: 0 );
+        if ( pid <= 0 ) {
+            flash.put( "adminError", "Missing post id." );
+            relocate( event = "admin:Posts.index" );
+            return;
+        }
+        var post = getInstance( "Post" ).find( pid );
+        if ( isNull( post ) ) {
+            flash.put( "adminError", "Post not found." );
+            relocate( event = "admin:Posts.index" );
+            return;
+        }
+        prc.postId    = pid;
+        prc.postTitle = post.getTitle();
+        prc.pageTitle = "Revisions";
+        event.setView( view = "posts/revisions" );
+    }
+
     function reviewQueue( event, rc, prc ) {
         if ( !cbauth.getUser().hasPermission( "posts.publish.others" ) ) {
             flash.put( "adminError", "Only editors can access the review queue." );

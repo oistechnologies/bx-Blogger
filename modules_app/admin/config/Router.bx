@@ -22,6 +22,12 @@ class {
         // `:handler/:action` matching `themes/foo`.)
         route( "themes/:slug/options" ).to( "Themes.options" );
 
+        // Phase 8.A — /admin/posts/:id/revisions → Posts.revisions
+        // Same pattern reason as themes/:slug/options: specific
+        // three-segment path must be declared before the
+        // `:handler/:action` catch-all.
+        route( "posts/:id/revisions" ).to( "Posts.revisions" );
+
         // Phase UX — self-service account lives inside the admin shell
         // (previously /account at the app root). Specific sub-routes
         // first so the base /admin/account GET/POST pair doesn't

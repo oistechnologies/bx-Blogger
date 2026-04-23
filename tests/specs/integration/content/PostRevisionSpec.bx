@@ -1,0 +1,165 @@
+/**
+ * bx-Blogger — PostRevisionSpec (Phase 8.A)
+ *
+ * Exercises the two new PostService methods that back the
+ * revision-diff wire:
+ *
+ *   - listRevisions(postId, includeAutosaves)
+ *       returns revisions newest-first, filters autosaves by default
+ *   - revertToRevision(postId, revisionId, editorId)
+ *       rewrites the post's title + body to the revision's, writes
+ *       a fresh revision tagged `restored from ##{id}`, bumps
+ *       content_version
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc = getInstance( "PostService" );
+    }
+
+    function run() {
+        describe( "PostService revisions API", function() {
+
+            describe( "listRevisions()", function() {
+                it( "returns deliberate saves newest-first; hides autosaves by default", function() {
+                    var setup = seedPostWithRevisions();
+
+                    var noAuto = svc.listRevisions( setup.post.getId() );
+                    // `create()` writes an "initial" revision; then
+                    // two deliberate updates; then one autosave.
+                    // Filtering out autosaves yields 3 rows in
+                    // newest-first order.
+                    expect( arrayLen( noAuto ) ).toBe( 3 );
+                    expect( noAuto[ 1 ].title ).toBe( "Second title" );
+                    expect( noAuto[ 2 ].title ).toBe( "First title" );
+                    expect( noAuto[ 3 ].title ).toBe( "Initial" );
+
+                    var withAuto = svc.listRevisions(
+                        postId           = setup.post.getId(),
+                        includeAutosaves = true
+                    );
+                    expect( arrayLen( withAuto ) ).toBe( 4 );
+                    var summaries = [];
+                    for ( var r in withAuto ) summaries.append( r.change_summary ?: "" );
+                    expect( summaries.find( "autosave" ) ).toBeGT( 0 );
+                } );
+
+                it( "joins in the editor's display_name", function() {
+                    var setup = seedPostWithRevisions();
+                    var rows  = svc.listRevisions( setup.post.getId() );
+                    expect( rows[ 1 ].editor_display_name ).toBe( setup.author.getDisplayName() );
+                } );
+            } );
+
+            describe( "revertToRevision()", function() {
+                it( "rewrites the post back to the revision's title + body", function() {
+                    var setup = seedPostWithRevisions();
+                    var rows  = svc.listRevisions( setup.post.getId() );
+                    // rows[2] is the middle deliberate save — the
+                    // "First title" one (rows[1]=Second, rows[2]=First,
+                    // rows[3]=Initial).
+                    var target = rows[ 2 ];
+
+                    svc.revertToRevision(
+                        postId     = setup.post.getId(),
+                        revisionId = target.id,
+                        editorId   = setup.author.getId()
+                    );
+
+                    var reloaded = getInstance( "Post" ).find( setup.post.getId() );
+                    expect( reloaded.getTitle() ).toBe( "First title" );
+                    expect( reloaded.getBodyMarkdown() ).toBe( "First body." );
+                } );
+
+                it( "writes a new revision tagged `restored from ##{id}`", function() {
+                    var setup = seedPostWithRevisions();
+                    var rows  = svc.listRevisions( setup.post.getId() );
+                    var target = rows[ 2 ];
+
+                    var beforeCount = arrayLen( rows );
+                    svc.revertToRevision(
+                        postId     = setup.post.getId(),
+                        revisionId = target.id,
+                        editorId   = setup.author.getId()
+                    );
+
+                    var after = svc.listRevisions( setup.post.getId() );
+                    expect( arrayLen( after ) ).toBe( beforeCount + 1 );
+                    expect( after[ 1 ].change_summary ).toBe( "restored from ##" & target.id );
+                } );
+
+                it( "bumps content_version on the post", function() {
+                    var setup = seedPostWithRevisions();
+                    var rows  = svc.listRevisions( setup.post.getId() );
+                    var target = rows[ 2 ];
+
+                    var before = getInstance( "Post" ).find( setup.post.getId() ).getContentVersion();
+                    svc.revertToRevision(
+                        postId     = setup.post.getId(),
+                        revisionId = target.id,
+                        editorId   = setup.author.getId()
+                    );
+                    var after = getInstance( "Post" ).find( setup.post.getId() ).getContentVersion();
+                    expect( after ).toBeGT( before, "content_version must increase on restore" );
+                } );
+
+                it( "throws RevisionNotFound for an unknown revision id", function() {
+                    var setup = seedPostWithRevisions();
+                    expect( function() {
+                        svc.revertToRevision(
+                            postId     = setup.post.getId(),
+                            revisionId = 99999999,
+                            editorId   = setup.author.getId()
+                        );
+                    } ).toThrow( type = "bxBlogger.PostService.RevisionNotFound" );
+                } );
+            } );
+
+        } );
+    }
+
+    // --------------------------------------------------------------------
+    // Fixtures
+    // --------------------------------------------------------------------
+
+    /**
+     * Create a post and give it the minimum revision history the
+     * spec relies on: one manual save, one autosave, another
+     * manual save. Returns `{ post, author }` for the test's use.
+     */
+    private struct function seedPostWithRevisions() {
+        var author = createTestUser();
+        var uid    = lCase( replace( createUUID(), "-", "", "all" ) );
+        var post = svc.create( {
+            "authorId"     : author.getId(),
+            "title"        : "Initial",
+            "slug"         : "rev-" & uid,
+            "bodyMarkdown" : "Initial body."
+        } );
+
+        // Manual #1 — writes a revision (title changed)
+        svc.update(
+            post     = post,
+            attrs    = { "title" : "First title", "bodyMarkdown" : "First body." },
+            editorId = author.getId(),
+            changeSummary = "manual"
+        );
+        // Autosave
+        svc.autosave(
+            post         = post,
+            editorId     = author.getId(),
+            bodyMarkdown = "Autosave body mid-edit."
+        );
+        // Manual #2
+        svc.update(
+            post     = post,
+            attrs    = { "title" : "Second title", "bodyMarkdown" : "Second body." },
+            editorId = author.getId(),
+            changeSummary = "manual"
+        );
+
+        return { "post" : post, "author" : author };
+    }
+
+}

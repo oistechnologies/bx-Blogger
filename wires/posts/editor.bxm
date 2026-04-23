@@ -929,6 +929,21 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 							        wire:click="trash"
 							        wire:confirm="Move this post to trash?">Move to trash</button>
 						</bx:if>
+						<!--- Phase 8.A — revision history link. Plain anchor
+						      (not a wire action) because we want a full page
+						      nav to the compare UI; the editor state stays
+						      where the user left it on return. The route
+						      `/admin/posts/:id/revisions` takes the id as a
+						      path segment, so we build the URL directly
+						      rather than go through `event.buildLink` with
+						      a query string. --->
+						<bx:if ( args.postId ?: 0 ) gt 0>
+							<a class="btn btn-outline-secondary btn-sm"
+							   href="/admin/posts/#args.postId#/revisions"
+							   title="Compare and restore prior revisions">
+								Revisions
+							</a>
+						</bx:if>
 					</div>
 
 					<!--- B2 — Share Preview --->
