@@ -37,6 +37,7 @@ class accessors="true" singleton {
     property name="antisamy"           inject="AntiSamy@cbantisamy";
     property name="interceptorService" inject="coldbox:InterceptorService";
     property name="pageCacheService"   inject="PageCacheService";
+    property name="redirectService"    inject="RedirectService";
     property name="log"                inject="logbox:logger:{this}";
 
     variables.autosaveKeep = 20;   // B5: prune autosave revisions beyond this per post
@@ -93,6 +94,17 @@ class accessors="true" singleton {
         required numeric editorId,
                  string  changeSummary = ""
     ) {
+        // Capture the post's status BEFORE anything mutates it. The
+        // normalizeIncoming default + applyAttrsToEntity sequence can
+        // reset `status` back to "draft" when a caller omits status
+        // from the attrs struct (the admin-save flow does this and
+        // relies on a subsequent publish() call to re-promote);
+        // Phase 7.C's slug-change redirect hook needs the pre-update
+        // reality so a slug rename on a published post still pushes
+        // an auto-redirect even when this sequence demotes-then-
+        // re-promotes within the same request.
+        var priorStatus = dbStatusFor( arguments.post.getId() );
+
         var data = normalizeIncoming( arguments.attrs );
         var titleOrBodyChanged = false;
 
@@ -103,14 +115,19 @@ class accessors="true" singleton {
             titleOrBodyChanged = true;
         }
 
-        // Slug change handling
-        if ( structKeyExists( data, "slug" ) && len( data.slug ) && data.slug != arguments.post.getSlug() ) {
+        // Slug change handling. We remember the old slug so the
+        // post-save block can auto-register a 301 into the redirects
+        // table when the post was (and remains) public.
+        var oldSlug       = arguments.post.getSlug();
+        var slugChanged   = false;
+        if ( structKeyExists( data, "slug" ) && len( data.slug ) && data.slug != oldSlug ) {
             data.slug = ensureUniqueSlug(
                 slug     = data.slug,
                 postType = data.postType ?: arguments.post.getPostType(),
                 parentId = structKeyExists( data, "parentId" ) ? data.parentId : arguments.post.getParentId(),
                 excludeId = arguments.post.getId()
             );
+            if ( data.slug != oldSlug ) slugChanged = true;
         }
 
         applyComputedFields( data, arguments.post );
@@ -120,6 +137,28 @@ class accessors="true" singleton {
 
         applyAttrsToEntity( arguments.post, data );
         arguments.post.save();
+
+        // Phase 7.C — auto-redirect from old slug to new slug when
+        // the post is (still) published. Drafts and scheduled posts
+        // never had a live public URL, so crawlers won't be
+        // following old paths; skipping them keeps the redirects
+        // table free of rows that would never serve a hit.
+        if ( slugChanged && priorStatus == "published" ) {
+            try {
+                variables.redirectService.register(
+                    fromPath   = publicPathFor( arguments.post, oldSlug ),
+                    toPath     = publicPathFor( arguments.post, arguments.post.getSlug() ),
+                    statusCode = 301,
+                    createdBy  = arguments.editorId
+                );
+            }
+            catch ( any e ) {
+                // Never let a redirect-write failure take down the
+                // update itself — the post save already succeeded
+                // and is the user-visible operation.
+                log.warn( "PostService: auto-redirect register failed for post=" & arguments.post.getId() & ": " & e.message );
+            }
+        }
 
         if ( titleOrBodyChanged ) {
             writeRevision(
@@ -615,6 +654,42 @@ class accessors="true" singleton {
             if ( structKeyExists( arguments.entity, setter ) ) {
                 invoke( arguments.entity, setter, { "1" : arguments.data[ key ] } );
             }
+        }
+    }
+
+    /**
+     * Public-site path for a post given a slug — `/blog/{slug}` for
+     * regular posts, `/{slug}` for pages. Used by the slug-change
+     * hook to register redirects; single place to encode the route
+     * pattern so we don't drift from config/Router.bx. The `slug`
+     * argument is explicit (rather than pulled from the entity) so
+     * callers can generate the *old* path before the entity was
+     * mutated.
+     */
+    private string function publicPathFor( required any post, required string slug ) {
+        var type = arguments.post.getPostType() ?: "post";
+        return type == "page" ? ( "/" & arguments.slug ) : ( "/blog/" & arguments.slug );
+    }
+
+    /**
+     * Read the current status directly from the `posts` table. Quick's
+     * in-memory entity state can lag after a cross-service mutation
+     * (publish → update call sequence), and this hook runs at a spot
+     * where that lag would let a published-post slug change skip the
+     * auto-redirect. One indexed SELECT by PK is cheap.
+     */
+    private string function dbStatusFor( required numeric postId ) {
+        try {
+            var qb = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery();
+            var row = qb.from( "posts" )
+                .select( "status" )
+                .where( "id", arguments.postId )
+                .first();
+            if ( isNull( row ) || ( isStruct( row ) && structIsEmpty( row ) ) ) return "";
+            return row.status ?: "";
+        }
+        catch ( any e ) {
+            return "";
         }
     }
 

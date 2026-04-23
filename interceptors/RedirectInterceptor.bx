@@ -1,0 +1,122 @@
+/**
+ * bx-Blogger — RedirectInterceptor (Phase 7.C)
+ *
+ * Fires on `preProcess` — BEFORE ColdBox maps the request to a
+ * handler — so a match short-circuits the whole pipeline and the
+ * response is just the 301/302. Registered AFTER PageCacheInterceptor
+ * (so a cached public page wins for an unchanged URL) and AFTER
+ * RateLimitInterceptor (we don't want redirects subject to
+ * login-throttle logic, but running after both is cheap + safe).
+ *
+ * Path normalization matches RedirectService.normalizePath — we
+ * compare on the route-as-served, never on query strings. If a
+ * match hits, we preserve the original query string on the way to
+ * the new URL so `?utm_source=...` stickiness works for linked
+ * legacy paths.
+ *
+ * Skips:
+ *   - Any path under `/admin/`, `/security/`, `/account/`,
+ *     `/preview/`, `/passwordReset/`, `/emailVerification/` —
+ *     these are app-own surfaces that should never be redirected
+ *     by the redirects table (admins shouldn't be able to
+ *     accidentally 301 themselves out of the admin UI).
+ *   - Static-asset paths (`.xml`, `.txt`, `.ico`, `.js`, `.css`,
+ *     `.png`, `.jpg`, `.svg`, `.webp`, `.woff*`) — same-name
+ *     files are served from disk before ColdBox sees them anyway,
+ *     but this prevents a misconfigured redirect from hijacking
+ *     a handler like `/sitemap.xml` or `/robots.txt`.
+ *
+ * Lazy service resolution (see RateLimitInterceptor gotcha note in
+ * CLAUDE.md) — RedirectService via `getInstance()` inside the hook.
+ */
+class extends="coldbox.system.Interceptor" {
+
+    function configure() {}
+
+    function preProcess( event, data, buffer, rc, prc ) {
+        try {
+            var path = arguments.event.getCurrentRoutedURL();
+            if ( isSafePath( path ) ) return;
+
+            var svc   = getInstance( "RedirectService" );
+            var match = svc.lookup( path );
+            // RedirectService.lookup returns null on no match, but
+            // belt-and-suspenders: qb's .first() quirk has burned us
+            // before and a layered guard here is trivial.
+            if ( isNull( match ) ) return;
+            if ( isStruct( match ) && structIsEmpty( match ) ) return;
+
+            // Preserve incoming query string (tracking params, etc.).
+            var qs = cgi.query_string ?: "";
+            var target = match.to_path;
+            if ( len( qs ) ) {
+                target &= ( target contains "?" ) ? "&" & qs : "?" & qs;
+            }
+
+            // Increment hit counter synchronously. Cheap (indexed
+            // UPDATE) and happens off the hot path — redirects only
+            // fire for URLs that no longer exist.
+            try { svc.recordHit( match.id ); } catch ( any e ) {
+                writeLog(
+                    file = "bxblogger",
+                    type = "warning",
+                    text = "RedirectInterceptor.recordHit failed id=" & match.id & ": " & e.message
+                );
+            }
+
+            var code = val( match.status_code ?: 301 );
+            if ( code != 301 && code != 302 ) code = 301;
+
+            arguments.event.setHTTPHeader( statusCode = code );
+            arguments.event.setHTTPHeader( name = "Location", value = target );
+            arguments.event.setHTTPHeader( name = "Cache-Control", value = "no-cache, no-store, must-revalidate" );
+            arguments.event.renderData(
+                type       = "plain",
+                data       = "",
+                statusCode = code
+            );
+            arguments.event.noExecution();
+        }
+        catch ( any e ) {
+            // A broken redirect should NEVER take down a request —
+            // log and fall through so ColdBox routes normally.
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "RedirectInterceptor: " & ( e.message ?: "(no message)" )
+            );
+        }
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    /**
+     * Paths we refuse to redirect away from. Admin shells + auth
+     * surfaces must be unreachable via this table; static-style
+     * extensions shouldn't either (a wayward entry pointing at
+     * `/robots.txt` would break crawler behavior sitewide).
+     */
+    private boolean function isSafePath( required string path ) {
+        if ( !len( arguments.path ) ) return true;
+        var p = lCase( arguments.path );
+
+        if ( left( p, 7 )  == "/admin/" || p == "/admin" ) return true;
+        if ( left( p, 10 ) == "/security/" ) return true;
+        if ( left( p, 9 )  == "/account/" || p == "/account" ) return true;
+        if ( left( p, 9 )  == "/preview/" ) return true;
+        if ( left( p, 15 ) == "/passwordreset/" ) return true;
+        if ( left( p, 19 ) == "/emailverification/" ) return true;
+        if ( left( p, 3 )  == "/__" ) return true;  // /__health, future /__*
+
+        var dot = listLast( p, "." );
+        if ( dot != p ) {
+            var exts = "xml,txt,ico,js,css,png,jpg,jpeg,gif,svg,webp,woff,woff2,ttf,map";
+            if ( listFindNoCase( exts, dot ) ) return true;
+        }
+
+        return false;
+    }
+
+}

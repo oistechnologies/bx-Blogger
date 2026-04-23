@@ -224,6 +224,13 @@ class {
 			// no point doing rate-limit math on a served-from-cache
 			// response.
 			{ class : "interceptors.PageCacheInterceptor" },
+			// 7.C — runs BEFORE rate-limit + theme resolution. A match
+			// against the `redirects` table short-circuits the request
+			// as a 301/302, so there's no point paying for anything
+			// downstream. Sits after PageCache because a still-live
+			// cached page for an unchanged URL should win (and a
+			// redirect is cheap to re-check on the next miss anyway).
+			{ class : "interceptors.RedirectInterceptor" },
 			{
 				class      : "interceptors.RateLimitInterceptor",
 				properties : {

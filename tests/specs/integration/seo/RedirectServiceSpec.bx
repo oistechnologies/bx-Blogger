@@ -1,0 +1,206 @@
+/**
+ * bx-Blogger — RedirectServiceSpec (Phase 7.C)
+ *
+ * Covers:
+ *   - path normalization (leading slash, trailing slash, query + fragment strip)
+ *   - register() insert vs. update semantics
+ *   - self-redirect + status-code validation
+ *   - chain collapse (old → existing-target rewrite on re-register)
+ *   - lookup() matches normalized paths
+ *   - recordHit() increments atomically + stamps last_hit_at
+ *   - PostService.update slug change → auto-inserts a 301 when
+ *     the post is published
+ *   - draft slug change → NO redirect row created
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc = getInstance( "RedirectService" );
+        variables.redirectBoundary = maxRedirectId();
+    }
+
+    function afterAll() {
+        try {
+            getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "redirects" )
+                .where( "id", ">", variables.redirectBoundary ?: 0 )
+                .delete();
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "RedirectServiceSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "RedirectService", function() {
+
+            describe( "normalizePath()", function() {
+                it( "adds leading slash when missing", function() {
+                    expect( svc.normalizePath( "blog/hello" ) ).toBe( "/blog/hello" );
+                } );
+                it( "strips trailing slash (but keeps root)", function() {
+                    expect( svc.normalizePath( "/blog/hello/" ) ).toBe( "/blog/hello" );
+                    expect( svc.normalizePath( "/" ) ).toBe( "/" );
+                } );
+                it( "strips the query string", function() {
+                    expect( svc.normalizePath( "/blog/hello?utm=1" ) ).toBe( "/blog/hello" );
+                } );
+                it( "strips the fragment", function() {
+                    expect( svc.normalizePath( "/blog/hello##section" ) ).toBe( "/blog/hello" );
+                } );
+                it( "collapses doubled slashes", function() {
+                    expect( svc.normalizePath( "//blog///foo" ) ).toBe( "/blog/foo" );
+                } );
+                it( "returns empty for empty input", function() {
+                    expect( svc.normalizePath( "   " ) ).toBe( "" );
+                } );
+            } );
+
+            describe( "register()", function() {
+                it( "inserts a new row with default 301 status", function() {
+                    var id = svc.register( fromPath = "/old-spec-a", toPath = "/new-spec-a" );
+                    expect( id ).toBeGT( 0 );
+
+                    var row = svc.lookup( "/old-spec-a" );
+                    expect( row.to_path ).toBe( "/new-spec-a" );
+                    expect( val( row.status_code ) ).toBe( 301 );
+                    expect( val( row.hits ) ).toBe( 0 );
+                } );
+
+                it( "refuses a self-redirect (normalized match)", function() {
+                    expect( function() {
+                        svc.register( fromPath = "/same-path", toPath = "/same-path/" );
+                    } ).toThrow( type = "bxBlogger.RedirectService.SelfRedirect" );
+                } );
+
+                it( "refuses a status code other than 301 or 302", function() {
+                    expect( function() {
+                        svc.register( fromPath = "/old-spec-bad", toPath = "/new-spec-bad", statusCode = 404 );
+                    } ).toThrow( type = "bxBlogger.RedirectService.InvalidStatus" );
+                } );
+
+                it( "refuses an empty from_path", function() {
+                    expect( function() {
+                        svc.register( fromPath = "   ", toPath = "/anywhere" );
+                    } ).toThrow( type = "bxBlogger.RedirectService.InvalidPath" );
+                } );
+
+                it( "updates an existing from_path rather than duplicating", function() {
+                    svc.register( fromPath = "/old-spec-b", toPath = "/first-target" );
+                    svc.register( fromPath = "/old-spec-b", toPath = "/second-target", statusCode = 302 );
+
+                    var row = svc.lookup( "/old-spec-b" );
+                    expect( row.to_path ).toBe( "/second-target" );
+                    expect( val( row.status_code ) ).toBe( 302 );
+
+                    var qb = getInstance( "QueryBuilder@qb" ).newQuery();
+                    var rows = qb.from( "redirects" ).where( "from_path", "/old-spec-b" ).get();
+                    expect( rows.len() ).toBe( 1 );
+                } );
+
+                it( "collapses chain A→B when we then register B→C (A ends up pointing at C)", function() {
+                    svc.register( fromPath = "/chain-a", toPath = "/chain-b" );
+                    svc.register( fromPath = "/chain-b", toPath = "/chain-c" );
+
+                    var a = svc.lookup( "/chain-a" );
+                    expect( a.to_path ).toBe( "/chain-c" );
+                    var b = svc.lookup( "/chain-b" );
+                    expect( b.to_path ).toBe( "/chain-c" );
+                } );
+            } );
+
+            describe( "lookup()", function() {
+                it( "matches the normalized form of the input", function() {
+                    svc.register( fromPath = "/look-a", toPath = "/look-b" );
+                    var row = svc.lookup( "look-a/?tracking=1" );
+                    expect( row.from_path ).toBe( "/look-a" );
+                } );
+                it( "returns null for no match", function() {
+                    expect( isNull( svc.lookup( "/nothing-here-" & createUUID() ) ) ).toBeTrue();
+                } );
+            } );
+
+            describe( "recordHit()", function() {
+                it( "increments hits and stamps last_hit_at", function() {
+                    var id   = svc.register( fromPath = "/hit-source", toPath = "/hit-target" );
+                    svc.recordHit( id );
+                    svc.recordHit( id );
+                    var row = svc.lookup( "/hit-source" );
+                    expect( val( row.hits ) ).toBe( 2 );
+                    expect( len( row.last_hit_at ?: "" ) ).toBeGT( 0, "last_hit_at stamped" );
+                } );
+            } );
+
+            describe( "PostService slug change integration", function() {
+                it( "auto-registers a 301 from old → new slug when the post is published", function() {
+                    var author  = createTestUser();
+                    var postSvc = getInstance( "PostService" );
+                    var uid     = lCase( replace( createUUID(), "-", "", "all" ) );
+                    var post    = postSvc.create( {
+                        "authorId"     : author.getId(),
+                        "title"        : "Slug change",
+                        "slug"         : "original-" & uid,
+                        "bodyMarkdown" : "Body"
+                    } );
+                    postSvc.publish( post );
+                    var originalSlug = post.getSlug();
+                    postSvc.update(
+                        post     = post,
+                        attrs    = { "slug" : "renamed-" & uid },
+                        editorId = author.getId()
+                    );
+
+                    var row = svc.lookup( "/blog/" & originalSlug );
+                    expect( isNull( row ) ).toBeFalse( "redirect row must exist" );
+                    expect( row.to_path ).toBe( "/blog/" & post.getSlug() );
+                    expect( val( row.status_code ) ).toBe( 301 );
+                } );
+
+                it( "does NOT register a redirect for a draft slug change", function() {
+                    var author  = createTestUser();
+                    var postSvc = getInstance( "PostService" );
+                    var uid     = lCase( replace( createUUID(), "-", "", "all" ) );
+                    var post    = postSvc.create( {
+                        "authorId"     : author.getId(),
+                        "title"        : "Still a draft",
+                        "slug"         : "draftorig-" & uid,
+                        "bodyMarkdown" : "Body"
+                    } );
+                    // intentionally NOT published.
+
+                    var originalSlug = post.getSlug();
+                    postSvc.update(
+                        post     = post,
+                        attrs    = { "slug" : "draftrenamed-" & uid },
+                        editorId = author.getId()
+                    );
+
+                    expect( isNull( svc.lookup( "/blog/" & originalSlug ) ) ).toBeTrue(
+                        "no redirect row should exist for draft slug change"
+                    );
+                } );
+            } );
+
+        } );
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    private numeric function maxRedirectId() {
+        try {
+            var row = getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "redirects" )
+                .selectRaw( "COALESCE(MAX(id), 0) AS max_id" )
+                .first();
+            return val( row.max_id ?: 0 );
+        }
+        catch ( any e ) {
+            return 0;
+        }
+    }
+
+}

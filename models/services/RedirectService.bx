@@ -1,0 +1,252 @@
+/**
+ * bx-Blogger — RedirectService (Phase 7.C)
+ *
+ * Authoritative read/write layer for the `redirects` table.
+ * Consumed by:
+ *
+ *   - `RedirectInterceptor.preProcess` — looks up every incoming
+ *     path and 301/302s when a row matches.
+ *   - `PostService.update` — on a published-post slug change,
+ *     auto-registers `/blog/{old}` → `/blog/{new}` and collapses
+ *     any dangling redirects that targeted the old URL.
+ *   - Phase 7.G (B22 broken-links) — the admin "Add Redirect"
+ *     button promotes a `broken_links` row into a redirect.
+ *   - Phase 8 Redirects Manager admin UI — edit / delete / list.
+ *
+ * Path contract:
+ *   - Stored paths always start with `/` and have NO trailing
+ *     slash (except the root `/`). Query strings are stripped
+ *     on write — redirects match on path alone. Case-sensitive.
+ *   - 500-char cap enforced at the DB column (silent truncation
+ *     avoided by validating on write).
+ *
+ * Anti-loop: `register()` refuses to create a row where
+ * `from == to` (exact match, after normalization) and also
+ * rewrites any existing row whose target equals the new
+ * `from_path` so admin-added chains collapse automatically. A
+ * deeper cycle detector would be over-engineering for the two
+ * writers we have; we cap it at one hop.
+ *
+ * Caching: Phase 7.C does NOT cache. The interceptor runs a
+ * single indexed SELECT per cache-miss page request — redirect
+ * rows are rarer than cached pages, and incrementing hit counts
+ * forces a write on every match anyway. Phase 9 can revisit if
+ * profile shows the SELECT in a hot path.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox"          inject="wirebox";
+    property name="pageCacheService" inject="PageCacheService";
+    property name="log"              inject="logbox:logger:{this}";
+
+    variables.maxPathLength = 500;
+
+    // --------------------------------------------------------------------
+    // Read
+    // --------------------------------------------------------------------
+
+    /**
+     * Find a redirect matching `path`. Returns the row (struct) or
+     * null when no match. Path is normalized (leading slash, query
+     * stripped) before lookup so callers can hand in raw request
+     * paths.
+     */
+    any function lookup( required string path ) {
+        var norm = normalizePath( arguments.path );
+        if ( !len( norm ) ) return javaCast( "null", "" );
+
+        var row = freshQb().from( "redirects" )
+            .where( "from_path", norm )
+            .first();
+        if ( isNullOrEmpty( row ) ) return javaCast( "null", "" );
+        return row;
+    }
+
+    /**
+     * Full list ordered by most-recently-hit, then alphabetical.
+     * Used by the Phase-8 admin Redirects Manager; keep it cheap
+     * enough that pagination isn't required for typical installs
+     * (<1k rows).
+     */
+    array function all() {
+        return freshQb().from( "redirects" )
+            .orderBy( "last_hit_at", "desc" )
+            .orderBy( "from_path", "asc" )
+            .get();
+    }
+
+    // --------------------------------------------------------------------
+    // Write
+    // --------------------------------------------------------------------
+
+    /**
+     * Insert (or replace) a redirect. Returns the row id.
+     *
+     * @fromPath    Legacy path (what crawlers hit).
+     * @toPath      Destination path (where we want them to land).
+     * @statusCode  301 (default, permanent) or 302 (temporary).
+     * @createdBy   Optional users.id for the audit trail.
+     *
+     * Throws `bxBlogger.RedirectService.InvalidPath` on empty /
+     * too-long paths, `bxBlogger.RedirectService.SelfRedirect`
+     * when from and to normalize to the same path.
+     */
+    numeric function register(
+        required string  fromPath,
+        required string  toPath,
+                 numeric statusCode = 301,
+                 any     createdBy  = javaCast( "null", "" )
+    ) {
+        var fromNorm = normalizePath( arguments.fromPath );
+        var toNorm   = normalizePath( arguments.toPath   );
+        assertValidPath( fromNorm, "from_path" );
+        assertValidPath( toNorm,   "to_path"   );
+        if ( fromNorm == toNorm ) {
+            throw(
+                type    = "bxBlogger.RedirectService.SelfRedirect",
+                message = "Refusing to create a self-referential redirect [" & fromNorm & "]"
+            );
+        }
+        if ( arguments.statusCode != 301 && arguments.statusCode != 302 ) {
+            throw(
+                type    = "bxBlogger.RedirectService.InvalidStatus",
+                message = "status_code must be 301 or 302 (got " & arguments.statusCode & ")"
+            );
+        }
+
+        // Chain-collapse: anything currently pointing *to* the new
+        // from_path is stale after this insert — rewrite its target
+        // to the new to_path so serve-time stays a single hop.
+        freshQb().from( "redirects" )
+            .where( "to_path", fromNorm )
+            .update( {
+                "to_path"    : toNorm,
+                "updated_at" : nowForDb()
+            } );
+
+        var existing = freshQb().from( "redirects" )
+            .where( "from_path", fromNorm )
+            .first();
+
+        if ( isNullOrEmpty( existing ) ) {
+            var row = {
+                "from_path"   : fromNorm,
+                "to_path"     : toNorm,
+                "status_code" : arguments.statusCode,
+                "hits"        : 0,
+                "created_at"  : nowForDb(),
+                "updated_at"  : nowForDb()
+            };
+            if ( !isNull( arguments.createdBy ) && val( arguments.createdBy ) > 0 ) {
+                row[ "created_by" ] = val( arguments.createdBy );
+            }
+            freshQb().from( "redirects" ).insert( row );
+            variables.pageCacheService.invalidateAll();
+            log.info( "RedirectService: registered " & fromNorm & " -> " & toNorm & " [" & arguments.statusCode & "]" );
+            // Re-read via the UNIQUE `from_path` rather than
+            // relying on qb's driver-specific generatedKey — same
+            // pattern MenuService uses for its auto-increment ids.
+            var inserted = freshQb().from( "redirects" )
+                .where( "from_path", fromNorm )
+                .first();
+            return isNullOrEmpty( inserted ) ? 0 : val( inserted.id );
+        }
+
+        freshQb().from( "redirects" )
+            .where( "id", existing.id )
+            .update( {
+                "to_path"     : toNorm,
+                "status_code" : arguments.statusCode,
+                "updated_at"  : nowForDb()
+            } );
+        variables.pageCacheService.invalidateAll();
+        log.info( "RedirectService: updated " & fromNorm & " -> " & toNorm & " [" & arguments.statusCode & "]" );
+        return val( existing.id );
+    }
+
+    /**
+     * Increment `hits` + stamp `last_hit_at`. Called by the
+     * interceptor after serving a redirect. Uses a single UPDATE so
+     * the counter is atomic against concurrent hits.
+     */
+    function recordHit( required numeric id ) {
+        freshQb().from( "redirects" )
+            .where( "id", arguments.id )
+            .update( {
+                "hits"        : freshQb().raw( "hits + 1" ),
+                "last_hit_at" : nowForDb()
+            } );
+    }
+
+    function delete( required numeric id ) {
+        freshQb().from( "redirects" )
+            .where( "id", arguments.id )
+            .delete();
+        variables.pageCacheService.invalidateAll();
+    }
+
+    // --------------------------------------------------------------------
+    // Path utilities (public — callers that build paths pre-register
+    // often normalize in one place too, so exposing the helper avoids
+    // drift).
+    // --------------------------------------------------------------------
+
+    /**
+     * Normalize an incoming path: strip query string + fragment,
+     * ensure leading slash, strip trailing slash (except root).
+     * Returns empty string when input is empty or whitespace.
+     */
+    string function normalizePath( required string raw ) {
+        var s = trim( arguments.raw );
+        if ( !len( s ) ) return "";
+        // Strip fragment first, then query.
+        if ( s contains "##" ) s = listFirst( s, "##" );
+        if ( s contains "?" ) s = listFirst( s, "?" );
+        if ( left( s, 1 ) != "/" ) s = "/" & s;
+        // Collapse any accidental doubled slashes (e.g., //blog/foo).
+        s = reReplace( s, "/{2,}", "/", "all" );
+        if ( len( s ) > 1 && right( s, 1 ) == "/" ) s = left( s, len( s ) - 1 );
+        return s;
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    private void function assertValidPath( required string path, required string label ) {
+        if ( !len( arguments.path ) ) {
+            throw(
+                type    = "bxBlogger.RedirectService.InvalidPath",
+                message = "Redirect " & arguments.label & " can't be empty."
+            );
+        }
+        if ( len( arguments.path ) > variables.maxPathLength ) {
+            throw(
+                type    = "bxBlogger.RedirectService.InvalidPath",
+                message = "Redirect " & arguments.label & " exceeds " &
+                    variables.maxPathLength & " chars."
+            );
+        }
+    }
+
+    private any function freshQb() {
+        return variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery();
+    }
+
+    private string function nowForDb() {
+        return dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+    }
+
+    /**
+     * qb's `.first()` returns an empty struct `{}` — NOT null — on
+     * a no-match. `isNull(row)` alone lets the empty struct through
+     * to a `row.id` access that blows up with a KeyNotFoundException.
+     * Mirrors the pattern in SettingService.readRow().
+     */
+    private boolean function isNullOrEmpty( required any value ) {
+        if ( isNull( arguments.value ) ) return true;
+        if ( isStruct( arguments.value ) && structIsEmpty( arguments.value ) ) return true;
+        return false;
+    }
+
+}
