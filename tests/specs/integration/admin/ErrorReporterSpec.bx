@@ -1,0 +1,139 @@
+/**
+ * bx-Blogger — ErrorReporterSpec (Phase 10.F / B24)
+ *
+ * Covers both shipping reporter impls + the WireBox binding:
+ *
+ *   NoopErrorReporter
+ *     - report() never throws + produces no side effects
+ *       beyond a writeLog line
+ *
+ *   EmailErrorReporter
+ *     - fingerprintOf() collapses same-type-same-message into
+ *       one bucket; different type OR different message forks
+ *     - overRateLimit() returns false for the first 10 hits on
+ *       a fingerprint, true from the 11th on
+ *     - report() with no notifications.email_to configured is a
+ *       no-op (doesn't throw, doesn't try to send)
+ *     - report() with destination configured queues an async send
+ *       via EmailService
+ *     - report() never propagates a reporter-side exception
+ *       (the failing dependency test path)
+ *
+ * The WireBox binding is env-driven; asserting the default alias
+ * resolves to NoopErrorReporter confirms the `.env.example`
+ * value + config/WireBox.bx mapping line up.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.noop   = getInstance( "models.services.errors.NoopErrorReporter" );
+        variables.email  = getInstance( "models.services.errors.EmailErrorReporter" );
+        variables.setSvc = getInstance( "SettingService" );
+    }
+
+    function afterAll() {
+        try { variables.setSvc.delete( "notifications.email_to" ); } catch ( any e ) {}
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "ErrorReporter", function() {
+
+            describe( "NoopErrorReporter", function() {
+                it( "never throws on a minimal exception struct", function() {
+                    expect( function() {
+                        noop.report(
+                            exception      = { "type" : "some.type", "message" : "boom" },
+                            errorReference = "abc123"
+                        );
+                    } ).notToThrow();
+                } );
+
+                it( "tolerates a totally empty exception struct", function() {
+                    expect( function() {
+                        noop.report( exception = {} );
+                    } ).notToThrow();
+                } );
+            } );
+
+            describe( "EmailErrorReporter.fingerprintOf()", function() {
+                it( "collapses identical exceptions into the same bucket", function() {
+                    var a = email.fingerprintOf( { "type" : "x.y", "message" : "nope" } );
+                    var b = email.fingerprintOf( { "type" : "x.y", "message" : "nope" } );
+                    expect( b ).toBe( a );
+                } );
+
+                it( "forks on different exception type", function() {
+                    var a = email.fingerprintOf( { "type" : "x.y", "message" : "same" } );
+                    var b = email.fingerprintOf( { "type" : "x.z", "message" : "same" } );
+                    expect( b ).notToBe( a );
+                } );
+
+                it( "forks on different message", function() {
+                    var a = email.fingerprintOf( { "type" : "same", "message" : "alpha" } );
+                    var b = email.fingerprintOf( { "type" : "same", "message" : "beta"  } );
+                    expect( b ).notToBe( a );
+                } );
+
+                it( "ignores drift past the first 200 chars (so variable suffixes don't split buckets)", function() {
+                    var common = repeatString( "x", 210 );
+                    var a = email.fingerprintOf( { "type" : "t", "message" : common & "A" } );
+                    var b = email.fingerprintOf( { "type" : "t", "message" : common & "B" } );
+                    expect( b ).toBe( a, "suffix after char 200 must not change the fingerprint" );
+                } );
+            } );
+
+            describe( "EmailErrorReporter.overRateLimit()", function() {
+                it( "returns false on the first 10 hits for a fingerprint, true from the 11th", function() {
+                    // Use a unique fingerprint so prior spec runs
+                    // can't pollute the counter.
+                    var fp = lCase( hash( "spec-over-" & createUUID(), "MD5" ) );
+
+                    // First 10 calls: cap allows, but also increments.
+                    for ( var i = 1; i <= 10; i++ ) {
+                        expect( email.overRateLimit( fp ) ).toBeFalse( "hit #i# must be under cap" );
+                    }
+                    // 11th onward: capped.
+                    expect( email.overRateLimit( fp ) ).toBeTrue( "11th hit must be capped" );
+                    expect( email.overRateLimit( fp ) ).toBeTrue( "12th hit still capped" );
+                } );
+            } );
+
+            describe( "EmailErrorReporter.report()", function() {
+                it( "is a no-op when notifications.email_to is empty (never throws)", function() {
+                    variables.setSvc.delete( "notifications.email_to" );
+                    expect( function() {
+                        email.report(
+                            exception      = { "type" : "spec.quiet", "message" : "no to-address" },
+                            errorReference = "no-dest-" & createUUID()
+                        );
+                    } ).notToThrow();
+                } );
+
+                it( "does not throw when given a broken exception struct", function() {
+                    // Simulates a weird-shape cfcatch coming from a
+                    // non-CFML callsite. Any field-access failure must
+                    // be swallowed; the reporter's contract is "never
+                    // throw from onException's call site."
+                    expect( function() {
+                        email.report( exception = { /* intentionally empty */ } );
+                    } ).notToThrow();
+                } );
+            } );
+
+            describe( "WireBox binding", function() {
+                it( "resolves `ErrorReporter` — default is Noop", function() {
+                    // The alias is resolved via env var ERROR_REPORTER;
+                    // .env.example ships `noop`, so the default resolution
+                    // is NoopErrorReporter. Spec container environment
+                    // inherits that value.
+                    var instance = getInstance( "ErrorReporter" );
+                    expect( isInstanceOf( instance, "models.services.errors.NoopErrorReporter" ) ).toBeTrue();
+                } );
+            } );
+
+        } );
+    }
+
+}

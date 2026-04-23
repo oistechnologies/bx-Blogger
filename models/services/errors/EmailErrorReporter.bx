@@ -1,0 +1,191 @@
+/**
+ * bx-Blogger — EmailErrorReporter (Phase 10.F, B24)
+ *
+ * Opt-in `ErrorReporter` binding — queues an email to
+ * `settings.notifications.email_to` when `Main.onException`
+ * catches an uncaught 500. Goes via `EmailService.sendAsync`
+ * (which enqueues a `SendEmailJob` through cbq) so the reporter
+ * itself never blocks the error render.
+ *
+ * Activation: set `ERROR_REPORTER=email` in prod `.env`. WireBox
+ * config reads that env var and binds the `ErrorReporter` alias
+ * to this class instead of `NoopErrorReporter`.
+ *
+ * Rate limit: crash loops (DB down, OOM, corrupted bootstrap)
+ * can generate thousands of uncaught 500s per minute. Without a
+ * cap, this reporter would flood your inbox and trip your SMTP
+ * provider's abuse rules.
+ *
+ * Design:
+ *
+ *   - Fingerprint each exception as
+ *     `md5( type + first 200 chars of message )` — collapses
+ *     "stack trace for same bug hit 10k times" into a single
+ *     bucket. A different exception type or error-path bypasses
+ *     the bucket and sends its own email.
+ *   - Cap each fingerprint at 10 emails per hour. Subsequent
+ *     matches inside that window increment a counter but don't
+ *     send. No "suppressed N more" coalescing email yet — the
+ *     counter survives in cache for the hour so future tooling
+ *     can read it.
+ *   - Cache backend: default cachebox. Values survive app
+ *     restarts if cache is backed by something persistent;
+ *     default ephemeral cache means a restart resets the
+ *     counters, which is acceptable (crash-loop is a restart
+ *     too).
+ *
+ * NEVER throws. A reporter that throws during `Main.onException`
+ * would trigger a second onException → third onException →
+ * blank page. Every code path here is try/catch-swallowed; on
+ * any failure we fall back to a writeLog so the event isn't
+ * silently lost.
+ */
+class accessors="true" singleton {
+
+    property name="emailService"   inject="EmailService";
+    property name="settingService" inject="SettingService";
+    property name="cache"          inject="cachebox:default";
+    property name="controller"     inject="coldbox";
+    property name="log"            inject="logbox:logger:{this}";
+
+    variables.maxPerFingerprintPerHour = 10;
+    variables.rateLimitTtlMinutes      = 60;
+    variables.stackTraceMaxChars       = 4000;   // truncate before email
+
+    function report(
+        required any    exception,
+                 any    event          = "",
+                 string errorReference = ""
+    ) {
+        try {
+            // Always writeLog first — same as Noop. An email-send
+            // failure / rate-limit hit shouldn't lose the local
+            // record of what happened.
+            logLocally( arguments.exception, arguments.errorReference );
+
+            var to = trim( variables.settingService.get( "notifications.email_to", "" ) );
+            if ( !len( to ) ) {
+                // No destination configured — nothing to send. Most
+                // common on fresh installs before the operator sets
+                // BX_NOTIFICATION_EMAIL.
+                return;
+            }
+
+            var fingerprint = fingerprintOf( arguments.exception );
+            if ( overRateLimit( fingerprint ) ) return;
+
+            var templateData = buildTemplateData(
+                exception      = arguments.exception,
+                event          = arguments.event,
+                errorReference = arguments.errorReference
+            );
+
+            variables.emailService.sendAsync(
+                to       = to,
+                subject  = "[" & ( templateData.siteName ) & "] Server error: " &
+                           left( arguments.exception.message ?: "(unknown)", 80 ),
+                template = "error-report",
+                data     = templateData
+            );
+        }
+        catch ( any e ) {
+            // Last-resort fallback. We MUST NOT let any exception
+            // escape — the caller is the onException handler itself.
+            try {
+                writeLog(
+                    file = "bxblogger",
+                    type = "error",
+                    text = "EmailErrorReporter fallback: " & ( e.message ?: "(no message)" ) &
+                           " while reporting ref=" & arguments.errorReference
+                );
+            }
+            catch ( any innerErr ) { /* give up */ }
+        }
+    }
+
+    // --------------------------------------------------------------------
+    // Testable seams — kept public so specs can exercise fingerprinting
+    // + rate-limit state without mocking cache or firing a real email.
+    // --------------------------------------------------------------------
+
+    /**
+     * Collapse an exception to a stable short string. Two throws
+     * of the same underlying bug from the same spot produce the
+     * same fingerprint; two different bugs produce different
+     * fingerprints. Message is truncated to the first 200 chars
+     * so variable parts (post ids, user emails) don't split one
+     * logical bug across many buckets.
+     */
+    string function fingerprintOf( required any exception ) {
+        var type    = arguments.exception.type    ?: "unknown";
+        var message = left( arguments.exception.message ?: "", 200 );
+        return lCase( hash( type & "|" & message, "MD5" ) );
+    }
+
+    /**
+     * Cap check + increment. Returns true when this fingerprint
+     * has already sent `maxPerFingerprintPerHour` emails in the
+     * current rolling window.
+     */
+    boolean function overRateLimit( required string fingerprint ) {
+        var key   = "error-reporter:" & arguments.fingerprint;
+        var count = variables.cache.get( key ) ?: 0;
+        variables.cache.set( key, count + 1, variables.rateLimitTtlMinutes, 0 );
+        return count >= variables.maxPerFingerprintPerHour;
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    private void function logLocally( required any exception, required string errorReference ) {
+        try {
+            var msg = "Uncaught exception"
+                & ( len( arguments.errorReference ) ? " ref=" & arguments.errorReference : "" )
+                & " type=[" & ( arguments.exception.type    ?: "unknown" ) & "]"
+                & " message=[" & ( arguments.exception.message ?: "(no message)" ) & "]";
+            writeLog( file = "bxblogger", type = "error", text = msg );
+        }
+        catch ( any e ) {}
+    }
+
+    private struct function buildTemplateData(
+        required any    exception,
+                 any    event          = "",
+                 string errorReference = ""
+    ) {
+        var siteName = "bx-Blogger";
+        try { siteName = variables.controller.getSetting( "AppName" ); } catch ( any e ) {}
+
+        var requestPath   = "";
+        var requestMethod = "";
+        var clientIp      = "";
+        try {
+            if ( !isSimpleValue( arguments.event ) ) {
+                requestPath   = arguments.event.getCurrentRoutedURL();
+                requestMethod = cgi.request_method ?: "";
+                clientIp      = arguments.event.getPrivateValue( "clientIp", cgi.remote_addr ?: "" );
+            }
+        }
+        catch ( any e ) {}
+
+        var stack = arguments.exception.stackTrace ?: "";
+        if ( len( stack ) > variables.stackTraceMaxChars ) {
+            stack = left( stack, variables.stackTraceMaxChars ) & char( 10 ) & "… (truncated)";
+        }
+
+        return {
+            "siteName"         : siteName,
+            "errorReference"   : arguments.errorReference,
+            "occurredAt"       : dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" ),
+            "requestMethod"    : requestMethod,
+            "requestPath"      : requestPath,
+            "clientIp"         : clientIp,
+            "exceptionType"    : arguments.exception.type    ?: "unknown",
+            "exceptionMessage" : arguments.exception.message ?: "(no message)",
+            "exceptionDetail"  : arguments.exception.detail  ?: "",
+            "stackTrace"       : stack
+        };
+    }
+
+}

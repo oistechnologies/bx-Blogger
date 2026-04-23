@@ -51,6 +51,24 @@ class extends="coldbox.system.ioc.config.Binder" {
 			? "models.ai.MockAiImageProvider"
 			: "models.ai.BxAiImageProvider";
 		map( "AiImageProvider" ).to( aiImageProviderClass ).asSingleton();
+
+		// --------------------------------------------------------------
+		// Error reporter (Phase 10.F / B24)
+		// --------------------------------------------------------------
+		// `Main.onException` asks the `ErrorReporter` alias to handle
+		// every uncaught 500. The binding is env-selected so prod can
+		// switch on email alerts without touching code:
+		//   "noop"  → NoopErrorReporter — log-only, safe default
+		//   "email" → EmailErrorReporter — queues a SendEmailJob to
+		//             `settings.notifications.email_to`, rate-limited
+		//             to 10 emails per exception-fingerprint per hour
+		// The interface is duck-typed — both classes expose
+		// `report( exception, event?, errorReference? )`. A future
+		// Sentry adapter slots in the same way.
+		var errorReporterClass = lCase( getSystemSetting( "ERROR_REPORTER", "noop" ) ) == "email"
+			? "models.services.errors.EmailErrorReporter"
+			: "models.services.errors.NoopErrorReporter";
+		map( "ErrorReporter" ).to( errorReporterClass ).asSingleton();
 	}
 
 }

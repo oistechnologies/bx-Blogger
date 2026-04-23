@@ -1,0 +1,42 @@
+<bx:output>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>#encodeForHTML( data.siteName ?: "bx-Blogger" )# — Server error</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: ##111; max-width: 680px; margin: 24px auto; padding: 0 20px; }
+h1 { font-size: 18px; color: ##b91c1c; border-bottom: 1px solid ##eee; padding-bottom: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+table th, table td { text-align: left; padding: 6px 10px; vertical-align: top; border-bottom: 1px solid ##f1f1f1; }
+table th { width: 160px; color: ##555; font-weight: 600; }
+pre { background: ##f6f8fa; padding: 12px; border-radius: 6px; font-size: 12px; overflow-x: auto; white-space: pre-wrap; }
+footer { margin-top: 24px; font-size: 12px; color: ##888; border-top: 1px solid ##eee; padding-top: 12px; }
+</style>
+</head>
+<body>
+<h1>Server error on #encodeForHTML( data.siteName ?: "bx-Blogger" )#</h1>
+<table>
+<tr><th>Reference</th><td><code>#encodeForHTML( data.errorReference ?: "" )#</code></td></tr>
+<tr><th>Occurred</th><td>#encodeForHTML( data.occurredAt ?: "" )#</td></tr>
+<tr><th>Request</th><td>#encodeForHTML( data.requestMethod ?: "" )# <code>#encodeForHTML( data.requestPath ?: "" )#</code></td></tr>
+<tr><th>Client IP</th><td><code>#encodeForHTML( data.clientIp ?: "" )#</code></td></tr>
+<tr><th>Exception type</th><td><code>#encodeForHTML( data.exceptionType ?: "" )#</code></td></tr>
+<tr><th>Message</th><td>#encodeForHTML( data.exceptionMessage ?: "" )#</td></tr>
+<bx:if len( data.exceptionDetail ?: "" )>
+<tr><th>Detail</th><td>#encodeForHTML( data.exceptionDetail )#</td></tr>
+</bx:if>
+</table>
+<bx:if len( data.stackTrace ?: "" )>
+<h2 style="font-size: 14px; margin-top: 24px;">Stack trace (truncated)</h2>
+<pre>#encodeForHTML( data.stackTrace )#</pre>
+</bx:if>
+<footer>
+You received this because <code>ERROR_REPORTER=email</code> is set on <strong>#encodeForHTML( data.siteName ?: "bx-Blogger" )#</strong>
+and your email is the <code>notifications.email_to</code> setting. To stop receiving these,
+switch <code>ERROR_REPORTER</code> to <code>noop</code> in prod <code>.env</code> and restart, or
+update the destination email.
+</footer>
+</body>
+</html>
+</bx:output>

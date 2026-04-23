@@ -468,6 +468,30 @@ class extends="coldbox.system.EventHandler" {
 		prc.errorReference = lCase( replace( createUUID(), "-", "", "all" ) );
 		prc.pageTitle      = "Server error";
 
+		// Phase 10.F — pass the exception to the configured
+		// ErrorReporter (noop by default; email when ERROR_REPORTER=email).
+		// Wrapped in try/catch so a reporter-side throw can't cascade
+		// into another onException → blank-page loop — the reporter
+		// impls themselves also try/swallow internally, but belt +
+		// suspenders at the call-site keeps the render path safe.
+		try {
+			getInstance( "ErrorReporter" ).report(
+				exception      = prc.exception,
+				event          = arguments.event,
+				errorReference = prc.errorReference
+			);
+		}
+		catch ( any reporterErr ) {
+			try {
+				writeLog(
+					file = "bxblogger",
+					type = "error",
+					text = "Main.onException: ErrorReporter threw: " & ( reporterErr.message ?: "(no message)" )
+				);
+			}
+			catch ( any innerErr ) {}
+		}
+
 		// prc.theme is populated by ThemeResolutionInterceptor on
 		// preProcess; if a failure in that interceptor itself drops
 		// us here, fall back to inline HTML so the user sees *something*.

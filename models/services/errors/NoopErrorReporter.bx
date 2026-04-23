@@ -1,0 +1,49 @@
+/**
+ * bx-Blogger — NoopErrorReporter (Phase 10.F, B24)
+ *
+ * Default `ErrorReporter` binding. Writes the exception to the
+ * local `bxblogger` log via writeLog() and returns — no email,
+ * no network. Matches the PLAN's "interface with a Noop default
+ * and an Email impl" shape: sites that haven't configured
+ * ERROR_REPORTER=email get lossless log-only behavior, same as
+ * the pre-10.F flow, with a single stable call-site in
+ * `Main.onException` that can swap to the Email (or future
+ * Sentry) impl without touching the handler.
+ *
+ * Contract — every ErrorReporter impl exposes the same shape:
+ *
+ *   function report(
+ *       required any    exception,    // the thrown struct (cfcatch-style)
+ *                any    event         = "",    // ColdBox RequestContext (optional)
+ *                string errorReference = ""    // correlation id from onException
+ *   )
+ *
+ * The event arg is optional so non-request callers (scheduled-
+ * task handlers, cbq jobs) can report without a request in hand.
+ */
+class accessors="true" singleton {
+
+    property name="log" inject="logbox:logger:{this}";
+
+    function report(
+        required any    exception,
+                 any    event          = "",
+                 string errorReference = ""
+    ) {
+        try {
+            var msg = "Uncaught exception"
+                & ( len( arguments.errorReference ) ? " ref=" & arguments.errorReference : "" )
+                & " type=[" & ( arguments.exception.type    ?: "unknown" ) & "]"
+                & " message=[" & ( arguments.exception.message ?: "(no message)" ) & "]";
+            writeLog( file = "bxblogger", type = "error", text = msg );
+        }
+        catch ( any e ) {
+            // writeLog itself failing is vanishingly rare, but if it
+            // does we MUST NOT throw — the caller is the onException
+            // handler trying to render a 500 page; a reporter-side
+            // throw here would cascade into a second exception and a
+            // blank page for the user.
+        }
+    }
+
+}

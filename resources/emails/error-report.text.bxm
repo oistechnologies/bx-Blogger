@@ -1,0 +1,20 @@
+<bx:output>Server error on #data.siteName ?: "bx-Blogger"#
+
+Reference:  #data.errorReference ?: ""#
+Occurred:   #data.occurredAt ?: ""#
+Request:    #data.requestMethod ?: ""# #data.requestPath ?: ""#
+Client IP:  #data.clientIp ?: ""#
+Exception:  #data.exceptionType ?: ""#
+Message:    #data.exceptionMessage ?: ""#<bx:if len( data.exceptionDetail ?: "" )>
+Detail:     #data.exceptionDetail#</bx:if>
+<bx:if len( data.stackTrace ?: "" )>
+Stack trace (truncated):
+#data.stackTrace#
+</bx:if>
+
+---
+You received this because ERROR_REPORTER=email is set on #data.siteName ?: "bx-Blogger"#
+and your email is the notifications.email_to setting. To stop, switch
+ERROR_REPORTER to `noop` in prod .env and restart, or update the
+destination email.
+</bx:output>
