@@ -48,7 +48,7 @@
             </div>
             <div class="d-flex gap-2">
                 <a class="btn btn-primary"
-                   href="#event.buildLink( event = 'admin:Privacy.exportUser', queryString = 'id=' & prc.user.getId() )#">
+                   href="#event.buildLink( to = 'admin:Privacy.exportUser', queryString = 'id=' & prc.user.getId() )#">
                     Download export (ZIP)
                 </a>
                 <bx:if prc.canPurge>
