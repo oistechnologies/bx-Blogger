@@ -73,6 +73,23 @@ class accessors="true" singleton {
 
         var robots    = robotsFor( arguments.post );
         var imageUrl  = ogImageForPost( arguments.post );
+        // Phase 7.D.2 — final fallback: Java2D-rendered share card.
+        // Only fires for post_type=post (pages don't benefit from a
+        // title-card default) and only when the preceding chain is
+        // exhausted. Keeps the render path free of the generate
+        // cost for the common case where an author picked an image.
+        if ( !len( imageUrl ) && ( arguments.post.getPostType() ?: "post" ) == "post" ) {
+            imageUrl = variables.wirebox.getInstance( "OgImageService" ).urlFor(
+                post       = arguments.post,
+                authorName = arguments.authorName,
+                siteName   = arguments.siteName
+            );
+            // Rendered cards are relative (`/includes/public/og/...`);
+            // OG/Twitter require absolute URLs.
+            if ( len( imageUrl ) && left( imageUrl, 1 ) == "/" ) {
+                imageUrl = arguments.baseUrl & imageUrl;
+            }
+        }
 
         var og = {
             "title"       : title,

@@ -1,0 +1,5 @@
+# Phase 7.D.2 — OG images are generated on demand by OgImageService.
+# Everything here is derivable from post content + contentVersion,
+# so we don't check in binary output.
+*
+!.gitignore

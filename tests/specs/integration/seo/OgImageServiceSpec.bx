@@ -1,0 +1,154 @@
+/**
+ * bx-Blogger — OgImageServiceSpec (Phase 7.D.2, B8)
+ *
+ * End-to-end exercise of the Java2D OG-card generator:
+ *
+ *   - `urlFor(post)` renders + writes + returns a URL on first call
+ *   - second call with unchanged contentVersion → cache hit (no
+ *     regeneration; same file modtime)
+ *   - bumping contentVersion → new file at a new cache key
+ *   - PNG bytes start with the PNG magic signature
+ *   - SeoService layer-5 integration: published post with no image
+ *     candidates gets a generated og:image absolute URL
+ *
+ * Files are written under the real `og` cbfs disk (Local provider
+ * pointing at `/includes/public/og/`). Cleanup deletes only files
+ * this spec produced — keyed by a per-test UUID in the post slug
+ * propagated into `{postId}-v{contentVersion}.png`.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.ogSvc      = getInstance( "OgImageService" );
+        variables.seoSvc     = getInstance( "SeoService" );
+        variables.postSvc    = getInstance( "PostService" );
+        variables.cbfs       = getInstance( "DiskService@cbfs" );
+        variables.createdOgPaths = [];
+    }
+
+    function afterAll() {
+        try {
+            var disk = variables.cbfs.get( "og" );
+            for ( var p in variables.createdOgPaths ) {
+                try { if ( disk.exists( p ) ) disk.delete( p ); } catch ( any e ) {}
+            }
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "OgImageServiceSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "OgImageService", function() {
+
+            it( "renders a PNG to the `og` disk on first urlFor() call", function() {
+                var post = makePost();
+                var path = ogSvc.pathFor( post );
+                trackPath( path );
+
+                var disk = variables.cbfs.get( "og" );
+                expect( disk.exists( path ) ).toBeFalse( "precondition: fresh post has no cached card" );
+
+                // `url` is a reserved scope in BoxLang — using it as a
+                // local silently resolves to the empty URL scope struct,
+                // NOT the urlFor() return value (see CLAUDE.md reserved-
+                // scope gotcha). Named `ogUrl` to avoid the trap.
+                var ogUrl = ogSvc.urlFor( post = post, authorName = "Test Author", siteName = "Example" );
+                expect( len( ogUrl ) ).toBeGT( 0, "url non-empty" );
+                expect( ogUrl contains path ).toBeTrue( "url includes cache path" );
+                expect( disk.exists( path ) ).toBeTrue( "file was written" );
+            } );
+
+            it( "produces bytes that begin with the PNG magic signature", function() {
+                var post = makePost();
+                trackPath( ogSvc.pathFor( post ) );
+                ogSvc.urlFor( post = post, authorName = "Any", siteName = "Any" );
+
+                var bytes = variables.cbfs.get( "og" ).getAsBinary( ogSvc.pathFor( post ) );
+                // PNG: 89 50 4E 47 0D 0A 1A 0A
+                expect( arrayLen( bytes ) ).toBeGTE( 8 );
+                expect( bytes[ 1 ] ).toBe( -119 );  // 0x89 as signed byte
+                expect( bytes[ 2 ] ).toBe( 80 );    // 'P'
+                expect( bytes[ 3 ] ).toBe( 78 );    // 'N'
+                expect( bytes[ 4 ] ).toBe( 71 );    // 'G'
+            } );
+
+            it( "is idempotent — a second urlFor with the same contentVersion is a cache hit", function() {
+                var post = makePost();
+                trackPath( ogSvc.pathFor( post ) );
+
+                ogSvc.urlFor( post = post, authorName = "A", siteName = "S" );
+                var disk    = variables.cbfs.get( "og" );
+                var path    = ogSvc.pathFor( post );
+                var firstMt = disk.lastModified( path );
+
+                // Force a 1s gap — lastModified has ~second resolution.
+                sleep( 1100 );
+
+                ogSvc.urlFor( post = post, authorName = "A", siteName = "S" );
+                var secondMt = disk.lastModified( path );
+                expect( secondMt ).toBe( firstMt, "no rewrite on cache hit" );
+            } );
+
+            it( "writes a new file when contentVersion changes", function() {
+                var post = makePost();
+                trackPath( ogSvc.pathFor( post ) );
+                ogSvc.urlFor( post = post, authorName = "A", siteName = "S" );
+                var v1Path = ogSvc.pathFor( post );
+
+                post.setContentVersion( ( post.getContentVersion() ?: 1 ) + 1 );
+                post.save();
+
+                var v2Path = ogSvc.pathFor( post );
+                trackPath( v2Path );
+                expect( v2Path ).notToBe( v1Path );
+                expect( variables.cbfs.get( "og" ).exists( v2Path ) ).toBeFalse( "v2 not yet rendered" );
+
+                ogSvc.urlFor( post = post, authorName = "A", siteName = "S" );
+                expect( variables.cbfs.get( "og" ).exists( v2Path ) ).toBeTrue( "v2 rendered on next miss" );
+            } );
+
+            it( "SeoService layer-5 integration: builds an absolute og:image from the generator", function() {
+                var post = makePost();
+                trackPath( ogSvc.pathFor( post ) );
+
+                var meta = variables.seoSvc.buildForPost(
+                    post       = post,
+                    authorName = "Layer 5",
+                    baseUrl    = "https://example.com",
+                    siteName   = "Example"
+                );
+
+                expect( structKeyExists( meta.og, "image" ) ).toBeTrue();
+                expect( left( meta.og.image, 8 ) ).toBe( "https://", "absolute URL" );
+                expect( meta.og.image contains "/includes/public/og/" ).toBeTrue();
+                expect( meta.og.image contains ogSvc.pathFor( post ) ).toBeTrue();
+                expect( meta.twitter.card ).toBe( "summary_large_image" );
+            } );
+
+        } );
+    }
+
+    // --------------------------------------------------------------------
+    // Fixtures
+    // --------------------------------------------------------------------
+
+    private any function makePost() {
+        var author = createTestUser();
+        var post   = variables.postSvc.create( {
+            "authorId"     : author.getId(),
+            "title"        : "OG card spec " & createUUID(),
+            "slug"         : "ogsvc-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+            "bodyMarkdown" : "Body."
+        } );
+        variables.postSvc.publish( post );
+        return post;
+    }
+
+    private void function trackPath( required string path ) {
+        variables.createdOgPaths.append( arguments.path );
+    }
+
+}

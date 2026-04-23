@@ -347,6 +347,20 @@ class {
 							"path"    : getSystemSetting( "CBFS_MEDIA_DISK_PATH", expandPath( "/includes/public/media" ) ),
 							"diskUrl" : "/includes/public/media/"
 						}
+					},
+					// Phase 7.D.2 — Java2D-rendered default OG images
+					// (1200x630 PNG, keyed by {postId}-{contentVersion}.png).
+					// Local-only by design: files here are a deterministic
+					// function of post content, not user uploads, so
+					// pointing prod at S3 would just add latency to a
+					// regeneration-on-miss path. Mirrors the `media` disk's
+					// trailing-slash contract for diskUrl.
+					"og" : {
+						"provider"   : "Local",
+						"properties" : {
+							"path"    : getSystemSetting( "CBFS_OG_DISK_PATH", expandPath( "/includes/public/og" ) ),
+							"diskUrl" : "/includes/public/og/"
+						}
 					}
 				}
 			},

@@ -86,13 +86,20 @@ class extends="tests.support.BaseIntegrationSpec" {
                 expect( meta.og.image ?: "" ).toBe( mediaSvc.urlFor( media ) );
             } );
 
-            it( "emits no image (summary card) when every layer is empty", function() {
+            it( "emits no image (summary card) for a PAGE when every layer is empty", function() {
+                // Layer 5 (7.D.2's Java2D generator) only applies to
+                // post_type="post"; pages intentionally skip it — a
+                // long-form page doesn't benefit from a title-card
+                // fallback the way a stream of blog posts does. This
+                // case exercises that opt-out and is the only surface
+                // today where the Twitter summary (vs
+                // summary_large_image) card is selectable.
                 var author = createTestUser();
                 variables.settingSvc.delete( "site.default_og_image_id" );
 
-                var post = publishedPost( author.getId(), {} );
-                var meta = svc.buildForPost( post = post, authorName = "A", baseUrl = "https://e.co", siteName = "E" );
-                expect( structKeyExists( meta.og, "image" ) ).toBeFalse( "no og:image" );
+                var page = publishedPage( author.getId(), {} );
+                var meta = svc.buildForPage( post = page, baseUrl = "https://e.co", siteName = "E" );
+                expect( structKeyExists( meta.og, "image" ) ).toBeFalse( "no og:image for page" );
                 expect( meta.twitter.card ).toBe( "summary" );
             } );
 
@@ -114,6 +121,20 @@ class extends="tests.support.BaseIntegrationSpec" {
         var post = variables.postSvc.create( attrs );
         variables.postSvc.publish( post );
         return post;
+    }
+
+    private any function publishedPage( required numeric authorId, required struct extraAttrs ) {
+        var attrs = {
+            "authorId"     : arguments.authorId,
+            "postType"     : "page",
+            "title"        : "OG page fallback spec",
+            "slug"         : "ogpg-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+            "bodyMarkdown" : "Body."
+        };
+        structAppend( attrs, arguments.extraAttrs, true );
+        var page = variables.postSvc.create( attrs );
+        variables.postSvc.publish( page );
+        return page;
     }
 
     private any function createMedia( required numeric uploaderId ) {
