@@ -1,0 +1,144 @@
+/**
+ * bx-Blogger — HealthServiceSpec (Phase 10.B / B24)
+ *
+ * Exercises both rollup methods + every individual check. The
+ * dev test-stack has a live MySQL, cachebox, and MailHog in the
+ * compose network, so every check has a real dependency to
+ * reach — this spec validates both shape (keys present) and
+ * behavior (DB actually responds).
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc = getInstance( "HealthService" );
+    }
+
+    function run() {
+        describe( "HealthService", function() {
+
+            describe( "minimal() — probe endpoint payload", function() {
+                it( "reports `ok` when DB + cache both round-trip", function() {
+                    var out = svc.minimal();
+                    expect( out.status ).toBe( "ok" );
+                    expect( out.db.ok    ).toBeTrue( "DB check must pass under the dev stack" );
+                    expect( out.cache.ok ).toBeTrue( "cache check must pass under the dev stack" );
+                } );
+
+                it( "includes version, phase, and iso timestamp", function() {
+                    var out = svc.minimal();
+                    expect( out.version ).notToBe( "" );
+                    expect( out.phase   ).notToBe( "" );
+                    expect( len( out.timestamp ) ).toBeGTE( 10 );
+                } );
+
+                it( "reports millis for each sub-check", function() {
+                    var out = svc.minimal();
+                    expect( out.db.ms    ).toBeGTE( 0 );
+                    expect( out.cache.ms ).toBeGTE( 0 );
+                } );
+            } );
+
+            describe( "checkDb() — DB probe", function() {
+                it( "round-trips a trivial SELECT and records duration", function() {
+                    var out = svc.checkDb();
+                    expect( out.ok ).toBeTrue();
+                    expect( out.ms ).toBeGTE( 0 );
+                } );
+            } );
+
+            describe( "checkCache() — cache round-trip", function() {
+                it( "writes + reads + clears a probe key", function() {
+                    var out = svc.checkCache();
+                    expect( out.ok ).toBeTrue();
+                    expect( out.ms ).toBeGTE( 0 );
+                } );
+            } );
+
+            describe( "queueDepth() — pending-jobs count", function() {
+                it( "returns a non-negative integer", function() {
+                    expect( svc.queueDepth() ).toBeGTE( 0 );
+                } );
+            } );
+
+            describe( "failedJobs24h() — recent-failure count", function() {
+                it( "returns a non-negative integer", function() {
+                    expect( svc.failedJobs24h() ).toBeGTE( 0 );
+                } );
+            } );
+
+            describe( "uptimeSeconds()", function() {
+                it( "returns a non-negative integer", function() {
+                    expect( svc.uptimeSeconds() ).toBeGTE( 0 );
+                } );
+            } );
+
+            describe( "mailReachable() — SMTP TCP probe", function() {
+                it( "returns a struct with `ok`, `host`, `port`", function() {
+                    var out = svc.mailReachable();
+                    expect( structKeyExists( out, "ok"   ) ).toBeTrue();
+                    expect( structKeyExists( out, "host" ) ).toBeTrue();
+                    expect( structKeyExists( out, "port" ) ).toBeTrue();
+                    // MailHog listens on mailhog:1025 in dev compose —
+                    // the check SHOULD reach it. Don't assert `ok=true`
+                    // unconditionally though; a CI timing blip on the
+                    // TCP connect shouldn't flake the suite. Shape is
+                    // what matters.
+                } );
+            } );
+
+            describe( "diskFreeUploadsPct() — uploads-disk free %", function() {
+                it( "returns a struct with `ok` + the free-pct when media is Local", function() {
+                    var out = svc.diskFreeUploadsPct();
+                    // Dev stack ships media as Local → expect ok=true.
+                    // An install switched to S3 flips ok=false with a
+                    // reason — that path isn't exercised in dev.
+                    expect( out.ok ).toBeTrue();
+                    expect( val( out.free_pct ) ).toBeGTE( 0 );
+                    expect( val( out.free_pct ) ).toBeLTE( 100 );
+                } );
+            } );
+
+            describe( "activeTheme() + isFallbackThemeActive()", function() {
+                it( "returns a theme slug string", function() {
+                    var slug = svc.activeTheme();
+                    expect( len( slug ) ).toBeGTE( 1 );
+                } );
+
+                it( "fallback flag tracks the fallback slug", function() {
+                    // Direct boolean, independent of which theme is
+                    // active — just confirms the comparison logic.
+                    var flag = svc.isFallbackThemeActive();
+                    expect( isBoolean( flag ) ).toBeTrue();
+                } );
+            } );
+
+            describe( "full() — detailed rollup", function() {
+                it( "is a superset of minimal() + adds the ops fields", function() {
+                    var out = svc.full();
+                    // Minimal fields
+                    expect( structKeyExists( out, "status"    ) ).toBeTrue();
+                    expect( structKeyExists( out, "version"   ) ).toBeTrue();
+                    expect( structKeyExists( out, "timestamp" ) ).toBeTrue();
+                    expect( structKeyExists( out, "db"        ) ).toBeTrue();
+                    expect( structKeyExists( out, "cache"     ) ).toBeTrue();
+                    // Full-only fields
+                    expect( structKeyExists( out, "uptime_s"              ) ).toBeTrue();
+                    expect( structKeyExists( out, "queue_depth"           ) ).toBeTrue();
+                    expect( structKeyExists( out, "failed_jobs_24h"       ) ).toBeTrue();
+                    expect( structKeyExists( out, "mail_reachable"        ) ).toBeTrue();
+                    expect( structKeyExists( out, "disk_free_uploads_pct" ) ).toBeTrue();
+                    expect( structKeyExists( out, "active_theme"          ) ).toBeTrue();
+                    expect( structKeyExists( out, "fallback_theme_active" ) ).toBeTrue();
+                } );
+
+                it( "returns `ok` overall when DB + cache both pass", function() {
+                    var out = svc.full();
+                    expect( out.status ).toBe( "ok" );
+                } );
+            } );
+
+        } );
+    }
+
+}

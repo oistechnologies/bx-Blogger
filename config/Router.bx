@@ -21,7 +21,11 @@ class {
 		 * Phase 0 lite; full version (DB + cache + queue + disk metrics) in
 		 * Phase 10 (B24) as `/__health/full` gated by `system.health` permission.
 		 */
-		route( "/__health" ).to( "main.health" );
+		// `/__health/full` is registered BEFORE `/__health` so the
+		// more-specific path is matched first; otherwise `:handler/:action`
+		// conventions could swallow the `/full` segment.
+		route( "/__health/full" ).to( "main.healthFull" );
+		route( "/__health"      ).to( "main.health"     );
 
 		/**
 		 * Authentication routes (Chunk 1.E):

@@ -184,22 +184,55 @@ class extends="coldbox.system.EventHandler" {
 	}
 
 	/**
-	 * /__health — lightweight healthcheck.
+	 * /__health — lightweight healthcheck for Docker / k8s probes.
 	 *
-	 * Returns HTTP 200 + JSON body when the app is responsive. Used by Docker
-	 * healthchecks and external uptime monitors. Full health endpoint (db,
-	 * cache, queue, disk metrics) ships in Phase 10 at `/__health/full`.
+	 * Phase 10.B — delegates to HealthService.minimal() which
+	 * pings DB + cache. Returns 200 when both checks pass (so the
+	 * orchestrator keeps this instance in rotation), 503 when
+	 * either fails (so the orchestrator pulls traffic and retries).
+	 *
+	 * Body is JSON with the roll-up `status` plus the two sub-check
+	 * results. Keep it small + no auth — probe traffic is constant.
 	 */
 	function health( event, rc, prc ) {
+		var payload = getInstance( "HealthService" ).minimal();
 		event.renderData(
 			type       = "json",
-			data       = {
-				"status"    : "ok",
-				"version"   : getSetting( "app.version" ),
-				"phase"     : getSetting( "app.phase" ),
-				"timestamp" : dateTimeFormat( now(), "iso" )
-			},
-			statusCode = 200
+			data       = payload,
+			statusCode = payload.status == "ok" ? 200 : 503
+		);
+	}
+
+	/**
+	 * /__health/full — detailed health + diagnostics.
+	 *
+	 * Phase 10.B (B24) — exposes uptime, DB + cache timings, cbq
+	 * queue depth, recent-failure count, SMTP reachability, disk
+	 * free on the uploads path, and the active / fallback theme
+	 * state. Gated by `system.health` permission; unauthenticated
+	 * or under-privileged callers get a 403 + minimal body so the
+	 * diagnostic surface isn't a passive recon target for
+	 * unauthenticated scanners.
+	 *
+	 * Consumers: ops dashboards, on-call runbooks, uptime
+	 * monitoring that wants richer-than-probe data.
+	 */
+	function healthFull( event, rc, prc ) {
+		var auth = getInstance( "AuthenticationService@cbauth" );
+		if ( !auth.isLoggedIn() || !auth.getUser().hasPermission( "system.health" ) ) {
+			event.renderData(
+				type       = "json",
+				data       = { "status" : "forbidden" },
+				statusCode = 403
+			);
+			return;
+		}
+
+		var payload = getInstance( "HealthService" ).full();
+		event.renderData(
+			type       = "json",
+			data       = payload,
+			statusCode = payload.status == "ok" ? 200 : 503
 		);
 	}
 

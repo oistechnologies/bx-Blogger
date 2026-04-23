@@ -1,0 +1,269 @@
+/**
+ * bx-Blogger — HealthService (Phase 10.B / B24)
+ *
+ * Single source of truth for `/__health` (lightweight, probe-
+ * facing) and `/__health/full` (detailed, ops-dashboard-facing)
+ * output. Keeps the handler thin and lets specs assert on the
+ * struct shape without going through the HTTP surface.
+ *
+ * Two methods:
+ *
+ *   minimal() — db + cache connectivity only. Returns fast (one
+ *               SELECT 1, one cache round-trip). Used by the
+ *               Docker/k8s probe endpoint, so the handler can
+ *               decide 200 vs 503 from the returned struct.
+ *
+ *   full()    — everything in minimal() plus: uptime, db_ms /
+ *               cache_ms timings, queue depth + recent-failure
+ *               count, mail reachability, uploads-disk free
+ *               percentage, active-theme + fallback-active flag.
+ *               Gated at the handler level by `system.health`
+ *               permission — the struct exposes details an ops
+ *               team needs (queue pressure, SMTP reachability)
+ *               and a crash-course attacker could mine.
+ *
+ * Every check is individually try/catch-swallowed — one failed
+ * check returns `{ status: "fail", error: "..." }` for that
+ * field but never throws the whole health response away. An
+ * SMTP outage shouldn't hide the fact that the DB is fine.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox"    inject="wirebox";
+    property name="cache"      inject="cachebox:default";
+    property name="controller" inject="coldbox";
+    property name="log"        inject="logbox:logger:{this}";
+
+    variables.mailConnectTimeoutMs = 2000;
+
+    // --------------------------------------------------------------------
+    // Lightweight — for probes
+    // --------------------------------------------------------------------
+
+    /**
+     * DB + cache connectivity. Returns:
+     *   { status, version, phase, timestamp, db: {ok, ms}, cache: {ok, ms} }
+     * where `status` rolls up to "ok" when both sub-checks are ok,
+     * "degraded" otherwise. Handlers map "ok" → 200, anything else
+     * → 503 so an orchestrator takes the instance out of rotation.
+     */
+    struct function minimal() {
+        var db    = checkDb();
+        var cache = checkCache();
+
+        var overall = ( db.ok && cache.ok ) ? "ok" : "degraded";
+
+        return {
+            "status"    : overall,
+            "version"   : variables.controller.getSetting( "app.version" ),
+            "phase"     : variables.controller.getSetting( "app.phase" ),
+            "timestamp" : dateTimeFormat( now(), "iso" ),
+            "db"        : db,
+            "cache"     : cache
+        };
+    }
+
+    // --------------------------------------------------------------------
+    // Detailed — for ops
+    // --------------------------------------------------------------------
+
+    struct function full() {
+        var base = minimal();
+        structAppend( base, {
+            "uptime_s"                : uptimeSeconds(),
+            "queue_depth"             : queueDepth(),
+            "failed_jobs_24h"         : failedJobs24h(),
+            "mail_reachable"          : mailReachable(),
+            "disk_free_uploads_pct"   : diskFreeUploadsPct(),
+            "active_theme"            : activeTheme(),
+            "fallback_theme_active"   : isFallbackThemeActive()
+        }, true );
+        return base;
+    }
+
+    // --------------------------------------------------------------------
+    // Individual checks (testable individually; also public so specs
+    // can assert on shape without spinning the full roll-up)
+    // --------------------------------------------------------------------
+
+    struct function checkDb() {
+        var started = getTickCount();
+        try {
+            variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+                .selectRaw( "1 AS ok" )
+                .get();
+            return { "ok" : true, "ms" : getTickCount() - started };
+        }
+        catch ( any e ) {
+            return { "ok" : false, "ms" : getTickCount() - started, "error" : e.message ?: "" };
+        }
+    }
+
+    struct function checkCache() {
+        var started = getTickCount();
+        try {
+            var key = "health:probe:" & createUUID();
+            variables.cache.set( key, "ok", 1, 0 );   // 1-minute TTL
+            var back = variables.cache.get( key );
+            variables.cache.clear( key );
+            return { "ok" : ( back == "ok" ), "ms" : getTickCount() - started };
+        }
+        catch ( any e ) {
+            return { "ok" : false, "ms" : getTickCount() - started, "error" : e.message ?: "" };
+        }
+    }
+
+    /**
+     * Boot time comes from `controller.getLoadedDate()` (ColdBox
+     * records it during `onConfigurationLoad`). Falls back to 0 if
+     * the method isn't available in an older ColdBox.
+     */
+    numeric function uptimeSeconds() {
+        try {
+            var loaded = variables.controller.getLoadedDate();
+            if ( isNull( loaded ) || !isDate( loaded ) ) return 0;
+            return int( dateDiff( "s", loaded, now() ) );
+        }
+        catch ( any e ) {
+            return 0;
+        }
+    }
+
+    /**
+     * cbq_jobs rows that haven't been claimed by a worker, haven't
+     * failed, and haven't completed yet. A healthy worker keeps
+     * this low; sustained growth means the worker's fallen behind
+     * or died. Uses cbq's column names (epoch-seconds timestamps,
+     * not DATETIMEs).
+     */
+    numeric function queueDepth() {
+        try {
+            var row = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "cbq_jobs" )
+                .whereNull( "reservedDate" )
+                .whereNull( "failedDate" )
+                .whereNull( "completedDate" )
+                .selectRaw( "COUNT(*) AS n" )
+                .first();
+            return val( row.n ?: 0 );
+        }
+        catch ( any e ) {
+            return -1;
+        }
+    }
+
+    /**
+     * Failed-job entries (cbq_failed_jobs) in the last 24h. Nonzero
+     * = something's thrown lately — worth alerting on. `failedDate`
+     * in cbq_failed_jobs is epoch seconds, matching cbq's
+     * getCurrentUnixTimestamp() helper.
+     */
+    numeric function failedJobs24h() {
+        try {
+            var row = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "cbq_failed_jobs" )
+                .whereRaw( "failedDate >= UNIX_TIMESTAMP( DATE_SUB( NOW(), INTERVAL 1 DAY ) )" )
+                .selectRaw( "COUNT(*) AS n" )
+                .first();
+            return val( row.n ?: 0 );
+        }
+        catch ( any e ) {
+            return -1;
+        }
+    }
+
+    /**
+     * TCP connect to SMTP_HOST:SMTP_PORT with a 2s timeout.
+     * Doesn't authenticate or send — just verifies the hop is
+     * reachable. Avoids testing the mail flow in a way that
+     * could generate unwanted messages from the health endpoint.
+     */
+    struct function mailReachable() {
+        // Read SMTP host/port straight from env — matches the values
+        // Coldbox.bx hands to cbmailservices' `defaults.server/port`.
+        // Avoids poking at `moduleSettings.cbmailservices` which isn't
+        // a top-level ColdBox setting and varies by loader path.
+        var host = getSystemSetting( "SMTP_HOST", "mailhog" );
+        var port = val( getSystemSetting( "SMTP_PORT", "1025" ) );
+        if ( !len( host ) || port <= 0 ) {
+            return { "ok" : false, "host" : host, "port" : port, "error" : "not configured" };
+        }
+        try {
+            var Socket  = createObject( "java", "java.net.Socket" );
+            var Address = createObject( "java", "java.net.InetSocketAddress" );
+            var sock = Socket.init();
+            try {
+                sock.connect( Address.init( host, javaCast( "int", port ) ), javaCast( "int", variables.mailConnectTimeoutMs ) );
+                return { "ok" : true, "host" : host, "port" : port };
+            }
+            finally {
+                try { sock.close(); } catch ( any e ) {}
+            }
+        }
+        catch ( any e ) {
+            return { "ok" : false, "host" : host, "port" : port, "error" : e.message ?: "" };
+        }
+    }
+
+    /**
+     * Percentage of free space on the uploads disk path. Exposes
+     * 2 decimals for monitoring thresholds like "alert below 10%".
+     * Reads the local-disk path from cbfs's `media` disk config;
+     * if media is on S3 this returns null and `ok=false`
+     * (nothing actionable on the local disk for an S3-backed install).
+     */
+    struct function diskFreeUploadsPct() {
+        try {
+            // Read the live disk record from cbfs (not from the static
+            // config struct — module settings aren't top-level settings
+            // and getSetting("cbfs") isn't guaranteed to resolve).
+            var rec       = variables.wirebox.getInstance( "DiskService@cbfs" ).getDiskRecord( "media" );
+            var provider  = rec.provider   ?: "";
+            var props     = rec.properties ?: {};
+            var path      = props.path     ?: "";
+            if ( !len( path ) || provider != "Local" ) {
+                return { "ok" : false, "reason" : "media disk is not local" };
+            }
+            var File = createObject( "java", "java.io.File" ).init( path );
+            if ( !File.exists() ) return { "ok" : false, "reason" : "media path does not exist" };
+
+            var total  = File.getTotalSpace();
+            var usable = File.getUsableSpace();
+            if ( total <= 0 ) return { "ok" : false, "reason" : "zero total space reported" };
+            return {
+                "ok"       : true,
+                "path"     : path,
+                "free_pct" : numberFormat( ( usable / total ) * 100, "9.99" )
+            };
+        }
+        catch ( any e ) {
+            return { "ok" : false, "error" : e.message ?: "" };
+        }
+    }
+
+    /**
+     * Slug of whichever theme is currently active. Reads from the
+     * `theme.active_slug` setting; falls back to the configured
+     * default. Deliberately doesn't instantiate ThemeService (which
+     * would add a dependency loop — ThemeService itself uses
+     * HealthService in future bump-release readiness probes).
+     */
+    string function activeTheme() {
+        try {
+            return variables.wirebox.getInstance( "SettingService" ).get( "theme.active_slug", "bx-blogger-default" );
+        }
+        catch ( any e ) {
+            return "unknown";
+        }
+    }
+
+    /**
+     * True when we've fallen back to the always-on safety-net
+     * theme — a strong signal that ThemeResolutionInterceptor
+     * couldn't load the configured theme. Worth paging about.
+     */
+    boolean function isFallbackThemeActive() {
+        return activeTheme() == "bx-blogger-fallback";
+    }
+
+}
