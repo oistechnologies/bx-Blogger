@@ -1,0 +1,40 @@
+/**
+ * bx-Blogger — cbq configuration (Chunk 6.A)
+ *
+ * Defines queue connections + worker pools for the cbq module.
+ * `DBProvider@cbq` uses the app's default datasource — rows live
+ * in the `cbq_jobs` / `cbq_batches` / `cbq_failed_jobs` tables
+ * that 6.A's migrations created. No Redis / RabbitMQ / SQS — at
+ * blog scale the DB provider is plenty and it keeps the dependency
+ * surface small.
+ *
+ * Workers register in-process in the `app` container — cbq's
+ * ColdBox async scheduler owns the poll loop, so HTTP threads and
+ * worker threads share the same JVM. A dedicated worker container
+ * was evaluated during 6.A and dropped: the job mix here
+ * (SendEmailJob, GenerateThumbnailsJob, RebuildSitemapJob,
+ * BackupDatabaseJob, RecordPostViewJob) is I/O-bound + bursty
+ * rather than sustained-CPU, so in-process is the right default.
+ * If Phase 11 profiling shows request-thread contention we can
+ * reintroduce the split — cbq's design doesn't change, only the
+ * compose topology does.
+ *
+ * Persistence via DBProvider matters even in a single container:
+ * jobs pushed during a deploy / restart survive the gap and drain
+ * when the pool comes back up.
+ */
+class {
+
+    function configure() {
+        newConnection( "default" )
+            .setProvider( "DBProvider@cbq" )
+            .markAsDefault( true );
+
+        newWorkerPool( "default", "default" )
+            .quantity( 1 )
+            .onQueue( "default" )
+            .timeout( 60 )
+            .maxAttempts( 3 );
+    }
+
+}

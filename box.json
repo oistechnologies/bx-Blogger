@@ -38,7 +38,8 @@
         "cbjavaloader":"^2.5.0+4",
         "hyper":"^8.2.0",
         "cbstorages":"^3.5.0+5",
-        "BCrypt":"^3.2.0+1"
+        "BCrypt":"^3.2.0+1",
+        "cbq":"^5.0.7"
     },
     "devDependencies":{
         "testbox":"*",
@@ -50,7 +51,8 @@
     "installPaths":{
         "coldbox":"coldbox/",
         "testbox":"testbox/",
-        "cbsecurity":"modules/cbsecurity/"
+        "cbsecurity":"modules/cbsecurity/",
+        "cbq":"modules/cbq/"
     },
     "scripts":{
         "format":"cfformat run config/,handlers/,interceptors/,models/,modules_app/,tests/specs/,*.bx ./.cfformat.json --overwrite",

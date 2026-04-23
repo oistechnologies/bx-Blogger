@@ -260,12 +260,25 @@ class {
 				"autoInjectAssets" : false
 			},
 			"cbq" : {
-				// The path the custom config file to register connections and worker pools
+				// Path to the connection + worker-pool config. Resolves to
+				// /config/cbq.bx.
 				"configPath" : "config.cbq",
-				// Flag if workers should be registered.  If your application only pushes to the queues, you can set this to false.
+				// Register workers in-process. A dedicated `worker` compose
+				// service was considered during Phase 6.A and dropped as
+				// unnecessary complexity at blog scale — the app container
+				// handles both HTTP and background work. The env var stays
+				// as a kill-switch so specs / one-off diagnostic runs can
+				// opt out (CBQ_REGISTER_WORKERS=false) without editing this
+				// file.
 				"registerWorkers" : getSystemSetting( "CBQ_REGISTER_WORKERS", true ),
-				// The interval to poll for changes to the worker pool scaling.  Defaults to 0 which turns off the scheduled scaling feature.
-				"scaleInterval" : 0
+				// 0 turns off scheduled scaling — worker count is static
+				// (quantity set in config/cbq.bx). Revisit if a job mix
+				// starves the queue under load.
+				"scaleInterval" : 0,
+				// Failed jobs (past maxAttempts) land in `cbq_failed_jobs`
+				// so ops can replay or triage them. Table + cleanup defaults
+				// come from cbq's own settings struct.
+				"logFailedJobs" : true
 			},
 			"cbauth" : {
 				// Points cbauth at our UserService which implements

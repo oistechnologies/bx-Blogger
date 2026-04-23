@@ -6,8 +6,14 @@
 # full dev-workflow rule.
 #
 # Services:
-#   app      — BoxLang MiniServer on :8080 (bind-mounted for hot-reload)
-#   worker   — cbq job worker (disabled by default — enabled via `worker` profile)
+#   app      — BoxLang MiniServer on :8080 (bind-mounted for hot-reload).
+#              Also runs cbq's background-job worker pool in-process via
+#              the ColdBox async scheduler (see config/cbq.bx). A separate
+#              `worker` container was evaluated during Phase 6.A and
+#              dropped — at blog scale the job mix is fine in-process and
+#              the split added volume / env / boot-time complexity for no
+#              clear benefit. Can be reintroduced if Phase 11 profiling
+#              shows worker threads starving request threads.
 #   mysql    — MySQL 8.4 on :3306, persistent via mysql-data named volume
 #   minio    — S3-compatible object storage on :9000 (API) + :9001 (console)
 #   mailhog  — SMTP capture + web inbox on :1025 + :8025
@@ -29,11 +35,15 @@ services:
       # Bind-mount the whole project for hot-reload. The Ortus image's
       # ${APP_DIR} is typically /app, so we bind to /app.
       - ./:/app
-      # Exclude directories that shouldn't be shared from host (caches
-      # generated during build). Using anonymous volumes to shadow them.
+      # Shadow the host bind with the image's built-in ForgeBox deps.
+      # ./coldbox, ./testbox, and ./modules are gitignored so they'd
+      # otherwise be empty inside the container. Anonymous volumes are
+      # fine here — there's only one service writing / reading them.
       - /app/coldbox
       - /app/testbox
       - /app/modules
+      # cbq's BackupDatabaseJob writes mysqldumps here (Phase 6+).
+      - backup-data:/var/backups/bx-blogger
     depends_on:
       mysql:
         condition: service_healthy
@@ -44,31 +54,6 @@ services:
     restart: unless-stopped
     networks:
       - bx-blogger
-
-  worker:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-    image: bx-blogger-app:dev
-    container_name: bx-blogger-worker
-    env_file: .env
-    command: [ "box", "cbq:work", "--tries=3" ]
-    volumes:
-      - ./:/app
-      - /app/coldbox
-      - /app/testbox
-      - /app/modules
-      - backup-data:/var/backups/bx-blogger
-    depends_on:
-      app:
-        condition: service_started
-    restart: unless-stopped
-    networks:
-      - bx-blogger
-    # Disabled by default until cbq ships (Phase 6). Enable with:
-    #   COMPOSE_PROFILES=worker docker compose up -d
-    profiles:
-      - worker
 
   mysql:
     image: mysql:8.4

@@ -29,11 +29,11 @@ runtime/global/
 runtime/lib/
 runtime/logs/
 
-# ColdBox auto-generated module config stubs (some modules drop these on install)
+# ColdBox auto-generated module config stubs (some modules drop these on install).
+# NOTE: `config/cbq.bx` is NOT ignored — Phase 6.A replaced the auto-generated
+# stub with a hand-authored connection + worker-pool config that must ship.
 app/config/modules/
-app/config/cbq.bx
 config/modules/
-config/cbq.bx
 
 # Node / Vite build artifacts
 node_modules/
