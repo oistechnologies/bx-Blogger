@@ -145,6 +145,11 @@ class extends="coldbox.system.EventHandler" {
 		// idempotency story as the admin seed: short-circuits when
 		// anything already lives in the posts table.
 		seedSampleBlogPostIfEmpty();
+
+		// Phase 6 — seed env-var-driven settings into the `settings`
+		// table on first boot. Idempotent: SettingService.seedIfMissing
+		// no-ops if the admin already changed the value via the UI.
+		seedEnvDrivenSettings();
 	}
 
 	/**
@@ -299,6 +304,42 @@ class extends="coldbox.system.EventHandler" {
 			// renders fine; the editor lets the admin create their own.
 			var log = getInstance( "logbox:logger:Main" );
 			log.warn( "seedSampleBlogPostIfEmpty failed: " & e.message, e );
+		}
+	}
+
+	/**
+	 * Seed env-var-driven entries into the `settings` table on fresh
+	 * installs. Each call is a one-shot: SettingService.seedIfMissing
+	 * returns false (no-op) if the admin has already changed the value
+	 * via the UI or a prior boot already wrote it.
+	 *
+	 * Environment variables feed one-way into the DB seed — after first
+	 * boot, the DB is authoritative. Changing the env var on a running
+	 * install won't overwrite what's in the table; the admin has to
+	 * either edit the setting in the UI or delete the row first.
+	 */
+	private function seedEnvDrivenSettings() {
+		try {
+			var settings = getInstance( "SettingService" );
+			var env      = server.system.environment ?: {};
+
+			// Notification destination (6.C / NotificationService). Empty
+			// env var → skip the seed; admin can fill it in later via the
+			// settings UI. Validation happens inside SettingService.set
+			// (email type), so a malformed env value fails loud rather
+			// than silently storing junk.
+			if ( env.keyExists( "BX_NOTIFICATION_EMAIL" ) && len( env.BX_NOTIFICATION_EMAIL ) ) {
+				settings.seedIfMissing(
+					key         = "notifications.email_to",
+					value       = env.BX_NOTIFICATION_EMAIL,
+					type        = "email",
+					description = "Destination for admin notification emails (failed jobs, security alerts, daily digest)."
+				);
+			}
+		}
+		catch ( any e ) {
+			var log = getInstance( "logbox:logger:Main" );
+			log.warn( "seedEnvDrivenSettings failed: " & e.message, e );
 		}
 	}
 

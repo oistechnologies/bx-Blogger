@@ -1,0 +1,213 @@
+/**
+ * bx-Blogger — SettingServiceSpec (Phase 6 — System Settings primitive)
+ *
+ * Covers the generic key/value app-settings service:
+ *   - get()/set() round-trip per type (string, int, bool, email)
+ *   - get() returns the default value when the key is missing
+ *   - set() normalizes + validates per declared type, throwing
+ *     typed exceptions for mismatched values
+ *   - has() tracks presence correctly even for a "known-missing"
+ *     cached sentinel
+ *   - seedIfMissing() is a one-shot insert that no-ops on re-run
+ *     (the env-var bootstrap's contract)
+ *   - all() returns every row with coerced values
+ *   - delete() removes the row + invalidates the cache
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc = getInstance( "SettingService" );
+    }
+
+    function afterAll() {
+        try {
+            // Drop every row this spec might have written. Uses DELETE
+            // over truncate to respect cache invalidation via the
+            // service where practical, but a wholesale cleanup is safer
+            // here since some tests intentionally create rows and
+            // leave them for later assertions within the same run.
+            getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "settings" )
+                .where( "setting_key", "like", "tests.%" )
+                .delete();
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "SettingServiceSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "SettingService", function() {
+
+            beforeEach( function() {
+                // Wipe the tests.* namespace between tests so one test's
+                // writes don't bleed into the next. Also bust any cached
+                // entries so stale reads don't leak.
+                var qb = getInstance( "QueryBuilder@qb" );
+                var existing = qb.newQuery()
+                    .from( "settings" )
+                    .where( "setting_key", "like", "tests.%" )
+                    .get();
+                for ( var row in existing ) {
+                    svc.invalidate( row.setting_key );
+                }
+                qb.newQuery().from( "settings" )
+                    .where( "setting_key", "like", "tests.%" )
+                    .delete();
+            } );
+
+            describe( "get() / set() — string", function() {
+                it( "round-trips a string value", function() {
+                    svc.set( "tests.site.name", "My Blog", "string" );
+                    expect( svc.get( "tests.site.name" ) ).toBe( "My Blog" );
+                } );
+
+                it( "returns the default for a missing key", function() {
+                    expect( svc.get( "tests.missing.key", "fallback" ) ).toBe( "fallback" );
+                } );
+
+                it( "trims whitespace on write", function() {
+                    svc.set( "tests.site.tagline", "  hello world  ", "string" );
+                    expect( svc.get( "tests.site.tagline" ) ).toBe( "hello world" );
+                } );
+            } );
+
+            describe( "get() / set() — int", function() {
+                it( "round-trips an int and returns a numeric type", function() {
+                    svc.set( "tests.posts.per_page", 25, "int" );
+                    var result = svc.get( "tests.posts.per_page" );
+                    expect( result ).toBe( 25 );
+                    expect( isNumeric( result ) ).toBeTrue();
+                } );
+
+                it( "coerces a numeric string to int on write", function() {
+                    svc.set( "tests.posts.per_page", "42", "int" );
+                    expect( svc.get( "tests.posts.per_page" ) ).toBe( 42 );
+                } );
+
+                it( "throws InvalidValue for a non-numeric int write", function() {
+                    var threw = false;
+                    try { svc.set( "tests.posts.per_page", "abc", "int" ); }
+                    catch ( bxBlogger.SettingService.InvalidValue e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+            } );
+
+            describe( "get() / set() — bool", function() {
+                it( "round-trips true as a real boolean", function() {
+                    svc.set( "tests.features.comments", true, "bool" );
+                    expect( svc.get( "tests.features.comments" ) ).toBeTrue();
+                } );
+
+                it( "round-trips false", function() {
+                    svc.set( "tests.features.comments", false, "bool" );
+                    expect( svc.get( "tests.features.comments" ) ).toBeFalse();
+                } );
+
+                it( "accepts 'yes' / '1' / 'true' variants", function() {
+                    svc.set( "tests.features.comments", "yes", "bool" );
+                    expect( svc.get( "tests.features.comments" ) ).toBeTrue();
+                } );
+
+                it( "throws InvalidValue for a nonsense bool", function() {
+                    var threw = false;
+                    try { svc.set( "tests.features.comments", "maybe", "bool" ); }
+                    catch ( bxBlogger.SettingService.InvalidValue e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+            } );
+
+            describe( "get() / set() — email", function() {
+                it( "stores a valid email lowercased + trimmed", function() {
+                    svc.set( "tests.notifications.to", "  Admin@Example.COM  ", "email" );
+                    expect( svc.get( "tests.notifications.to" ) ).toBe( "admin@example.com" );
+                } );
+
+                it( "throws InvalidValue for a malformed email", function() {
+                    var threw = false;
+                    try { svc.set( "tests.notifications.to", "not-an-email", "email" ); }
+                    catch ( bxBlogger.SettingService.InvalidValue e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+            } );
+
+            describe( "set() — type handling on updates", function() {
+                it( "remembers the type across subsequent writes without it being re-passed", function() {
+                    svc.set( "tests.counter", 10, "int" );
+                    svc.set( "tests.counter", 11 );   // no type arg
+                    var result = svc.get( "tests.counter" );
+                    expect( result ).toBe( 11 );
+                    expect( isNumeric( result ) ).toBeTrue();
+                } );
+
+                it( "throws InvalidType for an unknown type on first write", function() {
+                    var threw = false;
+                    try { svc.set( "tests.weird", "x", "uuid" ); }
+                    catch ( bxBlogger.SettingService.InvalidType e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+            } );
+
+            describe( "has()", function() {
+                it( "returns false for a never-set key", function() {
+                    expect( svc.has( "tests.absent" ) ).toBeFalse();
+                } );
+
+                it( "returns true once set", function() {
+                    svc.set( "tests.present", "anything", "string" );
+                    expect( svc.has( "tests.present" ) ).toBeTrue();
+                } );
+
+                it( "returns false after delete()", function() {
+                    svc.set( "tests.present", "anything", "string" );
+                    svc.delete( "tests.present" );
+                    expect( svc.has( "tests.present" ) ).toBeFalse();
+                } );
+            } );
+
+            describe( "seedIfMissing()", function() {
+                it( "writes when the key doesn't exist", function() {
+                    var wrote = svc.seedIfMissing(
+                        key         = "tests.seed.first",
+                        value       = "seed-value",
+                        type        = "string",
+                        description = "first-boot only"
+                    );
+                    expect( wrote ).toBeTrue();
+                    expect( svc.get( "tests.seed.first" ) ).toBe( "seed-value" );
+                } );
+
+                it( "does not overwrite on a second call", function() {
+                    svc.set( "tests.seed.second", "user-changed-value", "string" );
+                    var wrote = svc.seedIfMissing(
+                        key   = "tests.seed.second",
+                        value = "env-default-value",
+                        type  = "string"
+                    );
+                    expect( wrote ).toBeFalse();
+                    expect( svc.get( "tests.seed.second" ) ).toBe( "user-changed-value" );
+                } );
+            } );
+
+            describe( "all()", function() {
+                it( "returns every setting with type + value + description", function() {
+                    svc.set( "tests.all.a", "alpha", "string", "first one" );
+                    svc.set( "tests.all.b", 7, "int", "second one" );
+
+                    var bundle = svc.all();
+                    expect( bundle ).toBeStruct();
+                    expect( bundle ).toHaveKey( "tests.all.a" );
+                    expect( bundle[ "tests.all.a" ].value ).toBe( "alpha" );
+                    expect( bundle[ "tests.all.a" ].type ).toBe( "string" );
+                    expect( bundle[ "tests.all.a" ].description ).toBe( "first one" );
+                    expect( bundle[ "tests.all.b" ].value ).toBe( 7 );
+                    expect( bundle[ "tests.all.b" ].type ).toBe( "int" );
+                } );
+            } );
+
+        } );
+    }
+
+}

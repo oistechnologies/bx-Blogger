@@ -1,0 +1,280 @@
+/**
+ * bx-Blogger — SettingService (Phase 6.B-prep)
+ *
+ * Read / write access to the `settings` table — app-level
+ * configuration that operators can change at runtime. Typed
+ * normalization on write (so the admin UI's int field can't
+ * silently store "abc") and typed coercion on read (so callers
+ * don't need to remember that "true" is really a boolean).
+ *
+ * Caching: per-key in the default cachebox cache under
+ * `setting:{key}`, 60-min TTL. Writes invalidate the per-key
+ * entry AND flush the `pageCache` wholesale — several settings
+ * (site name / tagline / default OG image) affect the rendered
+ * HTML every anonymous visitor sees, so the admin changing one
+ * needs to show up on the next request, not 30 minutes later.
+ * Matches the pattern ThemeOptionsService + MenuService use.
+ *
+ * The service is the only authoritative writer to the `settings`
+ * table. If you find yourself reaching for qb or Quick here,
+ * stop — either extend the service or add a test-only back door
+ * behind a clearly-flagged method.
+ *
+ * Setting types (enforced on write, used for coercion on read):
+ *   - string  — stored as-is (trimmed); default behavior
+ *   - int     — must be numeric; stored as int; read as int
+ *   - bool    — accepts true/false/"true"/"false"/1/0; stored as
+ *               "true"/"false"; read as boolean
+ *   - email   — stored as trimmed + lowercased; write rejects on
+ *               `isValid("email", ...)` failure
+ *
+ * Unknown types flow through as strings — don't add a new type
+ * here without also teaching the future System Settings admin
+ * form how to render it.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox"          inject="wirebox";
+    property name="cache"            inject="cachebox:default";
+    property name="pageCacheService" inject="PageCacheService";
+    property name="log"              inject="logbox:logger:{this}";
+
+    variables.cacheTtlMinutes = 60;
+    variables.validTypes      = [ "string", "int", "bool", "email" ];
+
+    // --------------------------------------------------------------------
+    // Read
+    // --------------------------------------------------------------------
+
+    /**
+     * Return the value of `key`, type-coerced per the stored
+     * `setting_type`. If the key doesn't exist, returns
+     * `defaultValue` (untyped — caller's responsibility to pass
+     * something sensible).
+     */
+    any function get( required string key, any defaultValue = "" ) {
+        var row = readRow( arguments.key );
+        if ( isNull( row ) ) return arguments.defaultValue;
+
+        return coerceRead( row.setting_value ?: "", row.setting_type ?: "string" );
+    }
+
+    boolean function has( required string key ) {
+        return !isNull( readRow( arguments.key ) );
+    }
+
+    /**
+     * Return every setting as a `{ key: { value, type, description } }`
+     * struct — useful for admin UIs and diagnostic tooling. Doesn't
+     * hit the per-key cache because it's not a hot path.
+     */
+    struct function all() {
+        var rows = freshQb().from( "settings" )
+            .orderBy( "setting_key", "asc" )
+            .get();
+        var out = {};
+        for ( var r in rows ) {
+            out[ r.setting_key ] = {
+                "value"       : coerceRead( r.setting_value ?: "", r.setting_type ?: "string" ),
+                "type"        : r.setting_type ?: "string",
+                "description" : r.description  ?: ""
+            };
+        }
+        return out;
+    }
+
+    // --------------------------------------------------------------------
+    // Write
+    // --------------------------------------------------------------------
+
+    /**
+     * Upsert `key` with `value`. On the first write for a key, the
+     * `setting_type` + `description` columns are set from the
+     * corresponding arguments (default: string, empty). On update,
+     * only `value` + type/description (if passed explicitly) change.
+     *
+     * Throws `bxBlogger.SettingService.InvalidType` for unknown types
+     * and `bxBlogger.SettingService.InvalidValue` when the passed
+     * value can't be normalized to the declared type (non-numeric
+     * int, malformed email, etc.).
+     */
+    function set(
+        required string key,
+        required any    value,
+                 string type        = "",
+                 string description = ""
+    ) {
+        var existing = readRow( arguments.key );
+        var resolvedType = len( arguments.type )
+            ? arguments.type
+            : ( isNull( existing ) ? "string" : ( existing.setting_type ?: "string" ) );
+
+        if ( !variables.validTypes.findNoCase( resolvedType ) ) {
+            throw(
+                type    = "bxBlogger.SettingService.InvalidType",
+                message = "Unknown setting type [" & resolvedType & "]. Valid: " &
+                    variables.validTypes.toList( ", " )
+            );
+        }
+
+        var normalized = coerceWrite( arguments.value, resolvedType, arguments.key );
+
+        var row = {
+            "setting_value" : normalized,
+            "setting_type"  : resolvedType,
+            "updated_at"    : nowForDb()
+        };
+        if ( len( arguments.description ) || isNull( existing ) ) {
+            row[ "description" ] = arguments.description;
+        }
+
+        if ( isNull( existing ) ) {
+            row[ "setting_key" ] = arguments.key;
+            freshQb().from( "settings" ).insert( row );
+        }
+        else {
+            freshQb().from( "settings" )
+                .where( "setting_key", arguments.key )
+                .update( row );
+        }
+
+        invalidate( arguments.key );
+    }
+
+    /**
+     * Seed a setting ONLY if it doesn't already exist. Used by the
+     * onAppInit env-var bootstrap (BX_NOTIFICATION_EMAIL etc.) so
+     * subsequent boots don't clobber a value the admin has changed
+     * via the UI. Returns true if the seed wrote a row, false if
+     * the key already existed.
+     */
+    boolean function seedIfMissing(
+        required string key,
+        required any    value,
+                 string type        = "string",
+                 string description = ""
+    ) {
+        if ( has( arguments.key ) ) return false;
+        set(
+            key         = arguments.key,
+            value       = arguments.value,
+            type        = arguments.type,
+            description = arguments.description
+        );
+        return true;
+    }
+
+    function delete( required string key ) {
+        freshQb().from( "settings" )
+            .where( "setting_key", arguments.key )
+            .delete();
+        invalidate( arguments.key );
+    }
+
+    function invalidate( required string key ) {
+        variables.cache.clear( cacheKey( arguments.key ) );
+        // Settings can affect public HTML — flush the page cache so
+        // changes show up immediately.
+        variables.pageCacheService.invalidateAll();
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    private any function readRow( required string key ) {
+        var cacheK = cacheKey( arguments.key );
+        var cached = variables.cache.get( cacheK );
+        if ( !isNull( cached ) ) {
+            // Sentinel for "known-missing" so we don't hit the DB
+            // repeatedly for a key the caller keeps asking about
+            // with a default value.
+            return cached == "__NULL__" ? javaCast( "null", "" ) : cached;
+        }
+
+        var row = freshQb().from( "settings" )
+            .where( "setting_key", arguments.key )
+            .first();
+
+        if ( isNull( row ) || ( isStruct( row ) && structIsEmpty( row ) ) ) {
+            variables.cache.set( cacheK, "__NULL__", variables.cacheTtlMinutes, 0 );
+            return javaCast( "null", "" );
+        }
+
+        variables.cache.set( cacheK, row, variables.cacheTtlMinutes, 0 );
+        return row;
+    }
+
+    private string function cacheKey( required string key ) {
+        return "setting:" & arguments.key;
+    }
+
+    private any function coerceRead( required string raw, required string type ) {
+        switch ( arguments.type ) {
+            case "int":
+                return isNumeric( arguments.raw ) ? int( arguments.raw ) : 0;
+            case "bool":
+                return arguments.raw == "true";
+            case "email":
+            case "string":
+            default:
+                return arguments.raw;
+        }
+    }
+
+    /**
+     * Normalize `value` into the string form we store on disk per
+     * `type`. Rejects values that can't be coerced (invalid email,
+     * non-numeric int) with a typed exception so the caller — and
+     * by extension the admin form validator — gets a clear signal.
+     */
+    private string function coerceWrite(
+        required any    value,
+        required string type,
+        required string key
+    ) {
+        switch ( arguments.type ) {
+            case "int":
+                if ( !isNumeric( arguments.value ?: "" ) ) {
+                    throw(
+                        type    = "bxBlogger.SettingService.InvalidValue",
+                        message = "Setting [" & arguments.key & "] is declared int but value [" &
+                            ( arguments.value ?: "" ) & "] is not numeric."
+                    );
+                }
+                return int( arguments.value );
+            case "bool":
+                if ( isBoolean( arguments.value ) ) return arguments.value ? "true" : "false";
+                var v = lCase( trim( arguments.value ?: "" ) );
+                if ( v == "true" || v == "1" || v == "yes" )  return "true";
+                if ( v == "false" || v == "0" || v == "no" )  return "false";
+                throw(
+                    type    = "bxBlogger.SettingService.InvalidValue",
+                    message = "Setting [" & arguments.key & "] is declared bool but value [" &
+                        ( arguments.value ?: "" ) & "] is not boolean-ish."
+                );
+            case "email":
+                var email = lCase( trim( arguments.value ?: "" ) );
+                if ( !len( email ) || !isValid( "email", email ) ) {
+                    throw(
+                        type    = "bxBlogger.SettingService.InvalidValue",
+                        message = "Setting [" & arguments.key & "] is declared email but value [" &
+                            ( arguments.value ?: "" ) & "] is not a valid address."
+                    );
+                }
+                return email;
+            case "string":
+            default:
+                return trim( arguments.value ?: "" );
+        }
+    }
+
+    private any function freshQb() {
+        return variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery();
+    }
+
+    private string function nowForDb() {
+        return dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+    }
+
+}
