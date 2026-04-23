@@ -201,7 +201,12 @@ function publish() {
     var post = getInstance( "Post" ).find( data.postId );
     if ( len( data.scheduledAt ) && dateCompare( data.scheduledAt, now() ) == 1 ) {
         postService.schedule( post, data.scheduledAt );
-        data.flashOk = "Scheduled for " & fmtDateTimeLong( data.scheduledAt ) & ".";
+        // Inline the long-format mask rather than calling the
+        // `fmtDateTimeLong` application helper — those helpers
+        // resolve in view/template scope but not inside a wire
+        // class's action methods. Matches the mask documented in
+        // includes/helpers/ApplicationHelper.bxm.
+        data.flashOk = "Scheduled for " & dateTimeFormat( data.scheduledAt, "mmm. d, yyyy h:nn tt" ) & ".";
     } else {
         postService.publish( post );
         data.flashOk = "Published.";
@@ -283,7 +288,9 @@ function sharePreview() {
     var post   = getInstance( "Post" ).find( data.postId );
     var result = draftPreviewService.share( post, user.getId() );
     data.previewShareUrl = result.url;
-    data.previewExpires  = fmtDateTimeLong( result.expiresAt );
+    // Same mask as fmtDateTimeLong (see note in `publish()`); inlined
+    // because the helper is template-scope only.
+    data.previewExpires  = dateTimeFormat( result.expiresAt, "mmm. d, yyyy h:nn tt" );
 }
 
 function dismissShareLink() {
