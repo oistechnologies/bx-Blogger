@@ -41,6 +41,15 @@ services:
     volumes:
       # Bind-mount the whole project for hot-reload. The Ortus image's
       # ${APP_DIR} is typically /app, so we bind to /app.
+      #
+      # NOTE on /app/includes/public/{media,og,branding}: these
+      # directories hold persistent user content (uploads, rendered
+      # OG cards, operator logos). In dev they're already host-backed
+      # because this single `./:/app` mount covers them — no extra
+      # bind-mount needed. The prod compose (docker-compose.prod.yml)
+      # CAN'T use the whole-project mount (the image carries its own
+      # /app), so it declares three granular mounts for those same
+      # paths via MEDIA_HOST_PATH / OG_HOST_PATH / BRANDING_HOST_PATH.
       - ./:/app
       # Shadow the host bind with the image's built-in ForgeBox deps.
       # ./coldbox, ./testbox, and ./modules are gitignored so they'd

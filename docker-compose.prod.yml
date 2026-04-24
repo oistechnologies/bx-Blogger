@@ -45,6 +45,34 @@ services:
     # No `ports:` block — the app is not published to the host. NPM reaches
     # it via the shared `proxy` network below using container DNS:
     #     scheme=http, host=${COMPOSE_PROJECT_NAME:-bx-blogger}-app, port=8080
+    volumes:
+      # Persistent user content — survives container recreation when a
+      # new product image is pulled. Without these three mounts, every
+      # `docker compose up -d` following an image pull wipes uploads,
+      # rendered OG cards, and branding assets because they live in
+      # the container's ephemeral writable layer.
+      #
+      # Defaults are subdirs of this compose file's directory, so on a
+      # fresh install Docker auto-creates them right next to the
+      # docker-compose.prod.yml + .env. Override via the *_HOST_PATH
+      # env variables in .env when storing on a NAS mount, dedicated
+      # SSD, etc.
+      #
+      # Container paths match what the app expects:
+      #   media/    — user uploads (CBFS_MEDIA_PROVIDER=Local)
+      #   og/       — rendered OG card PNGs (regeneratable, but bind-
+      #               mounted to avoid the post-deploy regen burst)
+      #   branding/ — operator-uploaded logos referenced by the theme
+      #               footer's <img> tags
+      #
+      # UPGRADING an existing install that wrote files into the
+      # container's ephemeral layer: rsync them to the bind-mount
+      # target BEFORE the first deploy with these mounts. Otherwise
+      # the `up -d` will present empty dirs and the old files go
+      # down with the recreated container.
+      - ${MEDIA_HOST_PATH:-./media}:/app/includes/public/media
+      - ${OG_HOST_PATH:-./og}:/app/includes/public/og
+      - ${BRANDING_HOST_PATH:-./branding}:/app/includes/public/branding
     depends_on:
       mysql:
         condition: service_healthy
@@ -71,6 +99,13 @@ services:
     stop_grace_period: 35s
     volumes:
       - backup-data:/var/backups/bx-blogger
+      # Share the app container's media/og/branding mounts so cbq jobs
+      # that write via cbfs (GenerateThumbnailsJob, WebpConvertJob,
+      # OgImageService renders kicked off from a background context)
+      # land in the same persistent host dirs as the web uploads.
+      - ${MEDIA_HOST_PATH:-./media}:/app/includes/public/media
+      - ${OG_HOST_PATH:-./og}:/app/includes/public/og
+      - ${BRANDING_HOST_PATH:-./branding}:/app/includes/public/branding
     depends_on:
       app:
         condition: service_started
