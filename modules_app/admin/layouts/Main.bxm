@@ -110,6 +110,23 @@
 	      (~50KB gz) and keeping it out of the editor wire itself
 	      avoids a race with CBWIRE's DOM diffing on first render. --->
 	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde@2.18.0/dist/easymde.min.css" crossorigin="anonymous">
+	<!--- EasyMDE toolbar class-collision reset.
+	      EasyMDE names its toolbar buttons after the action — e.g.
+	      `<button class="table">`, `<button class="code">`. Bootstrap
+	      ships a `.table` utility that sets `display: table` +
+	      `width: 100%`, which the bare class name inherits — the
+	      result is the Table button occupying a full toolbar row on
+	      its own. Scoping a reset to `.editor-toolbar button.table`
+	      neutralizes just Bootstrap's interference on the toolbar
+	      context without touching real Bootstrap tables elsewhere. --->
+	<style>
+		.EasyMDEContainer .editor-toolbar button.table {
+			display:    inline-block;
+			width:      auto;
+			margin:     0;
+			border-collapse: separate;
+		}
+	</style>
 	<!--- Bootstrap Icons — webfont + CSS classes for icon-only
 	      buttons in tables + toolbars. Admin-only (public themes
 	      stay lean). --->
