@@ -48,8 +48,10 @@ services:
       # because this single `./:/app` mount covers them — no extra
       # bind-mount needed. The prod compose (docker-compose.prod.yml)
       # CAN'T use the whole-project mount (the image carries its own
-      # /app), so it declares three granular mounts for those same
-      # paths via MEDIA_HOST_PATH / OG_HOST_PATH / BRANDING_HOST_PATH.
+      # /app), so it declares granular mounts for those same paths
+      # via MEDIA_HOST_PATH / OG_HOST_PATH. Branding ships baked into
+      # the image and is intentionally NOT mounted so admin-visible
+      # logos aren't shadowed by an empty host dir.
       - ./:/app
       # Shadow the host bind with the image's built-in ForgeBox deps.
       # ./coldbox, ./testbox, and ./modules are gitignored so they'd

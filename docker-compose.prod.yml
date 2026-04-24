@@ -58,10 +58,10 @@ services:
     #     scheme=http, host=${COMPOSE_PROJECT_NAME:-bx-blogger}-app, port=8080
     volumes:
       # Persistent user content — survives container recreation when a
-      # new product image is pulled. Without these three mounts, every
-      # `docker compose up -d` following an image pull wipes uploads,
-      # rendered OG cards, and branding assets because they live in
-      # the container's ephemeral writable layer.
+      # new product image is pulled. Without these mounts, every
+      # `docker compose up -d` following an image pull wipes uploads
+      # and rendered OG cards because they live in the container's
+      # ephemeral writable layer.
       #
       # Defaults are subdirs of this compose file's directory, so on a
       # fresh install Docker auto-creates them right next to the
@@ -75,8 +75,13 @@ services:
       #               bucket takes over and this mount becomes dormant.
       #   og/       — rendered OG card PNGs (regeneratable, but bind-
       #               mounted to avoid the post-deploy regen burst)
-      #   branding/ — operator-uploaded logos referenced by the theme
-      #               footer's <img> tags
+      #
+      # NOTE on branding: `/app/includes/public/branding` is NOT
+      # bind-mounted. Branding logos ship baked into the image via
+      # COPY in the Dockerfile, so the admin sees whatever the product
+      # release includes. If we mounted a host dir over the top the
+      # image-bundled files would be shadowed by an empty host dir
+      # and admin `<img>` tags 404.
       #
       # UPGRADING an existing install that wrote files into the
       # container's ephemeral layer: rsync them to the bind-mount
@@ -85,7 +90,6 @@ services:
       # down with the recreated container.
       - ${MEDIA_HOST_PATH:-./media}:/app/includes/public/media
       - ${OG_HOST_PATH:-./og}:/app/includes/public/og
-      - ${BRANDING_HOST_PATH:-./branding}:/app/includes/public/branding
     depends_on:
       mysql:
         condition: service_healthy
@@ -125,7 +129,6 @@ services:
   #       - backup-data:/var/backups/bx-blogger
   #       - ${MEDIA_HOST_PATH:-./media}:/app/includes/public/media
   #       - ${OG_HOST_PATH:-./og}:/app/includes/public/og
-  #       - ${BRANDING_HOST_PATH:-./branding}:/app/includes/public/branding
   #     depends_on:
   #       app:
   #         condition: service_started
