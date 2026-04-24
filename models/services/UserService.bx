@@ -20,6 +20,8 @@ class accessors="true" singleton {
 
     property name="wirebox"         inject="wirebox";
     property name="passwordService" inject="PasswordService";
+    property name="cbfs"            inject="DiskService@cbfs";
+    property name="log"             inject="logbox:logger:{this}";
 
     /**
      * Failed-login lockout knobs (A6 — durable per-user lock complementing
@@ -28,6 +30,23 @@ class accessors="true" singleton {
      */
     variables.lockoutThreshold      = 5;    // failed attempts before lock
     variables.lockoutDurationMinutes = 15;  // lock length
+
+    /**
+     * Profile photo policy.
+     *   - Accept JPEG / PNG / WebP; reject anything else at the service
+     *     boundary so handlers never need to double-check.
+     *   - Max 5 MB on the wire, max 2000×2000 at the pixel level. We
+     *     resize-crop down to 512×512 server-side, so the upper bound
+     *     is about "reasonable source photo" not "display size."
+     *   - Always output PNG (512×512) regardless of source format — a
+     *     single output format keeps the render path consistent and
+     *     PNG is lossless + universally supported. Profile photos are
+     *     small enough that the size delta vs. JPEG doesn't matter.
+     */
+    variables.profilePhotoMimeAllow = [ "image/jpeg", "image/png", "image/webp" ];
+    variables.profilePhotoMaxBytes  = 5 * 1024 * 1024;
+    variables.profilePhotoMaxDim    = 2000;
+    variables.profilePhotoOutDim    = 512;
 
     /**
      * cbauth: does the email + plaintext-password combo authenticate?
@@ -445,6 +464,224 @@ class accessors="true" singleton {
             .selectRaw( "COUNT(*) AS n" )
             .first();
         return val( row.n ?: 0 ) > 0;
+    }
+
+    // --------------------------------------------------------------------
+    // Profile photo — upload / replace / remove. Stored on the media
+    // cbfs disk under `profile_images/{user_id}/{uuid}.png` so the
+    // disk path itself is per-user-namespaced (no user can reach
+    // another user's file by guessing the path). Always resize-cropped
+    // to a 512×512 square via Java2D so the public author page + OG
+    // composition can render a uniform avatar shape without checking
+    // source dimensions.
+    // --------------------------------------------------------------------
+
+    /**
+     * Upload-or-replace the target user's profile photo.
+     *
+     * @actor        The user performing the action (usually the logged-in
+     *               user from cbauth). Required for permission check.
+     * @userId       The user whose photo is being set. Owner or a
+     *               `users.manage` holder is allowed; everyone else
+     *               gets a bxBlogger.Forbidden throw.
+     * @upload       A struct from the handler carrying the tmp-file
+     *               path + original filename + MIME + byte size:
+     *                 { tmpPath, originalFilename, mimeType, sizeBytes }
+     *
+     * @return       The updated User entity with the new photo columns
+     *               populated. Caller typically re-flashes to the account
+     *               page where the new photo renders.
+     *
+     * @throws       bxBlogger.Forbidden — actor can't touch this user
+     *               bxBlogger.UserValidation — MIME / size / dims out of policy
+     */
+    any function setProfilePhoto( required any actor, required numeric userId, required struct upload ) {
+        assertCanManageUserPhoto( arguments.actor, arguments.userId );
+
+        validateProfilePhotoUpload( arguments.upload );
+
+        var target = variables.wirebox.getInstance( "User" ).findOrFail( arguments.userId );
+        var pngBytes = cropResizeToSquarePng(
+            arguments.upload.tmpPath,
+            variables.profilePhotoOutDim
+        );
+
+        var newKey = "profile_images/" & arguments.userId & "/" & createUUID() & ".png";
+        variables.cbfs.get( "media" ).create(
+            path      = newKey,
+            contents  = pngBytes,
+            overwrite = true
+        );
+
+        // Remove the previous file only after the new one is written —
+        // if create() failed above we'd rather keep the old photo than
+        // leave the user with nothing.
+        deleteProfilePhotoFileSafe( target.getProfilePhotoPath() ?: "" );
+
+        target.setProfilePhotoPath(  newKey );
+        target.setProfilePhotoMime(  "image/png" );
+        target.setProfilePhotoWidth(  variables.profilePhotoOutDim );
+        target.setProfilePhotoHeight( variables.profilePhotoOutDim );
+        target.save();
+
+        log.info( "UserService.setProfilePhoto: user=" & arguments.userId & " key=" & newKey );
+        return target;
+    }
+
+    /**
+     * Drop the target user's profile photo — deletes the file on disk
+     * and clears the four profile_photo_* columns. Same permission
+     * gate as setProfilePhoto. No-op (returns the user unchanged)
+     * when there was no photo to begin with.
+     */
+    any function removeProfilePhoto( required any actor, required numeric userId ) {
+        assertCanManageUserPhoto( arguments.actor, arguments.userId );
+
+        var target = variables.wirebox.getInstance( "User" ).findOrFail( arguments.userId );
+        var oldKey = target.getProfilePhotoPath() ?: "";
+        if ( !len( oldKey ) ) return target;
+
+        deleteProfilePhotoFileSafe( oldKey );
+
+        target.setProfilePhotoPath(  javaCast( "null", "" ) );
+        target.setProfilePhotoMime(  javaCast( "null", "" ) );
+        target.setProfilePhotoWidth( javaCast( "null", "" ) );
+        target.setProfilePhotoHeight( javaCast( "null", "" ) );
+        target.save();
+
+        // Quick silently drops `setXxx( null )` from its UPDATE in some
+        // cases, and qb's struct-based `.update()` rejects null values
+        // (CLAUDE.md note). Raw SQL is the surest way to actually clear
+        // the columns back to NULL.
+        queryExecute(
+            "UPDATE users
+                SET profile_photo_path   = NULL,
+                    profile_photo_mime   = NULL,
+                    profile_photo_width  = NULL,
+                    profile_photo_height = NULL
+              WHERE id = ?",
+            [ arguments.userId ]
+        );
+
+        log.info( "UserService.removeProfilePhoto: user=" & arguments.userId & " key=" & oldKey );
+        return target;
+    }
+
+    // --------------------------------------------------------------------
+    // Profile photo helpers
+    // --------------------------------------------------------------------
+
+    private void function assertCanManageUserPhoto( required any actor, required numeric userId ) {
+        if ( isNull( arguments.actor ) ) {
+            throw( type = "bxBlogger.Forbidden", message = "Authentication required." );
+        }
+        if ( arguments.actor.getId() == arguments.userId ) return;
+        if ( arguments.actor.hasPermission( "users.manage" ) ) return;
+        throw(
+            type    = "bxBlogger.Forbidden",
+            message = "You don't have permission to change this user's profile photo."
+        );
+    }
+
+    private void function validateProfilePhotoUpload( required struct upload ) {
+        var mime = lCase( trim( arguments.upload.mimeType ?: "" ) );
+        if ( !variables.profilePhotoMimeAllow.some( function( allowed ) {
+            return allowed == mime;
+        } ) ) {
+            throw(
+                type    = "bxBlogger.UserValidation",
+                message = "Profile photo must be JPEG, PNG, or WebP."
+            );
+        }
+        if ( val( arguments.upload.sizeBytes ?: 0 ) > variables.profilePhotoMaxBytes ) {
+            throw(
+                type    = "bxBlogger.UserValidation",
+                message = "Profile photo exceeds the " & numberFormat( variables.profilePhotoMaxBytes / 1024 / 1024 ) & " MB upload limit."
+            );
+        }
+        if ( !fileExists( arguments.upload.tmpPath ?: "" ) ) {
+            throw(
+                type    = "bxBlogger.UserValidation",
+                message = "Uploaded file could not be read from the server's temp directory."
+            );
+        }
+    }
+
+    /**
+     * Read a source image from disk, center-crop it to a square, and
+     * resize the crop to `outDim × outDim`. Returns PNG bytes ready to
+     * write to cbfs. Enforces the `profilePhotoMaxDim` pixel cap on
+     * the source; anything larger trips bxBlogger.UserValidation.
+     */
+    private any function cropResizeToSquarePng( required string sourcePath, required numeric outDim ) {
+        var ImageIO        = createObject( "java", "javax.imageio.ImageIO" );
+        var BufferedImage  = createObject( "java", "java.awt.image.BufferedImage" );
+        var RenderingHints = createObject( "java", "java.awt.RenderingHints" );
+        var File           = createObject( "java", "java.io.File" );
+        var BAOS           = createObject( "java", "java.io.ByteArrayOutputStream" );
+
+        var src = ImageIO.read( File.init( arguments.sourcePath ) );
+        if ( isNull( src ) ) {
+            throw(
+                type    = "bxBlogger.UserValidation",
+                message = "Uploaded file isn't a decodable image."
+            );
+        }
+
+        var srcW = src.getWidth();
+        var srcH = src.getHeight();
+        if ( srcW > variables.profilePhotoMaxDim || srcH > variables.profilePhotoMaxDim ) {
+            throw(
+                type    = "bxBlogger.UserValidation",
+                message = "Profile photo must be no larger than "
+                    & variables.profilePhotoMaxDim & "×" & variables.profilePhotoMaxDim
+                    & " pixels; got " & srcW & "×" & srcH & "."
+            );
+        }
+
+        // Center-crop to square.
+        var cropSize = min( srcW, srcH );
+        var cropX    = int( ( srcW - cropSize ) / 2 );
+        var cropY    = int( ( srcH - cropSize ) / 2 );
+
+        var target = BufferedImage.init(
+            arguments.outDim,
+            arguments.outDim,
+            BufferedImage.TYPE_INT_ARGB
+        );
+        var g = target.createGraphics();
+        try {
+            g.setRenderingHint( RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC );
+            g.setRenderingHint( RenderingHints.KEY_RENDERING,     RenderingHints.VALUE_RENDER_QUALITY       );
+            g.setRenderingHint( RenderingHints.KEY_ANTIALIASING,  RenderingHints.VALUE_ANTIALIAS_ON         );
+
+            // drawImage( img, dx1, dy1, dx2, dy2, sx1, sy1, sx2, sy2, observer )
+            g.drawImage(
+                src,
+                0, 0, arguments.outDim, arguments.outDim,
+                cropX, cropY, cropX + cropSize, cropY + cropSize,
+                javaCast( "null", "" )
+            );
+        }
+        finally {
+            g.dispose();
+        }
+
+        var baos = BAOS.init();
+        ImageIO.write( target, "png", baos );
+        return baos.toByteArray();
+    }
+
+    private void function deleteProfilePhotoFileSafe( required string path ) {
+        if ( !len( arguments.path ) ) return;
+        try {
+            variables.cbfs.get( "media" ).delete( arguments.path );
+        }
+        catch ( any e ) {
+            // Disk may have moved / S3 may be eventually consistent;
+            // DB clears still succeed. Don't fail the request.
+            log.warn( "UserService: could not delete profile photo at " & arguments.path & " — " & e.message );
+        }
     }
 
     // --------------------------------------------------------------------

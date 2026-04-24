@@ -1,0 +1,214 @@
+/**
+ * Covers Step 2 — profile photo upload / replace / remove logic on
+ * UserService. Uses Java2D to materialize a small PNG fixture at
+ * beforeAll time so we never need an external test asset.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+
+        variables.tmpDir = getTempDirectory() & "ppsvc-spec-" & createUUID();
+        directoryCreate( variables.tmpDir, true );
+
+        variables.pngPath = variables.tmpDir & "/source.png";
+        variables.bigPngPath = variables.tmpDir & "/huge.png";
+        variables.txtPath = variables.tmpDir & "/nope.txt";
+
+        writeTestPng( variables.pngPath,    600, 400 );   // valid, non-square
+        writeTestPng( variables.bigPngPath, 3000, 3000 ); // exceeds max dim
+        fileWrite( variables.txtPath, "not an image" );
+    }
+
+    function afterAll() {
+        try {
+            if ( directoryExists( variables.tmpDir ) ) directoryDelete( variables.tmpDir, true );
+        } catch ( any e ) {}
+        super.afterAll();
+    }
+
+    function run() {
+
+        describe( "UserService — profile photo management", function() {
+
+            it( "uploads a valid PNG, crops it to 512×512, and persists the columns", function() {
+                var svc    = getInstance( "UserService" );
+                var user   = createTestUser();
+
+                var updated = svc.setProfilePhoto(
+                    actor  = user,
+                    userId = user.getId(),
+                    upload = {
+                        "tmpPath"          : variables.pngPath,
+                        "originalFilename" : "source.png",
+                        "mimeType"         : "image/png",
+                        "sizeBytes"        : getFileInfo( variables.pngPath ).size
+                    }
+                );
+
+                expect( updated.getProfilePhotoPath()   ).toStartWith( "profile_images/" & user.getId() & "/" );
+                expect( updated.getProfilePhotoPath()   ).toEndWith( ".png" );
+                expect( updated.getProfilePhotoMime()   ).toBe( "image/png" );
+                expect( val( updated.getProfilePhotoWidth()  ) ).toBe( 512 );
+                expect( val( updated.getProfilePhotoHeight() ) ).toBe( 512 );
+
+                // File actually landed on the disk.
+                var disk = getInstance( "DiskService@cbfs" ).get( "media" );
+                expect( disk.exists( updated.getProfilePhotoPath() ) ).toBeTrue();
+            } );
+
+            it( "rejects a non-allow-listed MIME", function() {
+                var svc  = getInstance( "UserService" );
+                var user = createTestUser();
+
+                expect( function() {
+                    svc.setProfilePhoto(
+                        actor  = user,
+                        userId = user.getId(),
+                        upload = {
+                            "tmpPath"          : variables.txtPath,
+                            "originalFilename" : "nope.txt",
+                            "mimeType"         : "text/plain",
+                            "sizeBytes"        : getFileInfo( variables.txtPath ).size
+                        }
+                    );
+                } ).toThrow( "bxBlogger.UserValidation" );
+            } );
+
+            it( "rejects oversized source dimensions", function() {
+                var svc  = getInstance( "UserService" );
+                var user = createTestUser();
+
+                expect( function() {
+                    svc.setProfilePhoto(
+                        actor  = user,
+                        userId = user.getId(),
+                        upload = {
+                            "tmpPath"          : variables.bigPngPath,
+                            "originalFilename" : "huge.png",
+                            "mimeType"         : "image/png",
+                            "sizeBytes"        : getFileInfo( variables.bigPngPath ).size
+                        }
+                    );
+                } ).toThrow( "bxBlogger.UserValidation" );
+            } );
+
+            it( "rejects a non-owner non-admin actor", function() {
+                var svc       = getInstance( "UserService" );
+                var owner     = createTestUser();
+                var intruder  = createTestUser();  // no users.manage perm
+
+                expect( function() {
+                    svc.setProfilePhoto(
+                        actor  = intruder,
+                        userId = owner.getId(),
+                        upload = {
+                            "tmpPath"          : variables.pngPath,
+                            "originalFilename" : "source.png",
+                            "mimeType"         : "image/png",
+                            "sizeBytes"        : getFileInfo( variables.pngPath ).size
+                        }
+                    );
+                } ).toThrow( "bxBlogger.Forbidden" );
+            } );
+
+            it( "replacing a photo deletes the previous file", function() {
+                var svc  = getInstance( "UserService" );
+                var user = createTestUser();
+
+                var first = svc.setProfilePhoto(
+                    actor  = user, userId = user.getId(),
+                    upload = defaultUploadStruct()
+                );
+                var firstKey = first.getProfilePhotoPath();
+
+                var second = svc.setProfilePhoto(
+                    actor  = user, userId = user.getId(),
+                    upload = defaultUploadStruct()
+                );
+                var secondKey = second.getProfilePhotoPath();
+
+                expect( secondKey ).notToBe( firstKey, "replacement produces a new UUID key" );
+
+                var disk = getInstance( "DiskService@cbfs" ).get( "media" );
+                expect( disk.exists( secondKey ) ).toBeTrue();
+                expect( disk.exists( firstKey  ) ).toBeFalse( "prior file removed after replace" );
+            } );
+
+            it( "removeProfilePhoto clears the columns + deletes the file", function() {
+                var svc  = getInstance( "UserService" );
+                var user = createTestUser();
+
+                var uploaded = svc.setProfilePhoto(
+                    actor  = user, userId = user.getId(),
+                    upload = defaultUploadStruct()
+                );
+                var key = uploaded.getProfilePhotoPath();
+
+                svc.removeProfilePhoto( actor = user, userId = user.getId() );
+
+                var reloaded = getInstance( "User" ).findOrFail( user.getId() );
+                expect( len( reloaded.getProfilePhotoPath() ?: "" ) ).toBe( 0 );
+                expect( len( reloaded.getProfilePhotoMime() ?: "" ) ).toBe( 0 );
+
+                var disk = getInstance( "DiskService@cbfs" ).get( "media" );
+                expect( disk.exists( key ) ).toBeFalse();
+            } );
+
+            it( "an admin with users.manage CAN upload on another user's behalf", function() {
+                var svc   = getInstance( "UserService" );
+                var owner = createTestUser();
+                var admin = createTestUser( roleSlug = "super_admin" );
+
+                var result = svc.setProfilePhoto(
+                    actor  = admin,
+                    userId = owner.getId(),
+                    upload = defaultUploadStruct()
+                );
+                expect( result.getProfilePhotoPath() ).toStartWith( "profile_images/" & owner.getId() & "/" );
+            } );
+
+        } );
+
+    }
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
+    /**
+     * Materialize a tiny solid-color PNG at the requested dimensions
+     * so we don't need a binary test asset in the repo. 600×400 for
+     * happy-path specs; specs that want a bigger source pass their
+     * own size.
+     */
+    private void function writeTestPng( required string targetPath, required numeric w, required numeric h ) {
+        var BufferedImage = createObject( "java", "java.awt.image.BufferedImage" );
+        var Color         = createObject( "java", "java.awt.Color" );
+        var ImageIO       = createObject( "java", "javax.imageio.ImageIO" );
+        var File          = createObject( "java", "java.io.File" );
+
+        var img = BufferedImage.init(
+            arguments.w, arguments.h, BufferedImage.TYPE_INT_RGB
+        );
+        var g = img.createGraphics();
+        try {
+            g.setColor( Color.init( 100, 150, 200 ) );
+            g.fillRect( 0, 0, arguments.w, arguments.h );
+        }
+        finally {
+            g.dispose();
+        }
+        ImageIO.write( img, "png", File.init( arguments.targetPath ) );
+    }
+
+    private struct function defaultUploadStruct() {
+        return {
+            "tmpPath"          : variables.pngPath,
+            "originalFilename" : "source.png",
+            "mimeType"         : "image/png",
+            "sizeBytes"        : getFileInfo( variables.pngPath ).size
+        };
+    }
+
+}
