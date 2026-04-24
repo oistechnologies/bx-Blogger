@@ -99,14 +99,32 @@ class {
     /**
      * Resolve the named job + the cbq Dispatcher via the live
      * container (not the task scope's `getInstance` shim), then
-     * ask the dispatcher to push the job. Works around the
-     * provider-wrapper dereference issue that hits any
-     * `job.dispatch()` call made from a scheduler thread.
+     * ask the dispatcher to push the job. Works around two
+     * scheduler-thread injection quirks in sequence:
+     *
+     * 1. `job.dispatch()` — AbstractJob pulls the dispatcher via
+     *    a `provider:Dispatcher@cbq` injection that doesn't
+     *    dereference cleanly on task threads. Bypassed by
+     *    resolving the Dispatcher directly from WireBox here.
+     *
+     * 2. `variables.config` missing on the resolved Dispatcher —
+     *    the Dispatcher's `inject="Config@cbq"` (module-scoped
+     *    lookup) hydrates the setter but not the backing field
+     *    when the resolve happens on a scheduler thread. The
+     *    sibling `interceptorService` works because it's a
+     *    `box:` system-ref, not a module-scoped binding. Without
+     *    this guard `dispatcher.dispatch()` throws
+     *    `KeyNotFoundException(CONFIG)` before any job can queue.
+     *    Dispatcher is a singleton, so the first successful
+     *    lazy-fill persists for the rest of the app's lifetime.
      */
     private void function dispatchJob( required string jobName ) {
         var wirebox    = application.wireBox;
         var job        = wirebox.getInstance( arguments.jobName );
         var dispatcher = wirebox.getInstance( "Dispatcher@cbq" );
+        if ( isNull( dispatcher.getConfig() ) ) {
+            dispatcher.setConfig( wirebox.getInstance( "Config@cbq" ) );
+        }
         dispatcher.dispatch( job );
     }
 
