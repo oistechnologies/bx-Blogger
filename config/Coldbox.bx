@@ -323,7 +323,17 @@ class {
 				// placement as the single source of truth and keeps public
 				// pages lean (no Livewire payload until a public wire
 				// actually needs it).
-				"autoInjectAssets" : false
+				"autoInjectAssets" : false,
+				// CBWIRE's built-in CSRF checker has historically been
+				// fragile in this stack (token mismatch after fwreinit,
+				// issues with modular wire loading). Disabled globally —
+				// trade-off: every wire action is no longer CSRF-guarded,
+				// so a cross-origin POST that includes the session cookie
+				// could fire any wire method. Admin wires are still behind
+				// cbsecurity's auth firewall, but CSRF is a separate layer
+				// we're giving up. Revisit when CBWIRE's CSRF handling
+				// stabilizes.
+				"csrfEnabled" : false
 			},
 			"cbq" : {
 				// Path to the connection + worker-pool config. Resolves to
