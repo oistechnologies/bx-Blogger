@@ -1522,13 +1522,16 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 ( function() {
     if ( window.__bxEditorAutosave ) return;   // don't double-bind on re-render
     window.__bxEditorAutosave = setInterval( function() {
+		window._postEditor.autosave();
         // Livewire v3 exposes a global `Livewire`; guard in case CBWIRE
         // reshuffles the symbol name.
+		/*
         if ( typeof Livewire === "undefined" ) return;
         var component = document.querySelector( "[wire\\:id]" );
         if ( !component ) return;
         var wire = Livewire.find( component.getAttribute( "wire:id" ) );
         if ( wire && typeof wire.call === "function" ) wire.call( "autosave" );
+		*/
     }, 30000 );
 } )();
 </script>
