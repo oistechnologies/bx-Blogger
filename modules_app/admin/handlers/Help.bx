@@ -1,0 +1,24 @@
+/**
+ * bx-Blogger — admin:Help handler.
+ *
+ * Single read-only page: about / links / credits / license. No actions,
+ * no forms, no permission guards beyond the admin firewall that
+ * cbsecurity applies to /admin/* — any signed-in admin-module user
+ * can view it.
+ *
+ * Version + short description are pulled from ColdBox settings (which
+ * Main.onAppInit seeds from box.json) so the page stays in sync with
+ * a single source of truth.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    this.layouts = { "Main.bxm" : "*" };
+
+    function index( event, rc, prc ) {
+        prc.pageTitle   = "Help";
+        prc.appVersion  = controller.getSetting( "app.version" );
+        prc.appPhase    = controller.getSetting( "app.phase" );
+        event.setView( view = "help/index" );
+    }
+
+}

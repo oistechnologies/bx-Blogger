@@ -197,14 +197,16 @@
 						   href="#event.buildLink( 'admin:Settings.index' )#">Settings</a>
 					</bx:if>
 
-					<!--- My account — always last, always visible to any
-					      signed-in admin-module user. Separated from the
-					      management links above with a spacer for visual
-					      grouping ("work stuff" vs "your account"). --->
+					<!--- My account + Help — always visible to any signed-in
+					      admin-module user. Separated from the management
+					      links above with a spacer for visual grouping
+					      ("work stuff" vs "your account"). --->
 					<bx:if cbauth.isLoggedIn()>
 						<hr class="my-2">
 						<a class="nav-link #( currentEvent.startsWith( 'admin:Account.' ) ? 'active' : '' )#"
 						   href="#event.buildLink( 'admin:Account.show' )#">My account</a>
+						<a class="nav-link #( currentEvent.startsWith( 'admin:Help.' ) ? 'active' : '' )#"
+						   href="#event.buildLink( 'admin:Help.index' )#">Help</a>
 					</bx:if>
 				</nav>
 			</aside>

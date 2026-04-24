@@ -1,0 +1,189 @@
+<bx:output>
+#view( view = "partials/heading", args = { "title" : "Help" } )#
+
+<div class="row g-4">
+	<div class="col-12 col-lg-8">
+
+		<!--- About ---------------------------------------------------- --->
+		<div class="card stat-card stat-card-primary mb-4">
+			<div class="card-header card-header-soft card-header-soft-primary">
+				<span class="h6 mb-0">About bx-Blogger</span>
+			</div>
+			<div class="card-body">
+				<p class="mb-3">
+					<strong>bx-Blogger</strong> is a BoxLang + ColdBox 8 CMS designed
+					for bloggers and small publications. It ships with markdown
+					authoring, swappable themes, a background-job pipeline,
+					optional AI authoring assistance, and a small set of
+					ops-focused health endpoints for self-hosting operators.
+				</p>
+				<dl class="row small mb-0">
+					<dt class="col-4 col-sm-3 text-muted">Version</dt>
+					<dd class="col-8 col-sm-9"><code>#encodeForHTML( prc.appVersion ?: "dev" )#</code></dd>
+					<dt class="col-4 col-sm-3 text-muted">Phase</dt>
+					<dd class="col-8 col-sm-9"><code>#encodeForHTML( prc.appPhase ?: "0" )#</code></dd>
+					<dt class="col-4 col-sm-3 text-muted">Source</dt>
+					<dd class="col-8 col-sm-9">
+						<a href="https://github.com/oistechnologies/bx-Blogger" target="_blank" rel="noopener">
+							github.com/oistechnologies/bx-Blogger
+						</a>
+					</dd>
+				</dl>
+			</div>
+		</div>
+
+		<!--- Resources ------------------------------------------------- --->
+		<div class="card stat-card stat-card-info mb-4">
+			<div class="card-header card-header-soft card-header-soft-info">
+				<span class="h6 mb-0">Resources</span>
+			</div>
+			<div class="card-body">
+				<ul class="list-unstyled mb-0">
+					<li class="mb-2">
+						<strong>Product</strong> &middot;
+						<a href="https://github.com/oistechnologies/bx-Blogger" target="_blank" rel="noopener">GitHub repo</a>
+						&middot;
+						<a href="https://github.com/oistechnologies/bx-Blogger/issues" target="_blank" rel="noopener">Issues &amp; feature requests</a>
+						&middot;
+						<a href="https://github.com/oistechnologies/bx-Blogger/discussions" target="_blank" rel="noopener">Discussions</a>
+					</li>
+					<li class="mb-2">
+						<strong>Runtime docs</strong> &middot;
+						<a href="https://boxlang.io/" target="_blank" rel="noopener">BoxLang</a>
+						&middot;
+						<a href="https://coldbox.ortusbooks.com/" target="_blank" rel="noopener">ColdBox 8</a>
+						&middot;
+						<a href="https://cbwire.ortusbooks.com/" target="_blank" rel="noopener">CBWIRE</a>
+					</li>
+					<li class="mb-2">
+						<strong>Data access</strong> &middot;
+						<a href="https://qb.ortusbooks.com/" target="_blank" rel="noopener">qb (query builder)</a>
+						&middot;
+						<a href="https://quick.ortusbooks.com/" target="_blank" rel="noopener">Quick (ORM)</a>
+						&middot;
+						<a href="https://cfmigrations.ortusbooks.com/" target="_blank" rel="noopener">cfmigrations</a>
+					</li>
+					<li class="mb-2">
+						<strong>Background jobs</strong> &middot;
+						<a href="https://cbq.ortusbooks.com/" target="_blank" rel="noopener">cbq</a>
+					</li>
+					<li class="mb-0">
+						<strong>Markdown &amp; HTML</strong> &middot;
+						<a href="https://commonmark.org/" target="_blank" rel="noopener">CommonMark spec</a>
+						&middot;
+						<a href="https://github.com/Ionaru/easy-markdown-editor" target="_blank" rel="noopener">EasyMDE</a>
+						&middot;
+						<a href="https://getbootstrap.com/" target="_blank" rel="noopener">Bootstrap 5</a>
+					</li>
+				</ul>
+			</div>
+		</div>
+
+		<!--- Credits -------------------------------------------------- --->
+		<div class="card stat-card stat-card-secondary mb-4">
+			<div class="card-header card-header-soft card-header-soft-secondary">
+				<span class="h6 mb-0">Credits</span>
+			</div>
+			<div class="card-body">
+				<p class="mb-2">
+					bx-Blogger stands on the shoulders of the Ortus Solutions
+					BoxLang and ColdBox ecosystems, plus a handful of open-source
+					projects that carry most of the weight:
+				</p>
+				<ul class="small mb-3">
+					<li>
+						<a href="https://boxlang.io/" target="_blank" rel="noopener">BoxLang</a>
+						&middot;
+						<a href="https://coldbox.ortusbooks.com/" target="_blank" rel="noopener">ColdBox 8</a>
+						&middot;
+						<a href="https://wirebox.ortusbooks.com/" target="_blank" rel="noopener">WireBox</a>
+						&middot;
+						<a href="https://logbox.ortusbooks.com/" target="_blank" rel="noopener">LogBox</a>
+						&middot;
+						<a href="https://cachebox.ortusbooks.com/" target="_blank" rel="noopener">CacheBox</a>
+					</li>
+					<li>
+						<a href="https://testbox.ortusbooks.com/" target="_blank" rel="noopener">TestBox</a>
+						&middot;
+						<a href="https://cbwire.ortusbooks.com/" target="_blank" rel="noopener">CBWIRE</a>
+						&middot;
+						<a href="https://cbq.ortusbooks.com/" target="_blank" rel="noopener">cbq</a>
+						&middot;
+						<a href="https://cbauth.ortusbooks.com/" target="_blank" rel="noopener">cbauth</a>
+						&middot;
+						<a href="https://coldbox-security.ortusbooks.com/" target="_blank" rel="noopener">cbsecurity</a>
+						&middot;
+						<a href="https://cbfs.ortusbooks.com/" target="_blank" rel="noopener">cbfs</a>
+						&middot;
+						<a href="https://forgebox.io/view/cbcsrf" target="_blank" rel="noopener">cbcsrf</a>
+						&middot;
+						<a href="https://forgebox.io/view/cbantisamy" target="_blank" rel="noopener">cbantisamy</a>
+						&middot;
+						<a href="https://forgebox.io/view/cbpaginator" target="_blank" rel="noopener">cbpaginator</a>
+						&middot;
+						<a href="https://coldbox-validation.ortusbooks.com/" target="_blank" rel="noopener">cbvalidation</a>
+						&middot;
+						<a href="https://coldbox-i18n.ortusbooks.com/" target="_blank" rel="noopener">cbi18n</a>
+						&middot;
+						<a href="https://forgebox.io/view/cbfeeds" target="_blank" rel="noopener">cbfeeds</a>
+						&middot;
+						<a href="https://coldbox-mailservices.ortusbooks.com/" target="_blank" rel="noopener">cbmailservices</a>
+						&middot;
+						<a href="https://forgebox.io/view/mementifier" target="_blank" rel="noopener">mementifier</a>
+					</li>
+					<li>
+						<a href="https://commandbox.ortusbooks.com/" target="_blank" rel="noopener">CommandBox</a>
+						&middot;
+						<a href="https://hub.docker.com/r/ortussolutions/commandbox" target="_blank" rel="noopener">Ortus CommandBox Docker image</a>
+					</li>
+					<li>
+						<a href="https://www.mysql.com/" target="_blank" rel="noopener">MySQL</a>
+						&middot;
+						<a href="https://getbootstrap.com/" target="_blank" rel="noopener">Bootstrap</a>
+						&middot;
+						<a href="https://icons.getbootstrap.com/" target="_blank" rel="noopener">Bootstrap Icons</a>
+						&middot;
+						<a href="https://alpinejs.dev/" target="_blank" rel="noopener">Alpine.js</a>
+						&middot;
+						<a href="https://prismjs.com/" target="_blank" rel="noopener">Prism.js</a>
+						&middot;
+						<a href="https://github.com/Ionaru/easy-markdown-editor" target="_blank" rel="noopener">EasyMDE</a>
+					</li>
+				</ul>
+				<p class="small text-muted mb-0">
+					Thanks also to everyone who's filed issues, contributed patches,
+					and kept the Ortus ecosystem humming.
+				</p>
+			</div>
+		</div>
+	</div>
+
+	<!--- License sidebar ------------------------------------------- --->
+	<div class="col-12 col-lg-4">
+		<div class="card stat-card stat-card-warning">
+			<div class="card-header card-header-soft card-header-soft-warning">
+				<span class="h6 mb-0">License</span>
+			</div>
+			<div class="card-body small">
+				<p class="mb-2"><strong>MIT License</strong></p>
+				<p class="text-muted mb-3">
+					Copyright &copy; 2026 OIS Technologies, Mike Rigsby
+				</p>
+				<p class="mb-2">
+					Permission is hereby granted, free of charge, to any person
+					obtaining a copy of this software to deal in the software
+					without restriction, including the rights to use, copy,
+					modify, merge, publish, distribute, sublicense, and/or
+					sell copies of it.
+				</p>
+				<p class="text-muted mb-0">
+					<a href="https://github.com/oistechnologies/bx-Blogger/blob/main/LICENSE"
+					   target="_blank" rel="noopener">
+						Full LICENSE text on GitHub
+					</a>
+				</p>
+			</div>
+		</div>
+	</div>
+</div>
+</bx:output>
