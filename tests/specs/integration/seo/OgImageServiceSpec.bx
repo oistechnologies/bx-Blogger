@@ -1,36 +1,34 @@
 /**
- * bx-Blogger — OgImageServiceSpec (Phase 7.D.2, B8)
+ * bx-Blogger — OgImageServiceSpec
  *
- * End-to-end exercise of the Java2D OG-card generator:
+ * End-to-end exercise of the eager OG-card generator:
  *
  *   - `urlFor(post)` renders + writes + returns a URL on first call
- *   - second call with unchanged contentVersion → cache hit (no
- *     regeneration; same file modtime)
- *   - bumping contentVersion → new file at a new cache key
+ *   - second call at the same `og_version` is a cache hit (no rewrite)
+ *   - `regenerate(post)` bumps og_version → new disk key → fresh PNG
  *   - PNG bytes start with the PNG magic signature
- *   - SeoService layer-5 integration: published post with no image
- *     candidates gets a generated og:image absolute URL
+ *   - Disk path encodes `{post_id}-v{og_version}.png`
+ *   - SeoService integration: published post still falls through to
+ *     a generated og:image absolute URL
  *
  * Files are written under the real `og` cbfs disk (Local provider
- * pointing at `/includes/public/og/`). Cleanup deletes only files
- * this spec produced — keyed by a per-test UUID in the post slug
- * propagated into `{postId}-v{contentVersion}.png`.
+ * pointing at `/includes/public/og/`). Cleanup removes only files
+ * this spec produced + sweeps any orphaned `{postId}-v*.png` whose
+ * postId is no longer in `posts` (catches transients from failed
+ * runs without hand-tracking every path).
  */
 class extends="tests.support.BaseIntegrationSpec" {
 
     function beforeAll() {
         super.beforeAll();
-        variables.ogSvc      = getInstance( "OgImageService" );
-        variables.seoSvc     = getInstance( "SeoService" );
-        variables.postSvc    = getInstance( "PostService" );
-        variables.cbfs       = getInstance( "DiskService@cbfs" );
+        variables.ogSvc          = getInstance( "OgImageService" );
+        variables.seoSvc         = getInstance( "SeoService" );
+        variables.postSvc        = getInstance( "PostService" );
+        variables.cbfs           = getInstance( "DiskService@cbfs" );
         variables.createdOgPaths = [];
     }
 
     function afterAll() {
-        // Tracked-path pass — the normal happy flow where every
-        // test remembered to call trackPath(). Runs before super
-        // because it's narrow + predictable.
         try {
             var disk = variables.cbfs.get( "og" );
             for ( var p in variables.createdOgPaths ) {
@@ -41,15 +39,11 @@ class extends="tests.support.BaseIntegrationSpec" {
             writeLog( file = "testbox", text = "OgImageServiceSpec tracked cleanup failed: " & e.message );
         }
 
-        super.afterAll();   // boundary-snapshot cleanup wipes test posts
+        super.afterAll();
 
-        // Self-heal pass — AFTER the post rows are gone, any OG file
-        // whose postId is no longer in `posts` is definitionally an
-        // orphan (test transient that wasn't tracked, or leftover
-        // from an earlier failed run). Catches leakage from tests
-        // that errored before trackPath could fire. Production is
-        // untouched: real site posts stay in the DB, so their OG
-        // files never match the orphan predicate.
+        // Self-heal: drop any `{postId}-v*.png` whose postId is no
+        // longer in posts. Catches files left behind by a failing
+        // test that didn't track its path.
         try {
             var disk     = variables.cbfs.get( "og" );
             var qb       = getInstance( "QueryBuilder@qb" );
@@ -74,19 +68,19 @@ class extends="tests.support.BaseIntegrationSpec" {
     function run() {
         describe( "OgImageService", function() {
 
-            it( "renders a PNG to the `og` disk on first urlFor() call", function() {
+            it( "pathFor() encodes postId + og_version", function() {
+                var post = makePost();
+                expect( ogSvc.pathFor( post ) ).toBe( post.getId() & "-v" & val( post.getOgVersion() ?: 0 ) & ".png" );
+            } );
+
+            it( "urlFor() renders a PNG to the `og` disk on first call", function() {
                 var post = makePost();
                 var path = ogSvc.pathFor( post );
                 trackPath( path );
 
                 var disk = variables.cbfs.get( "og" );
-                expect( disk.exists( path ) ).toBeFalse( "precondition: fresh post has no cached card" );
 
-                // `url` is a reserved scope in BoxLang — using it as a
-                // local silently resolves to the empty URL scope struct,
-                // NOT the urlFor() return value (see CLAUDE.md reserved-
-                // scope gotcha). Named `ogUrl` to avoid the trap.
-                var ogUrl = ogSvc.urlFor( post = post, authorName = "Test Author", siteName = "Example" );
+                var ogUrl = ogSvc.urlFor( post );
                 expect( len( ogUrl ) ).toBeGT( 0, "url non-empty" );
                 expect( ogUrl contains path ).toBeTrue( "url includes cache path" );
                 expect( disk.exists( path ) ).toBeTrue( "file was written" );
@@ -94,11 +88,10 @@ class extends="tests.support.BaseIntegrationSpec" {
 
             it( "produces bytes that begin with the PNG magic signature", function() {
                 var post = makePost();
+                ogSvc.urlFor( post );
                 trackPath( ogSvc.pathFor( post ) );
-                ogSvc.urlFor( post = post, authorName = "Any", siteName = "Any" );
 
                 var bytes = variables.cbfs.get( "og" ).getAsBinary( ogSvc.pathFor( post ) );
-                // PNG: 89 50 4E 47 0D 0A 1A 0A
                 expect( arrayLen( bytes ) ).toBeGTE( 8 );
                 expect( bytes[ 1 ] ).toBe( -119 );  // 0x89 as signed byte
                 expect( bytes[ 2 ] ).toBe( 80 );    // 'P'
@@ -106,42 +99,36 @@ class extends="tests.support.BaseIntegrationSpec" {
                 expect( bytes[ 4 ] ).toBe( 71 );    // 'G'
             } );
 
-            it( "is idempotent — a second urlFor with the same contentVersion is a cache hit", function() {
+            it( "is idempotent — a second urlFor at the same og_version is a cache hit", function() {
                 var post = makePost();
+                ogSvc.urlFor( post );
                 trackPath( ogSvc.pathFor( post ) );
 
-                ogSvc.urlFor( post = post, authorName = "A", siteName = "S" );
                 var disk    = variables.cbfs.get( "og" );
                 var path    = ogSvc.pathFor( post );
                 var firstMt = disk.lastModified( path );
 
-                // Force a 1s gap — lastModified has ~second resolution.
-                sleep( 1100 );
+                sleep( 1100 );  // lastModified has ~second resolution
 
-                ogSvc.urlFor( post = post, authorName = "A", siteName = "S" );
-                var secondMt = disk.lastModified( path );
-                expect( secondMt ).toBe( firstMt, "no rewrite on cache hit" );
+                ogSvc.urlFor( post );
+                expect( disk.lastModified( path ) ).toBe( firstMt, "no rewrite on cache hit" );
             } );
 
-            it( "writes a new file when contentVersion changes", function() {
+            it( "regenerate() bumps og_version + writes a new file at the new key", function() {
                 var post = makePost();
-                trackPath( ogSvc.pathFor( post ) );
-                ogSvc.urlFor( post = post, authorName = "A", siteName = "S" );
+                ogSvc.urlFor( post );
                 var v1Path = ogSvc.pathFor( post );
+                trackPath( v1Path );
 
-                post.setContentVersion( ( post.getContentVersion() ?: 1 ) + 1 );
-                post.save();
+                ogSvc.regenerate( post );
 
                 var v2Path = ogSvc.pathFor( post );
                 trackPath( v2Path );
-                expect( v2Path ).notToBe( v1Path );
-                expect( variables.cbfs.get( "og" ).exists( v2Path ) ).toBeFalse( "v2 not yet rendered" );
-
-                ogSvc.urlFor( post = post, authorName = "A", siteName = "S" );
-                expect( variables.cbfs.get( "og" ).exists( v2Path ) ).toBeTrue( "v2 rendered on next miss" );
+                expect( v2Path ).notToBe( v1Path, "regen produces a new key" );
+                expect( variables.cbfs.get( "og" ).exists( v2Path ) ).toBeTrue( "fresh PNG at new key" );
             } );
 
-            it( "SeoService layer-5 integration: builds an absolute og:image from the generator", function() {
+            it( "SeoService falls through to OgImageService.urlFor when no other og:image candidate exists", function() {
                 var post = makePost();
                 trackPath( ogSvc.pathFor( post ) );
 

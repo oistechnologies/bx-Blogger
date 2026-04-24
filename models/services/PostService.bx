@@ -76,6 +76,7 @@ class accessors="true" singleton {
             editorId      = data.authorId,
             changeSummary = "initial"
         );
+        dispatchOgImageRender( post );
         log.info( "PostService: created post=" & post.getId() & " slug=" & post.getSlug() );
         return post;
     }
@@ -200,6 +201,8 @@ class accessors="true" singleton {
                 variables.pageCacheService.invalidateAll();
             }
         }
+
+        dispatchOgImageRender( arguments.post );
 
         log.info( "PostService: updated post=" & arguments.post.getId() & " version=" & arguments.post.getContentVersion() );
         return arguments.post;
@@ -851,6 +854,23 @@ class accessors="true" singleton {
         }
         catch ( any e ) {
             return "";
+        }
+    }
+
+    /**
+     * Enqueue an OG-image render for the given post. Fired after
+     * every create/update so the rendered card always reflects the
+     * current title + author + author-preferences state. Failures are
+     * swallowed — a queue hiccup mustn't take down a post save.
+     */
+    private void function dispatchOgImageRender( required any post ) {
+        try {
+            variables.wirebox.getInstance( "OgImageJob" )
+                .setProperties( { "postId" : int( arguments.post.getId() ) } )
+                .dispatch();
+        }
+        catch ( any e ) {
+            log.warn( "PostService: OG image dispatch failed for post=" & arguments.post.getId() & ": " & e.message );
         }
     }
 

@@ -1,34 +1,44 @@
 /**
- * bx-Blogger — OgImageService (Phase 7.D.2, B8)
+ * bx-Blogger — OgImageService
  *
- * Renders a 1200x630 PNG "title + author + site" share card for a
- * post when the upstream OG-image chain in SeoService has nothing
- * to fall back on. Cached on the `og` cbfs disk keyed by
- * `{postId}-{contentVersion}.png` — when the post's contentVersion
- * bumps (PostService.update does this on title/body edits), the
- * next urlFor() miss triggers a regenerate. Old files orphan on
- * disk; a nightly prune job ships with Phase 10 backup work.
+ * Renders a 1200×630 PNG share card for a post, eagerly on every
+ * post save and on demand when an author changes a preference that
+ * affects OG composition. Cached on the `og` cbfs disk keyed by
+ * `{post_id}-v{og_version}.png` — `og_version` is bumped on each
+ * regenerate, which gives free cache-busting for browsers + the
+ * CDN fronting the og disk.
  *
- * Why Java2D instead of the PLAN's Playwright:
- *   - cbplaywright isn't installed. Adding it means Chromium (~200MB)
- *     + OS libs in every container, and a module that hasn't been
- *     exercised in this runtime.
- *   - The same Java2D BIF-avoiding pattern (`createObject("java",...)`
- *     with BufferedImage + Graphics2D + ImageIO) already powers
- *     `GenerateThumbnailsJob` (Phase 6.E). Zero new deps, same
- *     visual output for a "title + author + logo on solid color"
- *     card.
+ * Composition (1200×630):
  *
- * Service is a WireBox singleton — all state lives in method args.
- * Callers (SeoService) hand in post + authorName + siteName; the
- * service never reaches back to the ORM for those because the
- * caller already has them loaded during a render.
+ *   Top-left   — site logo (when /includes/public/branding/
+ *                logo-mark-light.png exists)
+ *   Top-right  — site name (text)
+ *   Center     — title (bold, wrapped to 2 lines, ellipsized on
+ *                overflow)
+ *   Bottom-left — author block:
+ *                   * profile photo (64×64, only when
+ *                     ogIncludeProfilePhoto is on AND the user has
+ *                     a photo on file)
+ *                   * "by {display_name}"
+ *                   * email line (only when ogIncludeEmail is on)
+ *   Bottom-right — post URL text + QR code pair (only when
+ *                  ogIncludeSocialsAndUrl is on; QR comes in 4b)
+ *   Bottom edge  — accent bar (12px, full width)
+ *
+ * Each "include …" toggle is a per-author preference set on
+ * /admin/account; an author with all three off ships a clean
+ * title-card render. The toggles ALSO govern what shows on the
+ * public author page — same set of switches, two surfaces.
+ *
+ * Service is a WireBox singleton. Renders happen on the cbq worker
+ * thread (via OgImageJob) so HTTP threads never wait on Java2D.
  */
 class accessors="true" singleton {
 
     property name="wirebox" inject="wirebox";
     property name="cbfs"    inject="DiskService@cbfs";
     property name="log"     inject="logbox:logger:{this}";
+    property name="settingService" inject="SettingService";
 
     variables.canvasWidth    = 1200;
     variables.canvasHeight   = 630;
@@ -36,41 +46,28 @@ class accessors="true" singleton {
     variables.paddingY       = 72;
     variables.logoMaxWidth   = 96;
     variables.logoMaxHeight  = 96;
-    variables.titleMaxChars  = 160;   // long titles clip, not wrap forever
-    variables.bgColorHex     = "##1B1E2C";   // muted navy — matches admin error-panel surface
+    variables.titleMaxChars  = 160;
+    variables.bgColorHex     = "##1B1E2C";
     variables.fgColorHex     = "##FFFFFF";
-    variables.accentColorHex = "##00DBFF";   // Ortus cyan — author line + accent bar
+    variables.fgMutedHex     = "##B0B6C8";
+    variables.accentColorHex = "##00DBFF";
+    variables.authorPhotoSize = 64;
 
     // --------------------------------------------------------------------
-    // Public
+    // Public API
     // --------------------------------------------------------------------
 
     /**
-     * Return the absolute URL to the cached (or freshly-generated)
-     * share card for `post`. Returns empty string if generation
-     * failed — callers treat that as "no image" and downgrade the
-     * twitter:card to `summary`. Safe to call from a render path;
-     * the cache-hit branch is a single disk.exists() + disk.url().
+     * Public URL for the rendered card. Renders on first miss so a
+     * post visited before its scheduled render-job has run still
+     * gets a valid og:image. Returns "" on failure — callers
+     * downgrade to a `summary`-shaped twitter card.
      */
-    string function urlFor(
-        required any    post,
-        required string authorName,
-                 string siteName = ""
-    ) {
+    string function urlFor( required any post ) {
         try {
             var disk = variables.cbfs.get( "og" );
             var path = pathFor( arguments.post );
-
-            if ( !disk.exists( path ) ) {
-                generate(
-                    post       = arguments.post,
-                    authorName = arguments.authorName,
-                    siteName   = arguments.siteName
-                );
-            }
-            // Re-check — generate may have failed silently below and
-            // chosen not to throw (to keep a render path alive). If
-            // the file still isn't there, return empty.
+            if ( !disk.exists( path ) ) generate( arguments.post );
             if ( !disk.exists( path ) ) return "";
             return disk.url( path );
         }
@@ -81,24 +78,32 @@ class accessors="true" singleton {
     }
 
     /**
-     * Force-render the card and write to disk, overwriting any
-     * existing version. Used by the Phase-7.D.2 spec; future
-     * `postPostUpdate` interceptor can call this to pre-warm the
-     * cache so the first social share doesn't pay the render cost.
+     * Bump og_version + render. The "fresh-image-please" path used by
+     * OgImageJob (post save), AuthorOgRegenJob (author preference
+     * change fan-out), and the manual Regenerate button in the post
+     * editor.
      */
-    function generate(
-        required any    post,
-        required string authorName,
-                 string siteName = ""
-    ) {
+    function regenerate( required any post ) {
+        var current = val( arguments.post.getOgVersion() ?: 0 );
+        arguments.post.setOgVersion( current + 1 );
+        arguments.post.save();
+        generate( arguments.post );
+        return arguments.post;
+    }
+
+    /**
+     * Render the card and write it to disk at the current og_version
+     * key. Overwrites any existing file at that key — meaningful only
+     * after a regenerate(), since the version bumps make the key
+     * unique anyway. Fail-quiet: a single render failure logs but
+     * does NOT throw, so a transient JVM hiccup doesn't blow up an
+     * entire post save.
+     */
+    function generate( required any post ) {
         try {
-            var disk   = variables.cbfs.get( "og" );
-            var path   = pathFor( arguments.post );
-            var bytes  = renderPngBytes(
-                title      = arguments.post.getTitle() ?: "",
-                authorName = arguments.authorName,
-                siteName   = arguments.siteName
-            );
+            var disk = variables.cbfs.get( "og" );
+            var path = pathFor( arguments.post );
+            var bytes = renderPngBytes( arguments.post );
             disk.create( path = path, contents = bytes, overwrite = true );
             log.info( "OgImageService: generated " & path & " (" & arrayLen( bytes ) & " bytes)" );
         }
@@ -108,34 +113,34 @@ class accessors="true" singleton {
     }
 
     /**
-     * Path on the `og` disk for the given post. Deterministic —
-     * callers can test existence without a DB roundtrip.
+     * Disk key — deterministic from post id + og_version. Callers
+     * (handler-side preview, page cache invalidation hook) can
+     * compute it without touching the disk.
      */
     string function pathFor( required any post ) {
-        return arguments.post.getId() & "-v" & ( arguments.post.getContentVersion() ?: 1 ) & ".png";
+        return arguments.post.getId() & "-v" & val( arguments.post.getOgVersion() ?: 0 ) & ".png";
     }
 
     // --------------------------------------------------------------------
-    // Rendering (private)
+    // Rendering
     // --------------------------------------------------------------------
 
     /**
-     * Build the 1200x630 PNG in-memory and return a byte[]. The caller
-     * is responsible for writing it somewhere. Kept separate from
-     * `generate()` so tests can assert on bytes without touching the
-     * filesystem.
+     * Read the post's author + the configured site name, then render
+     * the 1200×630 PNG with the per-author preference toggles applied.
+     * Returns byte[].
      */
-    private any function renderPngBytes(
-        required string title,
-        required string authorName,
-                 string siteName = ""
-    ) {
+    private any function renderPngBytes( required any post ) {
         var BufferedImage  = createObject( "java", "java.awt.image.BufferedImage" );
         var Color          = createObject( "java", "java.awt.Color" );
         var Font           = createObject( "java", "java.awt.Font" );
         var RenderingHints = createObject( "java", "java.awt.RenderingHints" );
         var ImageIO        = createObject( "java", "javax.imageio.ImageIO" );
         var BAOS           = createObject( "java", "java.io.ByteArrayOutputStream" );
+
+        // Pull the author + site once so the draw block doesn't make
+        // round-trips while it's holding the Graphics context.
+        var ctx = buildRenderContext( arguments.post );
 
         var img = BufferedImage.init(
             variables.canvasWidth,
@@ -145,94 +150,22 @@ class accessors="true" singleton {
         var g = img.createGraphics();
 
         try {
-            g.setRenderingHint( RenderingHints.KEY_ANTIALIASING,       RenderingHints.VALUE_ANTIALIAS_ON      );
-            g.setRenderingHint( RenderingHints.KEY_TEXT_ANTIALIASING,  RenderingHints.VALUE_TEXT_ANTIALIAS_ON );
-            g.setRenderingHint( RenderingHints.KEY_RENDERING,          RenderingHints.VALUE_RENDER_QUALITY    );
+            g.setRenderingHint( RenderingHints.KEY_ANTIALIASING,      RenderingHints.VALUE_ANTIALIAS_ON      );
+            g.setRenderingHint( RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON );
+            g.setRenderingHint( RenderingHints.KEY_RENDERING,         RenderingHints.VALUE_RENDER_QUALITY    );
 
             // Background
             g.setColor( decodeColor( Color, variables.bgColorHex ) );
             g.fillRect( 0, 0, variables.canvasWidth, variables.canvasHeight );
 
-            // Accent bar along the bottom (10px, full width, Ortus cyan)
+            // Bottom accent bar (cyan, 12px)
             g.setColor( decodeColor( Color, variables.accentColorHex ) );
             g.fillRect( 0, variables.canvasHeight - 12, variables.canvasWidth, 12 );
 
-            // Title — Bold sans-serif, 64pt. Wrap to 2 lines max; if
-            // both lines still don't fit the canvas, clip with "...".
-            var titleText = left( arguments.title, variables.titleMaxChars );
-            var titleFont = Font.init( "SansSerif", Font.BOLD, 64 );
-            g.setFont( titleFont );
-            g.setColor( decodeColor( Color, variables.fgColorHex ) );
-
-            var maxTextWidth = variables.canvasWidth - ( 2 * variables.paddingX );
-            var lines        = wrapText( g, titleText, maxTextWidth, 2 );
-            var fm           = g.getFontMetrics();
-            var lineHeight   = fm.getHeight();
-
-            // Vertically center the title block between the top
-            // padding and the author line at the bottom.
-            var titleBlockHeight = arrayLen( lines ) * lineHeight;
-            var titleBaseY       = int( ( variables.canvasHeight - titleBlockHeight ) / 2 ) + fm.getAscent();
-            for ( var i = 1; i <= arrayLen( lines ); i++ ) {
-                g.drawString( lines[ i ], variables.paddingX, titleBaseY + ( ( i - 1 ) * lineHeight ) );
-            }
-
-            // Author — Regular 32pt, cyan accent
-            var authorFont = Font.init( "SansSerif", Font.PLAIN, 32 );
-            g.setFont( authorFont );
-            g.setColor( decodeColor( Color, variables.accentColorHex ) );
-            var authorY = variables.canvasHeight - variables.paddingY;
-            if ( len( arguments.authorName ) ) {
-                g.drawString( "by " & arguments.authorName, variables.paddingX, authorY );
-            }
-
-            // Site name — top-right, regular 28pt, white
-            if ( len( arguments.siteName ) ) {
-                var siteFont = Font.init( "SansSerif", Font.PLAIN, 28 );
-                g.setFont( siteFont );
-                g.setColor( decodeColor( Color, variables.fgColorHex ) );
-                var siteFm = g.getFontMetrics();
-                var siteW  = siteFm.stringWidth( arguments.siteName );
-                g.drawString(
-                    arguments.siteName,
-                    variables.canvasWidth - variables.paddingX - siteW,
-                    variables.paddingY + siteFm.getAscent()
-                );
-            }
-
-            // Logo top-left — optional. Read lazily so a missing
-            // file just omits the logo instead of tanking the whole
-            // card.
-            try {
-                var logoPath = expandPath( "/includes/public/branding/logo-mark-light.png" );
-                if ( fileExists( logoPath ) ) {
-                    var logoImg  = ImageIO.read( createObject( "java", "java.io.File" ).init( logoPath ) );
-                    if ( !isNull( logoImg ) ) {
-                        var lw = logoImg.getWidth();
-                        var lh = logoImg.getHeight();
-                        var scale = min(
-                            variables.logoMaxWidth  / lw,
-                            variables.logoMaxHeight / lh
-                        );
-                        var drawW = int( lw * scale );
-                        var drawH = int( lh * scale );
-                        // Draw logo if we left room at top-left; the
-                        // site-name block lives top-right so they
-                        // don't collide.
-                        g.drawImage(
-                            logoImg,
-                            variables.paddingX,
-                            variables.paddingY,
-                            drawW,
-                            drawH,
-                            javaCast( "null", "" )
-                        );
-                    }
-                }
-            }
-            catch ( any logoErr ) {
-                log.debug( "OgImageService: logo draw skipped — " & logoErr.message );
-            }
+            drawTitle(    g, Font, Color, ctx );
+            drawSiteName( g, Font, Color, ctx );
+            drawLogo(     g, ImageIO );
+            drawAuthorBlock( g, Font, Color, ImageIO, ctx );
 
             var baos = BAOS.init();
             ImageIO.write( img, "png", baos );
@@ -244,19 +177,194 @@ class accessors="true" singleton {
     }
 
     /**
+     * Resolve everything renderPngBytes needs about the post + its
+     * author + site config into a single struct. Decoupled so spec
+     * setup can stub the same struct without exercising the ORM.
+     */
+    private struct function buildRenderContext( required any post ) {
+        var author     = arguments.post.getAuthor();
+        var hasAuthor  = !isNull( author );
+
+        var siteName   = trim( settingService.get( "site_name", "" ) );
+        if ( !len( siteName ) ) siteName = trim( settingService.get( "AppName", "" ) );
+
+        // Author preferences with safe defaults — a post with a
+        // deleted/missing author still renders a clean title card.
+        var includePhoto    = hasAuthor && !!author.getOgIncludeProfilePhoto();
+        var includeEmail    = hasAuthor && !!author.getOgIncludeEmail();
+        var includeSocials  = hasAuthor && !!author.getOgIncludeSocialsAndUrl();
+
+        var photoPath = "";
+        if ( includePhoto && hasAuthor && author.hasProfilePhoto() ) {
+            // Resolve the photo to an absolute filesystem path the
+            // BufferedImage reader can open. Local cbfs returns a
+            // disk-relative path; we expand it through the disk's
+            // own properties.path. For S3-backed media this branch
+            // is skipped (we don't pull bytes back through the
+            // network on every render — Step 4b adds a local cache).
+            try {
+                var mediaDisk = variables.cbfs.get( "media" );
+                if ( structKeyExists( mediaDisk, "getProperties" ) ) {
+                    var diskProps = mediaDisk.getProperties();
+                    if ( structKeyExists( diskProps, "path" ) && len( diskProps.path ) ) {
+                        photoPath = diskProps.path & "/" & author.getProfilePhotoPath();
+                    }
+                }
+            }
+            catch ( any e ) { /* leave photoPath blank — render skips block */ }
+        }
+
+        return {
+            "post"           : arguments.post,
+            "title"          : arguments.post.getTitle() ?: "",
+            "siteName"       : siteName,
+            "author"         : hasAuthor ? author : javaCast( "null", "" ),
+            "authorName"     : hasAuthor ? ( author.getDisplayName() ?: "" ) : "",
+            "authorEmail"    : hasAuthor ? ( author.getEmail() ?: "" ) : "",
+            "includePhoto"   : includePhoto,
+            "includeEmail"   : includeEmail,
+            "includeSocials" : includeSocials,
+            "photoPath"      : photoPath
+        };
+    }
+
+    private void function drawTitle( required any g, required any Font, required any Color, required struct ctx ) {
+        var titleText = left( arguments.ctx.title, variables.titleMaxChars );
+        var titleFont = arguments.Font.init( "SansSerif", arguments.Font.BOLD, 64 );
+        arguments.g.setFont( titleFont );
+        arguments.g.setColor( decodeColor( arguments.Color, variables.fgColorHex ) );
+
+        var maxTextWidth = variables.canvasWidth - ( 2 * variables.paddingX );
+        var lines        = wrapText( arguments.g, titleText, maxTextWidth, 2 );
+        var fm           = arguments.g.getFontMetrics();
+        var lineHeight   = fm.getHeight();
+
+        var titleBlockHeight = arrayLen( lines ) * lineHeight;
+        var titleBaseY       = int( ( variables.canvasHeight - titleBlockHeight ) / 2 ) + fm.getAscent();
+        for ( var i = 1; i <= arrayLen( lines ); i++ ) {
+            arguments.g.drawString(
+                lines[ i ],
+                variables.paddingX,
+                titleBaseY + ( ( i - 1 ) * lineHeight )
+            );
+        }
+    }
+
+    private void function drawSiteName( required any g, required any Font, required any Color, required struct ctx ) {
+        if ( !len( arguments.ctx.siteName ) ) return;
+        var siteFont = arguments.Font.init( "SansSerif", arguments.Font.PLAIN, 28 );
+        arguments.g.setFont( siteFont );
+        arguments.g.setColor( decodeColor( arguments.Color, variables.fgColorHex ) );
+        var fm = arguments.g.getFontMetrics();
+        var w  = fm.stringWidth( arguments.ctx.siteName );
+        arguments.g.drawString(
+            arguments.ctx.siteName,
+            variables.canvasWidth - variables.paddingX - w,
+            variables.paddingY + fm.getAscent()
+        );
+    }
+
+    private void function drawLogo( required any g, required any ImageIO ) {
+        try {
+            var logoPath = expandPath( "/includes/public/branding/logo-mark-light.png" );
+            if ( !fileExists( logoPath ) ) return;
+            var logoImg = arguments.ImageIO.read( createObject( "java", "java.io.File" ).init( logoPath ) );
+            if ( isNull( logoImg ) ) return;
+            var lw = logoImg.getWidth();
+            var lh = logoImg.getHeight();
+            var scale = min(
+                variables.logoMaxWidth  / lw,
+                variables.logoMaxHeight / lh
+            );
+            arguments.g.drawImage(
+                logoImg,
+                variables.paddingX,
+                variables.paddingY,
+                int( lw * scale ),
+                int( lh * scale ),
+                javaCast( "null", "" )
+            );
+        }
+        catch ( any e ) {
+            log.debug( "OgImageService: logo draw skipped — " & e.message );
+        }
+    }
+
+    /**
+     * Bottom-left author block. Profile photo (when enabled + on
+     * file), display name in cyan, email below name in muted grey
+     * (when ogIncludeEmail is on). Skips entirely when the post has
+     * no resolvable author.
+     */
+    private void function drawAuthorBlock( required any g, required any Font, required any Color, required any ImageIO, required struct ctx ) {
+        if ( isNull( arguments.ctx.author ) ) return;
+        if ( !len( arguments.ctx.authorName ) && !len( arguments.ctx.authorEmail ) ) return;
+
+        var nameFont  = arguments.Font.init( "SansSerif", arguments.Font.PLAIN, 32 );
+        var emailFont = arguments.Font.init( "SansSerif", arguments.Font.PLAIN, 22 );
+
+        // Anchor: the baseline of the bottom-most line of text sits at
+        // `canvasHeight - paddingY`. With one line that's name-only;
+        // with email enabled, name goes up by emailLineHeight.
+        var baselineY = variables.canvasHeight - variables.paddingY;
+        var nameX     = variables.paddingX;
+
+        // Optional profile photo — sits to the LEFT of the text block,
+        // shifts text rightward by photoSize + gap.
+        var drewPhoto = false;
+        if ( arguments.ctx.includePhoto && len( arguments.ctx.photoPath ) && fileExists( arguments.ctx.photoPath ) ) {
+            try {
+                var photoImg = arguments.ImageIO.read( createObject( "java", "java.io.File" ).init( arguments.ctx.photoPath ) );
+                if ( !isNull( photoImg ) ) {
+                    var photoSize = variables.authorPhotoSize;
+                    var photoY    = baselineY - photoSize + 8;  // sit on baseline-ish
+                    arguments.g.drawImage(
+                        photoImg,
+                        variables.paddingX,
+                        photoY,
+                        photoSize,
+                        photoSize,
+                        javaCast( "null", "" )
+                    );
+                    nameX = variables.paddingX + photoSize + 16;
+                    drewPhoto = true;
+                }
+            }
+            catch ( any e ) {
+                log.debug( "OgImageService: profile-photo draw skipped — " & e.message );
+            }
+        }
+
+        // Email line first when enabled, drawn BELOW the name baseline.
+        var nameBaseline = baselineY;
+        if ( arguments.ctx.includeEmail && len( arguments.ctx.authorEmail ) ) {
+            arguments.g.setFont( emailFont );
+            arguments.g.setColor( decodeColor( arguments.Color, variables.fgMutedHex ) );
+            var efm = arguments.g.getFontMetrics();
+            arguments.g.drawString( arguments.ctx.authorEmail, nameX, baselineY );
+            nameBaseline = baselineY - efm.getHeight() + 4;
+        }
+
+        // Name line in cyan accent.
+        if ( len( arguments.ctx.authorName ) ) {
+            arguments.g.setFont( nameFont );
+            arguments.g.setColor( decodeColor( arguments.Color, variables.accentColorHex ) );
+            arguments.g.drawString( "by " & arguments.ctx.authorName, nameX, nameBaseline );
+        }
+    }
+
+    // --------------------------------------------------------------------
+    // Color + text utilities
+    // --------------------------------------------------------------------
+
+    /**
      * Hex-string → java.awt.Color. Accepts `#RRGGBB`, `##RRGGBB`
-     * (BoxLang string escaping doubles the leading hash), and bare
-     * `RRGGBB`. Parses the hex manually and builds Color(r,g,b)
-     * rather than routing through Color.decode("0x...") — BoxLang's
-     * parser choked on the `"0x"` string literal (read as an
-     * incomplete hex-int identifier) in early 7.D.2 development.
+     * (BoxLang doubles `#`), and bare `RRGGBB`. Builds Color(r,g,b)
+     * directly because Color.decode("0x...") tripped BoxLang's
+     * literal-parser in early development.
      */
     private any function decodeColor( required any ColorClass, required string hex ) {
         var h = arguments.hex;
-        // Strip a leading `#` if present. In BoxLang source a literal
-        // `#` is written `##` because a single `#` starts an
-        // interpolation expression — so `"##"` here matches a single
-        // runtime `#` character.
         if ( left( h, 1 ) == "##" ) h = right( h, len( h ) - 1 );
         var Integer = createObject( "java", "java.lang.Integer" );
         var r = Integer.parseInt( mid( h, 1, 2 ), 16 );
@@ -266,11 +374,9 @@ class accessors="true" singleton {
     }
 
     /**
-     * Greedy word-wrap into at most `maxLines` lines that fit
-     * `maxPx` width under the current graphics font. If the text
-     * overflows the line budget, the last line gets clipped with an
-     * ellipsis. A single too-long word is hard-clipped rather than
-     * overflowing the canvas.
+     * Greedy word-wrap into `maxLines` lines under `maxPx`. Last line
+     * gets ellipsized when text overflows; a single oversized word is
+     * hard-clipped rather than escaping the canvas.
      */
     private array function wrapText(
         required any     g,
@@ -289,19 +395,15 @@ class accessors="true" singleton {
                 current = candidate;
                 continue;
             }
-            // Overflow — emit current line (if any), start next with w.
             if ( len( current ) ) lines.append( current );
             if ( arrayLen( lines ) >= arguments.maxLines ) break;
             current = w;
-            // Single-word overflow: hard-clip.
             if ( fm.stringWidth( current ) > arguments.maxPx ) {
                 current = clipToWidth( fm, current, arguments.maxPx );
             }
         }
         if ( len( current ) && arrayLen( lines ) < arguments.maxLines ) lines.append( current );
 
-        // If we still have words after hitting maxLines, ellipsize
-        // the last line so readers know there's more.
         if ( arrayLen( lines ) == arguments.maxLines ) {
             var consumed = lines.toList( " " );
             if ( len( consumed ) < len( arguments.text ) && arrayLen( lines ) ) {

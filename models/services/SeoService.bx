@@ -79,11 +79,12 @@ class accessors="true" singleton {
         // exhausted. Keeps the render path free of the generate
         // cost for the common case where an author picked an image.
         if ( !len( imageUrl ) && ( arguments.post.getPostType() ?: "post" ) == "post" ) {
-            imageUrl = variables.wirebox.getInstance( "OgImageService" ).urlFor(
-                post       = arguments.post,
-                authorName = arguments.authorName,
-                siteName   = arguments.siteName
-            );
+            // OgImageService now reads author + site from the post +
+            // settings itself — author name + site name args from the
+            // caller are no longer threaded through. Author preferences
+            // (profile photo, email, socials+URL) drive what's actually
+            // composed onto the card.
+            imageUrl = variables.wirebox.getInstance( "OgImageService" ).urlFor( arguments.post );
             // Rendered cards are relative (`/includes/public/og/...`);
             // OG/Twitter require absolute URLs.
             if ( len( imageUrl ) && left( imageUrl, 1 ) == "/" ) {

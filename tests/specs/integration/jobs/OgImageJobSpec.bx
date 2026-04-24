@@ -1,0 +1,141 @@
+/**
+ * bx-Blogger — OgImageJobSpec
+ *
+ * Verifies the per-post OG render job that PostService dispatches
+ * after every save:
+ *
+ *   - dispatched synchronously (`onConnection("sync")`) it bumps
+ *     og_version + leaves a PNG on the `og` disk
+ *   - second dispatch produces a new file at the next og_version key
+ *   - dispatch with a missing post id is a clean no-op (warns and
+ *     returns) — covers the race where a post is deleted between
+ *     dispatch + run
+ *   - dispatch with a malformed payload throws so cbq can retry
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.ogSvc          = getInstance( "OgImageService" );
+        variables.postSvc        = getInstance( "PostService" );
+        variables.cbfs           = getInstance( "DiskService@cbfs" );
+        variables.createdOgPaths = [];
+    }
+
+    function afterAll() {
+        try {
+            var disk = variables.cbfs.get( "og" );
+            for ( var p in variables.createdOgPaths ) {
+                try { if ( disk.exists( p ) ) disk.delete( p ); } catch ( any e ) {}
+            }
+            getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "cbq_jobs" ).where( "queue", "default" ).delete();
+        }
+        catch ( any e ) {}
+
+        super.afterAll();
+
+        // Self-heal: drop any orphaned `{postId}-v*.png` whose postId
+        // is no longer in posts. Catches transients from earlier
+        // failed runs without hand-tracking every key.
+        try {
+            var disk     = variables.cbfs.get( "og" );
+            var qb       = getInstance( "QueryBuilder@qb" );
+            var livePids = qb.newQuery().from( "posts" ).select( "id" ).get()
+                .map( function( r ) { return r.id; } );
+            var livePidSet = {};
+            for ( var pid in livePids ) livePidSet[ pid ] = true;
+            for ( var file in disk.files( "" ) ) {
+                var m = reFind( "^([0-9]+)-v[0-9]+\.png$", file, 1, true );
+                if ( m.len[ 1 ] == 0 ) continue;
+                var pid = val( mid( file, m.pos[ 2 ], m.len[ 2 ] ) );
+                if ( !structKeyExists( livePidSet, pid ) ) {
+                    try { disk.delete( file ); } catch ( any e ) {}
+                }
+            }
+        }
+        catch ( any e ) {}
+    }
+
+    function run() {
+        describe( "OgImageJob", function() {
+
+            it( "synchronous dispatch bumps og_version + writes the PNG", function() {
+                var post = makePost();
+                var startVersion = val( post.getOgVersion() ?: 0 );
+
+                getInstance( "OgImageJob" )
+                    .onConnection( "sync" )
+                    .setProperties( { "postId" : int( post.getId() ) } )
+                    .dispatch();
+
+                var refetched = getInstance( "Post" ).findOrFail( post.getId() );
+                expect( val( refetched.getOgVersion() ?: 0 ) ).toBe( startVersion + 1 );
+
+                var path = variables.ogSvc.pathFor( refetched );
+                trackPath( path );
+                expect( variables.cbfs.get( "og" ).exists( path ) ).toBeTrue();
+            } );
+
+            it( "second sync dispatch lands at a new og_version key", function() {
+                var post = makePost();
+
+                getInstance( "OgImageJob" ).onConnection( "sync" )
+                    .setProperties( { "postId" : int( post.getId() ) } ).dispatch();
+
+                var first = getInstance( "Post" ).findOrFail( post.getId() );
+                var firstPath = variables.ogSvc.pathFor( first );
+                trackPath( firstPath );
+
+                getInstance( "OgImageJob" ).onConnection( "sync" )
+                    .setProperties( { "postId" : int( post.getId() ) } ).dispatch();
+
+                var second = getInstance( "Post" ).findOrFail( post.getId() );
+                var secondPath = variables.ogSvc.pathFor( second );
+                trackPath( secondPath );
+
+                expect( secondPath ).notToBe( firstPath );
+                expect( variables.cbfs.get( "og" ).exists( secondPath ) ).toBeTrue();
+            } );
+
+            it( "no-ops when the post no longer exists", function() {
+                // Pick an id we KNOW isn't in the table.
+                var ghostId = 999999999;
+                getInstance( "OgImageJob" ).onConnection( "sync" )
+                    .setProperties( { "postId" : ghostId } ).dispatch();
+                // Reaching this assertion = no exception thrown.
+                expect( true ).toBeTrue();
+            } );
+
+            it( "throws on malformed payload (missing/zero postId)", function() {
+                expect( function() {
+                    getInstance( "OgImageJob" ).onConnection( "sync" )
+                        .setProperties( { "postId" : 0 } ).dispatch();
+                } ).toThrow( "bxBlogger.OgImageJob.MalformedPayload" );
+            } );
+
+        } );
+    }
+
+    private any function makePost() {
+        var author = createTestUser();
+        var post   = variables.postSvc.create( {
+            "authorId"     : author.getId(),
+            "title"        : "OG job spec " & createUUID(),
+            "slug"         : "ogjob-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+            "bodyMarkdown" : "Body."
+        } );
+        // Reset og_version to a known starting value so the spec
+        // doesn't depend on whatever PostService.create dispatched
+        // in the background (cbq workers run async; the entity may
+        // or may not have been bumped to 1 by the time we get here).
+        post.setOgVersion( 0 );
+        post.save();
+        return post;
+    }
+
+    private void function trackPath( required string path ) {
+        variables.createdOgPaths.append( arguments.path );
+    }
+
+}

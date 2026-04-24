@@ -1,0 +1,54 @@
+/**
+ * bx-Blogger — OgImageJob
+ *
+ * Eager-render the OG share card for one post. Dispatched on every
+ * post save (via PostService.create / update) and on demand from the
+ * post editor's Regenerate button. Fan-out from AuthorOgRegenJob
+ * (when an author flips a preference that affects composition)
+ * dispatches one of these per affected post.
+ *
+ * Flow:
+ *   1. Resolve the Post by id. Skip cleanly if it's been deleted
+ *      between dispatch and execution — no need to throw + retry.
+ *   2. Hand the entity to OgImageService.regenerate(), which bumps
+ *      `og_version` so the next URL the theme renders busts every
+ *      cache layer for free, then writes the PNG.
+ *
+ * Non-request thread rules apply (see global CLAUDE.md): logging
+ * via `writeLog`, services resolved through `application.wireBox`
+ * inside `handle()` rather than property-injected.
+ */
+class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
+
+    function handle() {
+        var props = variables.properties ?: {};
+
+        var postId = structKeyExists( props, "postId" ) ? props.postId : 0;
+        if ( !isNumeric( postId ) || int( postId ) <= 0 ) {
+            throw(
+                type    = "bxBlogger.OgImageJob.MalformedPayload",
+                message = "OgImageJob requires a positive numeric postId property."
+            );
+        }
+
+        var wirebox = application.wireBox;
+        var post    = wirebox.getInstance( "Post" ).find( postId );
+        if ( isNull( post ) ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "OgImageJob: post " & postId & " no longer exists — skipping."
+            );
+            return;
+        }
+
+        wirebox.getInstance( "OgImageService" ).regenerate( post );
+
+        writeLog(
+            file = "bxblogger",
+            type = "information",
+            text = "OgImageJob: rendered post=" & postId & " v=" & post.getOgVersion()
+        );
+    }
+
+}
