@@ -555,18 +555,21 @@ class {
 			// API endpoint. cbfs doesn't inject the bucket into path-
 			// style public URLs on its own (its built-in default is
 			// virtual-style `<bucket>.<endpoint>`), so for path-style
-			// providers we append `/<bucket>` to the operator's base
-			// URL when they haven't already embedded it (e.g. B2's
-			// `/file/<bucket>` shape — operators setting the full path
-			// get left alone).
+			// providers we append `/<bucket>` to the operator's base URL
+			// when the URL doesn't already contain the bucket name
+			// anywhere — covers both bare hosts (MinIO `localhost:9000`)
+			// and B2's `/file` pattern (`f004.backblazeb2.com/file` →
+			// appended to `.../file/<bucket>`). Operators with a CDN
+			// that rewrites `/<bucket>/<key>` down to `/<key>` can bake
+			// the bucket into S3_PUBLIC_URL to opt out of the append.
 			var mediaPublic = reReplaceNoCase(
 				getSystemSetting( "S3_PUBLIC_URL", "" ),
 				"^https?://",
 				""
 			);
 			if ( len( mediaPublic ) ) {
-				if ( mediaProps.urlStyle == "path" && !( mediaPublic contains "/" ) ) {
-					mediaPublic &= "/" & mediaBucket;
+				if ( mediaProps.urlStyle == "path" && !( mediaPublic contains mediaBucket ) ) {
+					mediaPublic = reReplace( mediaPublic, "/+$", "", "all" ) & "/" & mediaBucket;
 				}
 				mediaProps.publicDomain = mediaPublic;
 			}
