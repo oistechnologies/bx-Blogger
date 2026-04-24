@@ -138,18 +138,23 @@ S3_REGION=us-west-004
 S3_ACCESS_KEY=<keyID from §3.1>
 S3_SECRET_KEY=<applicationKey from §3.1>
 
-# Bucket names from §2.
+# Bucket name from §2. OG images stay on the Local cbfs disk by
+# design (see config/Coldbox.bx) — no S3_BUCKET_OG needed.
 S3_BUCKET_MEDIA=bxblog-media-prod
-S3_BUCKET_OG=bxblog-og-prod
 
-# B2 supports virtual-hosted-style S3 URLs (bucket.s3.endpoint/key), so
-# path-style is not required. Keep this off unless a B2 API change reverts.
-S3_USE_PATH_STYLE=false
+# URL style — `path` works with every S3-compatible provider; s3sdk's
+# virtual-style builder can't inject non-AWS bucket names into the
+# hostname, so path is the universal safe choice for B2.
+S3_URL_STYLE=path
 
-# Public URL prefix — what gets written into <img src="…"> and meta og:image
-# tags. Use the native B2 URL here until you layer Cloudflare (step 6), then
-# swap in the Cloudflare-fronted custom domain.
-S3_PUBLIC_URL=https://f004.backblazeb2.com/file/bxblog-media-prod
+# Public URL base — what gets written into <img src="…"> and meta
+# og:image tags. Use the native B2 `/file` path here until you layer
+# Cloudflare (step 6), then swap in the CDN host. The app auto-appends
+# `/<S3_BUCKET_MEDIA>` to this URL so the final shape is
+# `https://f004.backblazeb2.com/file/<bucket>/<key>`. Operators with a
+# Cloudflare transform stripping `/file/<bucket>/` can bake the bucket
+# into this URL to opt out of the auto-append.
+S3_PUBLIC_URL=https://f004.backblazeb2.com/file
 
 S3_FORCE_HTTPS=true
 
@@ -169,7 +174,29 @@ BACKUP_S3_SECRET_KEY=<applicationKey from §3.2>
 # BACKUP_S3_PREFIX=site-a
 ```
 
+**On the `media` key's scope:** media-bucket scope with **read + write + delete** capabilities. Unlike backups, the app re-reads uploaded files during thumbnail generation and WebP conversion — a write-only media key will 403 on those background jobs. Recommended capabilities: `listBuckets`, `listFiles`, `readFiles`, `shareFiles`, `writeFiles`, `deleteFiles`.
+
 **On the `backups` key's scope:** configure it as **write-only** (check *Write files* only, leave *Read files* unchecked when you create the application key in §3.2). The app never needs to read its own backups — restore is an ops-tooling concern done from a separate key. A write-only key means a compromised app container can't exfiltrate old backups.
+
+**⚠️ Migrating existing media from Local disk to B2:** if prod has been running with media on the Local cbfs disk (the `${MEDIA_HOST_PATH:-./media}` bind mount) and you've accumulated user uploads there, you MUST copy those files to the B2 bucket BEFORE setting `S3_BUCKET_MEDIA` in `.env`. The moment the env var goes live, the app resolves media paths against B2 — DB rows still point at the same `YYYY/MM/uuid-name.ext` keys, but those keys don't exist in the bucket yet, and every post with a featured image 404s.
+
+Recommended migration via [rclone](https://rclone.org/) (once the B2 bucket + key are in place):
+
+```bash
+# On the prod host, from inside docker-compose.prod.yml's directory:
+rclone config   # one-time: add an "b2-media" remote using the media key
+
+# Dry-run first — preview what would be copied:
+rclone copy ./media b2-media:bxblog-media-prod --dry-run --progress
+
+# When the list looks right, rerun without --dry-run:
+rclone copy ./media b2-media:bxblog-media-prod --progress
+
+# After the copy completes, add S3_BUCKET_MEDIA to .env and restart:
+docker compose -f docker-compose.prod.yml restart app
+```
+
+Verify by loading a post that has an existing featured image — if the `<img>` resolves, the migration landed. If it 404s, check rclone's output for skipped files (B2 is case-sensitive; local filesystems may not be) and re-run.
 
 **`BACKUP_S3_URL_STYLE`** stays on its default (`path`) for B2. s3sdk's virtual-style URL builder only knows how to inject the bucket name into `amazonaws.com`-shaped hostnames; for every non-AWS provider (B2, DO Spaces, Wasabi, MinIO) path-style is the working configuration.
 

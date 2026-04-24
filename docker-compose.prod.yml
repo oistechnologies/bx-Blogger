@@ -70,7 +70,9 @@ services:
       # SSD, etc.
       #
       # Container paths match what the app expects:
-      #   media/    — user uploads (CBFS_MEDIA_PROVIDER=Local)
+      #   media/    — user uploads. Used only when S3_BUCKET_MEDIA is
+      #               unset in .env (Local fallback); a configured S3
+      #               bucket takes over and this mount becomes dormant.
       #   og/       — rendered OG card PNGs (regeneratable, but bind-
       #               mounted to avoid the post-deploy regen burst)
       #   branding/ — operator-uploaded logos referenced by the theme
