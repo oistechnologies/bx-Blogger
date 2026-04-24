@@ -75,7 +75,11 @@ data = {
     "featuredMediaId" : 0,        // updated from loadFromDb + by "Use as featured"
     // Phase UX — taxonomy assignment
     "categoryIds"     : [],       // array of numeric category ids currently attached
-    "tagsText"        : ""        // comma-separated tag names; resolved via find-or-create on save
+    "tagsText"        : "",       // comma-separated tag names; resolved via find-or-create on save
+    // OG image widget — hydrated on mount, refreshed after a regen
+    "ogVersion"          : 0,
+    "ogGeneratedAt"      : "",
+    "ogAsFeaturedImage"  : 0      // checkbox: substitute OG image wherever featured renders
 };
 
 /**
@@ -119,6 +123,13 @@ private function loadFromDb( required id ) {
         ? dateTimeFormat( post.getScheduledAt(), "yyyy-mm-dd'T'HH:nn" )
         : "";
     data.featuredMediaId = val( post.getFeaturedMediaId() ?: 0 );
+
+    // OG state for the editor's OG widget. ogGeneratedAt is best-
+    // effort: derive from the disk file's mtime when present so the
+    // editor shows a meaningful "Generated X minutes ago" stamp.
+    data.ogVersion         = val( post.getOgVersion() ?: 0 );
+    data.ogAsFeaturedImage = !!( post.getOgAsFeaturedImage() ?: 0 ) ? 1 : 0;
+    data.ogGeneratedAt     = ogGeneratedAtFor( post );
 
     // Phase UX — hydrate category + tag assignments from the pivots.
     // qb is cheaper + simpler than Quick's `.categories().get()` for
@@ -716,6 +727,76 @@ private array function parseTagsText( required string text ) {
     }
     return out;
 }
+
+// --------------------------------------------------------------------
+// OG image widget (Step 5)
+// --------------------------------------------------------------------
+
+/**
+ * URL of the rendered OG image for the current post, including a
+ * cache-busting `?v=<og_version>` so the editor always shows the
+ * latest render even when the browser holds the prior version. Empty
+ * when the post hasn't been saved yet — the widget surfaces a "Save
+ * to generate" hint instead.
+ */
+function ogImageUrl() {
+    if ( ( data.postId ?: 0 ) <= 0 ) return "";
+    var post = getInstance( "Post" ).find( data.postId );
+    if ( isNull( post ) ) return "";
+    var disk    = getInstance( "DiskService@cbfs" ).get( "og" );
+    var keyPath = getInstance( "OgImageService" ).pathFor( post );
+    if ( !disk.exists( keyPath ) ) return "";
+    var base = disk.url( keyPath );
+    return base & ( base contains "?" ? "&" : "?" ) & "v=" & val( post.getOgVersion() ?: 0 );
+}
+
+/**
+ * Manual regenerate from the editor button. Bumps og_version + writes
+ * a new file on the spot via OgImageService.regenerate so the new
+ * thumbnail shows up the moment the wire re-renders. Bypasses the
+ * job queue intentionally — the user clicked Regenerate; they want
+ * the result NOW, not when the worker gets to it.
+ */
+function regenerateOgImage() {
+    if ( ( data.postId ?: 0 ) <= 0 ) {
+        data.flashError = "Save the post before regenerating its OG image.";
+        return;
+    }
+    var post = getInstance( "Post" ).find( data.postId );
+    if ( isNull( post ) ) return;
+    getInstance( "OgImageService" ).regenerate( post );
+
+    var fresh = getInstance( "Post" ).find( data.postId );
+    data.ogVersion     = val( fresh.getOgVersion() ?: 0 );
+    data.ogGeneratedAt = ogGeneratedAtFor( fresh );
+    data.flashOk       = "OG image regenerated.";
+}
+
+/**
+ * Toggle the "use OG image as featured image everywhere" flag —
+ * persisted onto the post the moment it changes so theme renders
+ * pick it up without needing a Save click.
+ */
+function toggleOgAsFeatured() {
+    if ( ( data.postId ?: 0 ) <= 0 ) return;
+    var post = getInstance( "Post" ).find( data.postId );
+    if ( isNull( post ) ) return;
+    var newVal = data.ogAsFeaturedImage ? 1 : 0;
+    post.setOgAsFeaturedImage( newVal );
+    post.save();
+}
+
+private string function ogGeneratedAtFor( required any post ) {
+    try {
+        var disk = getInstance( "DiskService@cbfs" ).get( "og" );
+        var key  = getInstance( "OgImageService" ).pathFor( arguments.post );
+        if ( !disk.exists( key ) ) return "";
+        return dateTimeFormat( disk.lastModified( key ), "yyyy-mm-dd HH:nn" );
+    }
+    catch ( any e ) {
+        return "";
+    }
+}
 // @endWire
 </bx:script>
 
@@ -1056,128 +1137,299 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 				</div>
 			</div>
 
-			<!--- Featured image panel ---------------------------- --->
-			<div class="card stat-card stat-card-success mb-3">
-				<div class="card-header card-header-soft card-header-soft-success">
+			<!--- Featured image panel — collapsible ---------------- --->
+			<div class="card stat-card stat-card-success mb-3 sidebar-collapsible">
+				<div class="card-header card-header-soft card-header-soft-success d-flex align-items-center justify-content-between"
+				     role="button"
+				     data-bs-toggle="collapse"
+				     data-bs-target="##sidebarFeaturedImageBody"
+				     aria-expanded="true"
+				     aria-controls="sidebarFeaturedImageBody">
 					<span class="h6 mb-0">Featured image</span>
+					<i class="bi bi-chevron-up sidebar-chevron text-muted" aria-hidden="true"></i>
 				</div>
-				<div class="card-body">
-					<bx:if val( args.featuredMediaId ?: 0 ) gt 0>
-						<bx:script>
-							fm = getInstance( "Media" ).find( args.featuredMediaId );
-						</bx:script>
-						<bx:if !isNull( fm )>
-							<img src="#getInstance( 'MediaService' ).urlFor( fm )#"
-							     class="img-fluid rounded mb-2"
-							     alt="#encodeForHTMLAttribute( fm.getAltText() ?: '' )#">
-							<p class="small text-muted mb-2 text-truncate">#encodeForHTML( fm.getOriginalFilename() )#</p>
-						</bx:if>
-					<bx:else>
-						<p class="small text-muted mb-2">No featured image yet.</p>
-					</bx:if>
-					<div class="d-grid gap-2">
-						<button type="button" class="btn btn-sm btn-primary"
-						        wire:click="openMediaPicker('featured')">
-							<i class="bi bi-images" aria-hidden="true"></i>
-							<bx:if val( args.featuredMediaId ?: 0 ) gt 0>Replace featured image<bx:else>Select from media library</bx:if>
-						</button>
-						<bx:if aiImageEnabled()>
-							<button type="button" class="btn btn-sm btn-outline-primary"
-							        wire:click="openImageModal('featured')">
-								<i class="bi bi-stars" aria-hidden="true"></i> Generate with AI
-							</button>
-						</bx:if>
+				<div class="collapse show" id="sidebarFeaturedImageBody">
+					<div class="card-body">
 						<bx:if val( args.featuredMediaId ?: 0 ) gt 0>
-							<button type="button" class="btn btn-sm btn-outline-secondary"
-							        wire:click="$set('featuredMediaId', 0)">
-								<i class="bi bi-x-circle" aria-hidden="true"></i> Remove
+							<bx:script>
+								fm = getInstance( "Media" ).find( args.featuredMediaId );
+							</bx:script>
+							<bx:if !isNull( fm )>
+								<img src="#getInstance( 'MediaService' ).urlFor( fm )#"
+								     class="img-fluid rounded mb-2"
+								     alt="#encodeForHTMLAttribute( fm.getAltText() ?: '' )#">
+								<p class="small text-muted mb-2 text-truncate">#encodeForHTML( fm.getOriginalFilename() )#</p>
+							</bx:if>
+						<bx:else>
+							<p class="small text-muted mb-2">No featured image yet.</p>
+						</bx:if>
+						<div class="d-grid gap-2">
+							<button type="button" class="btn btn-sm btn-primary"
+							        wire:click="openMediaPicker('featured')">
+								<i class="bi bi-images" aria-hidden="true"></i>
+								<bx:if val( args.featuredMediaId ?: 0 ) gt 0>Replace featured image<bx:else>Select from media library</bx:if>
 							</button>
+							<bx:if aiImageEnabled()>
+								<button type="button" class="btn btn-sm btn-outline-primary"
+								        wire:click="openImageModal('featured')">
+									<i class="bi bi-stars" aria-hidden="true"></i> Generate with AI
+								</button>
+							</bx:if>
+							<bx:if val( args.featuredMediaId ?: 0 ) gt 0>
+								<button type="button" class="btn btn-sm btn-outline-secondary"
+								        wire:click="$set('featuredMediaId', 0)">
+									<i class="bi bi-x-circle" aria-hidden="true"></i> Remove
+								</button>
+							</bx:if>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<!--- OG image widget — collapsible ----------------------
+			      Renders a thumbnail of the auto-generated share card,
+			      a version + timestamp stamp, and three actions:
+			        Preview     — full-size modal preview
+			        Copy link   — clipboard copy of the public PNG URL
+			        Regenerate  — bumps og_version + writes a fresh PNG
+			      When the post has a featured image AND an OG render
+			      exists, an extra checkbox lets the author flip
+			      `og_as_featured_image` so theme surfaces (home cards,
+			      post header, related posts) substitute the OG card
+			      for the featured image. Step 6 wires that into the
+			      theme renderer.
+			--------------------------------------------------------- --->
+			<bx:script>
+				ogUrl       = ogImageUrl();
+				hasOgRender = len( ogUrl ) > 0;
+			</bx:script>
+			<div class="card stat-card stat-card-primary mb-3 sidebar-collapsible">
+				<div class="card-header card-header-soft card-header-soft-primary d-flex align-items-center justify-content-between"
+				     role="button"
+				     data-bs-toggle="collapse"
+				     data-bs-target="##sidebarOgImageBody"
+				     aria-expanded="true"
+				     aria-controls="sidebarOgImageBody">
+					<span class="h6 mb-0">OG image</span>
+					<i class="bi bi-chevron-up sidebar-chevron text-muted" aria-hidden="true"></i>
+				</div>
+				<div class="collapse show" id="sidebarOgImageBody">
+					<div class="card-body">
+						<bx:if ( args.postId ?: 0 ) lte 0>
+							<p class="small text-muted mb-0">
+								Save the post to generate its OG share card.
+							</p>
+						<bx:else>
+							<bx:if hasOgRender>
+								<img src="#encodeForHTMLAttribute( ogUrl )#"
+								     class="img-fluid rounded border mb-2"
+								     alt="OG image preview"
+								     style="max-height: 180px; cursor: zoom-in;"
+								     data-bs-toggle="modal"
+								     data-bs-target="##ogImagePreviewModal">
+								<div class="small text-muted mb-3">
+									v#encodeForHTML( args.ogVersion )#
+									<bx:if len( args.ogGeneratedAt ?: "" )>
+										&middot; generated #encodeForHTML( args.ogGeneratedAt )#
+									</bx:if>
+								</div>
+							<bx:else>
+								<p class="small text-muted mb-3">
+									Not generated yet — click Regenerate to create one.
+								</p>
+							</bx:if>
+
+							<div class="d-grid gap-2 mb-3">
+								<bx:if hasOgRender>
+									<div class="btn-group btn-group-sm" role="group">
+										<button type="button"
+										        class="btn btn-outline-primary"
+										        data-bs-toggle="modal"
+										        data-bs-target="##ogImagePreviewModal">
+											<i class="bi bi-eye" aria-hidden="true"></i> Preview
+										</button>
+										<button type="button"
+										        class="btn btn-outline-primary"
+										        data-og-copy-link
+										        data-og-url="#encodeForHTMLAttribute( ogUrl )#">
+											<i class="bi bi-clipboard" aria-hidden="true"></i> Copy link
+										</button>
+										<button type="button"
+										        class="btn btn-outline-primary"
+										        wire:click="regenerateOgImage"
+										        wire:loading.attr="disabled"
+										        wire:target="regenerateOgImage"
+										        onclick="WireOverlay.show( 'Regenerating OG image…' );">
+											<i class="bi bi-arrow-clockwise" aria-hidden="true"></i> Regenerate
+										</button>
+									</div>
+								<bx:else>
+									<button type="button"
+									        class="btn btn-sm btn-primary"
+									        wire:click="regenerateOgImage"
+									        wire:loading.attr="disabled"
+									        wire:target="regenerateOgImage"
+									        onclick="WireOverlay.show( 'Generating OG image…' );">
+										<i class="bi bi-arrow-clockwise" aria-hidden="true"></i> Regenerate
+									</button>
+								</bx:if>
+							</div>
+
+							<bx:if val( args.featuredMediaId ?: 0 ) gt 0 && hasOgRender>
+								<div class="form-check small">
+									<input class="form-check-input"
+									       type="checkbox"
+									       id="ogAsFeaturedImage"
+									       wire:model.live="ogAsFeaturedImage"
+									       wire:change="toggleOgAsFeatured">
+									<label class="form-check-label" for="ogAsFeaturedImage">
+										Use OG image as featured image everywhere
+									</label>
+									<div class="form-text small">
+										Replaces the featured image on home cards, post header,
+										and related posts. Social previews always use the OG image.
+									</div>
+								</div>
+							</bx:if>
 						</bx:if>
 					</div>
 				</div>
 			</div>
 
-			<!--- Categories sidebar --------------------------------- --->
+			<!--- OG image preview modal — full-size --->
+			<bx:if hasOgRender>
+				<div class="modal fade" id="ogImagePreviewModal" tabindex="-1" aria-hidden="true">
+					<div class="modal-dialog modal-xl modal-dialog-centered">
+						<div class="modal-content">
+							<div class="modal-header">
+								<h5 class="modal-title">OG image preview</h5>
+								<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+							</div>
+							<div class="modal-body text-center">
+								<img src="#encodeForHTMLAttribute( ogUrl )#"
+								     class="img-fluid rounded"
+								     alt="OG image full preview">
+							</div>
+							<div class="modal-footer">
+								<a class="btn btn-outline-primary"
+								   href="#encodeForHTMLAttribute( ogUrl )#"
+								   target="_blank"
+								   rel="noopener">
+									<i class="bi bi-box-arrow-up-right" aria-hidden="true"></i> Open in new tab
+								</a>
+								<button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+							</div>
+						</div>
+					</div>
+				</div>
+			</bx:if>
+
+			<!--- Categories sidebar — collapsible --------------- --->
 			<bx:script>
 				catTree = allCategoriesFlat();
 			</bx:script>
-			<div class="card stat-card stat-card-info mb-3">
-				<div class="card-header card-header-soft card-header-soft-info">
+			<div class="card stat-card stat-card-info mb-3 sidebar-collapsible">
+				<div class="card-header card-header-soft card-header-soft-info d-flex align-items-center justify-content-between"
+				     role="button"
+				     data-bs-toggle="collapse"
+				     data-bs-target="##sidebarCategoriesBody"
+				     aria-expanded="true"
+				     aria-controls="sidebarCategoriesBody">
 					<span class="h6 mb-0">Categories</span>
+					<i class="bi bi-chevron-up sidebar-chevron text-muted" aria-hidden="true"></i>
 				</div>
-				<div class="card-body">
-					<bx:if !catTree.len()>
-						<p class="small text-muted mb-0">
-							No categories yet. Add some at
-							<a href="#event.buildLink( 'admin:Categories.index' )#">Categories</a>.
-						</p>
-					<bx:else>
-						<div class="small" style="max-height: 16rem; overflow-y: auto;">
-							<bx:loop array="#catTree#" item="c">
-								<bx:set checked = args.categoryIds.findNoCase( c.id ) gt 0>
-								<div class="form-check" style="padding-left: #( 1.5 + ( c.depth * 1.25 ) )#rem;">
-									<input type="checkbox"
-									       class="form-check-input"
-									       id="cat-#c.id#"
-									       #( checked ? 'checked' : '' )#
-									       wire:click="toggleCategory(#c.id#)">
-									<label class="form-check-label" for="cat-#c.id#">
-										#encodeForHTML( c.name )#
-									</label>
-								</div>
-							</bx:loop>
-						</div>
-					</bx:if>
+				<div class="collapse show" id="sidebarCategoriesBody">
+					<div class="card-body">
+						<bx:if !catTree.len()>
+							<p class="small text-muted mb-0">
+								No categories yet. Add some at
+								<a href="#event.buildLink( 'admin:Categories.index' )#">Categories</a>.
+							</p>
+						<bx:else>
+							<div class="small" style="max-height: 16rem; overflow-y: auto;">
+								<bx:loop array="#catTree#" item="c">
+									<bx:set checked = args.categoryIds.findNoCase( c.id ) gt 0>
+									<div class="form-check" style="padding-left: #( 1.5 + ( c.depth * 1.25 ) )#rem;">
+										<input type="checkbox"
+										       class="form-check-input"
+										       id="cat-#c.id#"
+										       #( checked ? 'checked' : '' )#
+										       wire:click="toggleCategory(#c.id#)">
+										<label class="form-check-label" for="cat-#c.id#">
+											#encodeForHTML( c.name )#
+										</label>
+									</div>
+								</bx:loop>
+							</div>
+						</bx:if>
+					</div>
 				</div>
 			</div>
 
-			<!--- Tags sidebar --------------------------------------- --->
+			<!--- Tags sidebar — collapsible -------------------------- --->
 			<bx:script>
 				existingTags = allTagNames();
 			</bx:script>
-			<div class="card stat-card stat-card-secondary mb-3">
-				<div class="card-header card-header-soft card-header-soft-secondary">
+			<div class="card stat-card stat-card-secondary mb-3 sidebar-collapsible">
+				<div class="card-header card-header-soft card-header-soft-secondary d-flex align-items-center justify-content-between"
+				     role="button"
+				     data-bs-toggle="collapse"
+				     data-bs-target="##sidebarTagsBody"
+				     aria-expanded="true"
+				     aria-controls="sidebarTagsBody">
 					<span class="h6 mb-0">Tags</span>
+					<i class="bi bi-chevron-up sidebar-chevron text-muted" aria-hidden="true"></i>
 				</div>
-				<div class="card-body">
-					<label for="postTags" class="form-label small d-block mb-1">
-						Comma-separated. New tags are created on save.
-					</label>
-					<input type="text"
-					       id="postTags"
-					       class="form-control form-control-sm"
-					       list="postTagsList"
-					       wire:model.blur="tagsText"
-					       placeholder="e.g. boxlang, release-notes, 1.0">
-					<datalist id="postTagsList">
-						<bx:loop array="#existingTags#" item="t">
-							<option value="#encodeForHTMLAttribute( t )#"></option>
-						</bx:loop>
-					</datalist>
+				<div class="collapse show" id="sidebarTagsBody">
+					<div class="card-body">
+						<label for="postTags" class="form-label small d-block mb-1">
+							Comma-separated. New tags are created on save.
+						</label>
+						<input type="text"
+						       id="postTags"
+						       class="form-control form-control-sm"
+						       list="postTagsList"
+						       wire:model.blur="tagsText"
+						       placeholder="e.g. boxlang, release-notes, 1.0">
+						<datalist id="postTagsList">
+							<bx:loop array="#existingTags#" item="t">
+								<option value="#encodeForHTMLAttribute( t )#"></option>
+							</bx:loop>
+						</datalist>
+					</div>
 				</div>
 			</div>
 
-			<div class="card stat-card stat-card-warning">
-				<div class="card-header card-header-soft card-header-soft-warning">
+			<!--- SEO sidebar — collapsible --------------------------- --->
+			<div class="card stat-card stat-card-warning sidebar-collapsible">
+				<div class="card-header card-header-soft card-header-soft-warning d-flex align-items-center justify-content-between"
+				     role="button"
+				     data-bs-toggle="collapse"
+				     data-bs-target="##sidebarSeoBody"
+				     aria-expanded="true"
+				     aria-controls="sidebarSeoBody">
 					<span class="h6 mb-0">SEO</span>
+					<i class="bi bi-chevron-up sidebar-chevron text-muted" aria-hidden="true"></i>
 				</div>
-				<div class="card-body">
-					<div class="mb-2">
-						<label for="postSeoTitle" class="form-label small">SEO title</label>
-						<input type="text" id="postSeoTitle" class="form-control form-control-sm"
-						       wire:model.blur="seoTitle" maxlength="255">
-					</div>
-					<div class="mb-2">
-						<label for="postSeoDescription" class="form-label small">SEO description</label>
-						<textarea id="postSeoDescription" class="form-control form-control-sm" rows="2"
-						          maxlength="320" wire:model.blur="seoDescription"></textarea>
-					</div>
-					<div class="form-check">
-						<input class="form-check-input" type="checkbox" id="postAllowIndexing"
-						       wire:model.live="allowIndexing">
-						<label class="form-check-label small" for="postAllowIndexing">
-							Allow search indexing
-						</label>
+				<div class="collapse show" id="sidebarSeoBody">
+					<div class="card-body">
+						<div class="mb-2">
+							<label for="postSeoTitle" class="form-label small">SEO title</label>
+							<input type="text" id="postSeoTitle" class="form-control form-control-sm"
+							       wire:model.blur="seoTitle" maxlength="255">
+						</div>
+						<div class="mb-2">
+							<label for="postSeoDescription" class="form-label small">SEO description</label>
+							<textarea id="postSeoDescription" class="form-control form-control-sm" rows="2"
+							          maxlength="320" wire:model.blur="seoDescription"></textarea>
+						</div>
+						<div class="form-check">
+							<input class="form-check-input" type="checkbox" id="postAllowIndexing"
+							       wire:model.live="allowIndexing">
+							<label class="form-check-label small" for="postAllowIndexing">
+								Allow search indexing
+							</label>
+						</div>
 					</div>
 				</div>
 			</div>

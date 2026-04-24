@@ -264,6 +264,21 @@
 			margin:     0;
 			border-collapse: separate;
 		}
+
+		/* Editor sidebar collapsible cards (Step 5).
+		   The card-header is the bs-collapse trigger; the chevron
+		   rotates 180° based on aria-expanded so users get a
+		   directional cue for the panel state. */
+		.sidebar-collapsible .card-header { user-select: none; cursor: pointer; }
+		.sidebar-collapsible .sidebar-chevron {
+			transition: transform .2s ease;
+		}
+		.sidebar-collapsible .card-header[aria-expanded="false"] .sidebar-chevron {
+			transform: rotate( 180deg );
+		}
+		@media ( prefers-reduced-motion: reduce ) {
+			.sidebar-collapsible .sidebar-chevron { transition: none; }
+		}
 	</style>
 	<!--- Bootstrap Icons — webfont + CSS classes for icon-only
 	      buttons in tables + toolbars. Admin-only (public themes
@@ -592,6 +607,49 @@
 	        if ( typeof Livewire === "undefined" || !Livewire.hook ) return;
 	        Livewire.hook( "morph.added",   function ( p ) { initIn( p.el ); } );
 	        Livewire.hook( "morph.updated", function ( p ) { initIn( p.el ); } );
+	    } );
+	} )();
+	</script>
+
+	<!--- OG image "Copy link" button delegation. Buttons in the post
+	      editor's OG widget tag themselves with [data-og-copy-link]
+	      + [data-og-url]. A single document-level listener here
+	      handles all instances + any new ones a CBWIRE morph swaps
+	      in, with no per-component hookup needed. Uses the modern
+	      Clipboard API; falls back to the legacy execCommand path
+	      for the rare browser without it. --->
+	<script>
+	( function () {
+	    if ( window.__bxBloggerOgCopyHook ) return;
+	    window.__bxBloggerOgCopyHook = true;
+
+	    document.addEventListener( "click", function ( evt ) {
+	        var btn = evt.target.closest( "[data-og-copy-link]" );
+	        if ( !btn ) return;
+
+	        var url = btn.getAttribute( "data-og-url" ) || "";
+	        if ( !url ) return;
+
+	        function flashCopied() {
+	            var prev = btn.innerHTML;
+	            btn.innerHTML = '<i class="bi bi-check2"></i> Copied';
+	            btn.disabled = true;
+	            setTimeout( function () { btn.innerHTML = prev; btn.disabled = false; }, 1200 );
+	        }
+
+	        if ( navigator.clipboard && navigator.clipboard.writeText ) {
+	            navigator.clipboard.writeText( url ).then( flashCopied );
+	            return;
+	        }
+	        // Pre-Clipboard-API fallback.
+	        var ta = document.createElement( "textarea" );
+	        ta.value = url;
+	        ta.style.position = "fixed";
+	        ta.style.opacity = "0";
+	        document.body.appendChild( ta );
+	        ta.select();
+	        try { document.execCommand( "copy" ); flashCopied(); } catch ( e ) {}
+	        document.body.removeChild( ta );
 	    } );
 	} )();
 	</script>
