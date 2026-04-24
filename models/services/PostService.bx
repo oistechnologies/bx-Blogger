@@ -137,8 +137,31 @@ class accessors="true" singleton {
             data.contentVersion = ( arguments.post.getContentVersion() ?: 1 ) + 1;
         }
 
+        // Featured-image "Remove" signal — the wire sends
+        // featuredMediaId=0 as sentinel for "clear the FK". We have
+        // to strip it from `data` BEFORE applyAttrsToEntity, because
+        // setFeaturedMediaId(0) would try to persist 0 via Quick,
+        // which fails the FK constraint (no media row has id=0).
+        // After save() we null the column via a raw qb UPDATE — Quick
+        // can't null an FK cleanly (setXxx(javaCast("null","")) silently
+        // drops the column from the generated UPDATE per the
+        // CLAUDE.md gotcha).
+        var shouldClearFeaturedMedia = false;
+        if ( structKeyExists( data, "featuredMediaId" ) && val( data.featuredMediaId ) == 0 ) {
+            shouldClearFeaturedMedia = true;
+            structDelete( data, "featuredMediaId" );
+        }
+
         applyAttrsToEntity( arguments.post, data );
         arguments.post.save();
+
+        if ( shouldClearFeaturedMedia ) {
+            queryExecute(
+                "UPDATE posts SET featured_media_id = NULL WHERE id = ?",
+                [ arguments.post.getId() ]
+            );
+            arguments.post.setFeaturedMediaId( javaCast( "null", "" ) );
+        }
 
         // Phase 7.C — auto-redirect from old slug to new slug when
         // the post is (still) published. Drafts and scheduled posts

@@ -595,9 +595,13 @@ private struct function collectAttrs() {
         // clean-to-null variant is a Phase 4.D follow-up).
         "templateOverride" : trim( data.templateOverride ?: "" )
     };
-    if ( val( data.featuredMediaId ?: 0 ) > 0 ) {
-        attrs.featuredMediaId = data.featuredMediaId;
-    }
+    // Always include featuredMediaId — 0 is the sentinel value the
+    // "Remove" button sets (wire:click="$set('featuredMediaId', 0)"),
+    // and PostService.update translates 0 into a qb-side NULL on the
+    // posts.featured_media_id column. Previous `> 0` guard silently
+    // dropped the attribute on remove, so the DB kept whatever image
+    // was attached before.
+    attrs.featuredMediaId = val( data.featuredMediaId ?: 0 );
     return attrs;
 }
 
