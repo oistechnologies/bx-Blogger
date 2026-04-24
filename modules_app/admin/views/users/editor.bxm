@@ -4,5 +4,81 @@
 </bx:savecontent>
 #view( view = "partials/heading", args = { "title" : prc.pageTitle, "actionHtml" : actions } )#
 
+<bx:if flash.exists( "adminMessage" )>
+	<div class="alert alert-success">#encodeForHTML( flash.get( "adminMessage" ) )#</div>
+</bx:if>
+<bx:if flash.exists( "adminError" )>
+	<div class="alert alert-danger">#encodeForHTML( flash.get( "adminError" ) )#</div>
+</bx:if>
+
+<!---------- Profile photo — admin-driven.
+     Rendered only for existing users (photos need a user_id on disk);
+     new users get nothing here and the widget appears after first
+     save when the record exists. Reuses UserService.setProfilePhoto
+     via the handler, with the broader `users.manage` permission
+     gate applied inside the service. --->
+<bx:if prc.userId gt 0 && !isNull( prc.targetUser ?: javaCast( "null", "" ) )>
+	<div class="card stat-card stat-card-primary mb-4">
+		<div class="card-header card-header-soft card-header-soft-primary">
+			<span class="h6 mb-0">Profile photo</span>
+		</div>
+		<div class="card-body">
+			<div class="d-flex align-items-start gap-3 flex-wrap">
+				<div class="flex-shrink-0">
+					<bx:if prc.targetUser.hasProfilePhoto()>
+						<img src="#event.buildLink( prc.targetUser.getProfilePhotoPath() )#?v=#dateTimeFormat( prc.targetUser.getUpdatedAt(), 'yyyyMMddHHmmss' )#"
+						     alt="Current profile photo"
+						     width="128"
+						     height="128"
+						     class="rounded border"
+						     style="object-fit: cover;">
+					<bx:else>
+						<div class="rounded border bg-light d-flex align-items-center justify-content-center"
+						     style="width: 128px; height: 128px; color: ##adb5bd;">
+							<i class="bi bi-person-fill" style="font-size: 3rem;"></i>
+						</div>
+					</bx:if>
+				</div>
+				<div class="flex-grow-1" style="min-width: 260px;">
+					<form method="POST"
+					      action="#event.buildLink( 'admin/users/editor/' & prc.userId & '/photo' )#"
+					      enctype="multipart/form-data">
+						<div class="mb-2">
+							<label for="photo" class="form-label">Upload new photo</label>
+							<input type="file"
+							       class="form-control"
+							       id="photo"
+							       name="photo"
+							       accept="image/jpeg,image/png,image/webp"
+							       required>
+							<div class="form-text">
+								JPEG, PNG, or WebP. Max 5 MB. Source up to 2000×2000 — will
+								be cropped to a 512×512 square.
+							</div>
+						</div>
+						<button type="submit" class="btn btn-primary">
+							<i class="bi bi-upload me-1"></i> Upload
+						</button>
+						<bx:if prc.targetUser.hasProfilePhoto()>
+							&nbsp;
+							<button type="submit"
+							        form="adminRemoveUserPhotoForm"
+							        class="btn btn-outline-danger">
+								<i class="bi bi-trash me-1"></i> Remove
+							</button>
+						</bx:if>
+					</form>
+					<bx:if prc.targetUser.hasProfilePhoto()>
+						<form id="adminRemoveUserPhotoForm"
+						      method="POST"
+						      action="#event.buildLink( 'admin/users/editor/' & prc.userId & '/photo/remove' )#"
+						      class="d-none"></form>
+					</bx:if>
+				</div>
+			</div>
+		</div>
+	</div>
+</bx:if>
+
 #wire( "users.editor", { userId : prc.userId } )#
 </bx:output>

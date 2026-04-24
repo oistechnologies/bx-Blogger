@@ -80,11 +80,15 @@ class extends="coldbox.system.EventHandler" {
     }
 
     /**
-     * POST /admin/account — update display name.
+     * POST /admin/account — update display name + bios + author slug
+     * in one round-trip. Each field validated independently so a bad
+     * `author_slug` doesn't discard a good bio edit.
      */
     function updateProfile( event, rc, prc ) {
         param name="rc.displayName" default="";
-
+        param name="rc.bioShort"    default="";
+        param name="rc.bio"         default="";
+        param name="rc.authorSlug"  default="";
 
         var user    = cbauth.getUser();
         var newName = trim( rc.displayName );
@@ -98,10 +102,177 @@ class extends="coldbox.system.EventHandler" {
             relocate( event = "admin:Account.show" );
             return;
         }
+
+        var bioShort = trim( rc.bioShort );
+        if ( len( bioShort ) > 255 ) {
+            flash.put( "accountError", "Short bio is limited to 255 characters." );
+            relocate( event = "admin:Account.show" );
+            return;
+        }
+
+        // author_slug is optional. Populate only when the user asked
+        // for one (left blank preserves whatever was there, including
+        // nothing — the public author page requires both the toggle +
+        // a slug; absent slug = 404 same as opt-out).
+        if ( len( trim( rc.authorSlug ) ) ) {
+            try {
+                userService.setAuthorSlug( user, rc.authorSlug );
+            }
+            catch ( bxBlogger.UserValidation e ) {
+                flash.put( "accountError", e.message );
+                relocate( event = "admin:Account.show" );
+                return;
+            }
+        }
+
         user.setDisplayName( newName );
+        user.setBioShort( bioShort );
+        user.setBio( rc.bio ?: "" );    // long markdown — no length cap beyond TEXT
         user.save();
-        flash.put( "accountMessage", "Display name updated." );
+
+        flash.put( "accountMessage", "Profile updated." );
         relocate( event = "admin:Account.show" );
+    }
+
+    /**
+     * POST /admin/account/photo — upload or replace the signed-in
+     * user's profile photo. Multipart form; field name `photo`.
+     */
+    function uploadPhoto( event, rc, prc ) {
+        var user = cbauth.getUser();
+        var field = "photo";
+
+        if ( !structKeyExists( form, field ) || !len( form[ field ] ) ) {
+            flash.put( "accountError", "Please choose an image file to upload." );
+            relocate( event = "admin:Account.show" );
+            return;
+        }
+
+        try {
+            var uploaded = fileUpload(
+                destination    = getTempDirectory(),
+                fileField      = field,
+                nameConflict   = "makeUnique",
+                accept         = "image/jpeg,image/png,image/webp"
+            );
+            var tmpPath = uploaded.serverDirectory & "/" & uploaded.serverFile;
+            userService.setProfilePhoto(
+                actor  = user,
+                userId = user.getId(),
+                upload = {
+                    "tmpPath"          : tmpPath,
+                    "originalFilename" : uploaded.clientFile,
+                    "mimeType"         : uploaded.contentType & "/" & uploaded.contentSubType,
+                    "sizeBytes"        : uploaded.fileSize
+                }
+            );
+            try { fileDelete( tmpPath ); } catch ( any cleanupErr ) {}
+            flash.put( "accountMessage", "Profile photo updated." );
+        }
+        catch ( bxBlogger.UserValidation e ) {
+            flash.put( "accountError", e.message );
+        }
+        catch ( any e ) {
+            log.warn( "Account.uploadPhoto: " & e.message );
+            flash.put( "accountError", "Upload failed. " & e.message );
+        }
+        relocate( event = "admin:Account.show" );
+    }
+
+    /**
+     * POST /admin/account/photo/remove — drop the signed-in user's
+     * profile photo + clear the related columns. Harmless to call
+     * when no photo exists.
+     */
+    function removePhoto( event, rc, prc ) {
+        var user = cbauth.getUser();
+        userService.removeProfilePhoto( actor = user, userId = user.getId() );
+        flash.put( "accountMessage", "Profile photo removed." );
+        relocate( event = "admin:Account.show" );
+    }
+
+    /**
+     * POST /admin/account/socials — save the signed-in user's set of
+     * social-profile URLs. Each field validated independently; any
+     * bad URL flashes an error and aborts the save so no half-write.
+     */
+    function updateSocials( event, rc, prc ) {
+        var user   = cbauth.getUser();
+        var setter = [
+            { key: "websiteUrl",   rcName: "websiteUrl",  label: "Website URL"  },
+            { key: "twitterUrl",   rcName: "twitterUrl",  label: "Twitter/X URL" },
+            { key: "linkedinUrl",  rcName: "linkedinUrl", label: "LinkedIn URL" },
+            { key: "githubUrl",    rcName: "githubUrl",   label: "GitHub URL"   },
+            { key: "gitlabUrl",    rcName: "gitlabUrl",   label: "GitLab URL"   },
+            { key: "mastodonUrl",  rcName: "mastodonUrl", label: "Mastodon URL" },
+            { key: "blueskyUrl",   rcName: "blueskyUrl",  label: "Bluesky URL"  },
+            { key: "facebookUrl",  rcName: "facebookUrl", label: "Facebook URL" }
+        ];
+
+        // Pass 1: validate each supplied URL before touching the row.
+        var validated = [:];
+        for ( var s in setter ) {
+            var raw = trim( rc[ s.rcName ] ?: "" );
+            if ( !len( raw ) ) { validated[ s.key ] = ""; continue; }
+            if ( !isValidUrl( raw ) ) {
+                flash.put( "accountError", s.label & " must be a valid http(s) URL." );
+                relocate( event = "admin:Account.show" );
+                return;
+            }
+            if ( len( raw ) > 500 ) {
+                flash.put( "accountError", s.label & " is limited to 500 characters." );
+                relocate( event = "admin:Account.show" );
+                return;
+            }
+            validated[ s.key ] = raw;
+        }
+
+        // Pass 2: apply all in one save.
+        user.setWebsiteUrl(  validated.websiteUrl  );
+        user.setTwitterUrl(  validated.twitterUrl  );
+        user.setLinkedinUrl( validated.linkedinUrl );
+        user.setGithubUrl(   validated.githubUrl   );
+        user.setGitlabUrl(   validated.gitlabUrl   );
+        user.setMastodonUrl( validated.mastodonUrl );
+        user.setBlueskyUrl(  validated.blueskyUrl  );
+        user.setFacebookUrl( validated.facebookUrl );
+        user.save();
+
+        flash.put( "accountMessage", "Social links saved." );
+        relocate( event = "admin:Account.show" );
+    }
+
+    /**
+     * POST /admin/account/preferences — OG inclusion toggles + public
+     * author page toggle. Everything is a checkbox, so absent
+     * form keys = unchecked.
+     */
+    function updatePreferences( event, rc, prc ) {
+        var user = cbauth.getUser();
+        user.setOgIncludeProfilePhoto(   ( rc.ogIncludeProfilePhoto   ?: 0 ) ? 1 : 0 );
+        user.setOgIncludeEmail(          ( rc.ogIncludeEmail          ?: 0 ) ? 1 : 0 );
+        user.setOgIncludeSocialsAndUrl(  ( rc.ogIncludeSocialsAndUrl  ?: 0 ) ? 1 : 0 );
+        user.setPublicAuthorPageEnabled( ( rc.publicAuthorPageEnabled ?: 0 ) ? 1 : 0 );
+        user.save();
+
+        // If the user just opted into the public page, make sure
+        // they have a slug — generate from display_name so the page
+        // is actually reachable after this request completes.
+        if ( user.getPublicAuthorPageEnabled() ) {
+            userService.ensureAuthorSlug( user );
+        }
+
+        flash.put( "accountMessage", "Preferences updated." );
+        relocate( event = "admin:Account.show" );
+    }
+
+    /**
+     * Simple URL validator — ColdBox's isValid("url") is too lax on
+     * unusual schemes; we want http(s) only for public-facing social
+     * profile URLs.
+     */
+    private boolean function isValidUrl( required string raw ) {
+        return !!reFindNoCase( "^https?://[^\s]+$", arguments.raw );
     }
 
     /**

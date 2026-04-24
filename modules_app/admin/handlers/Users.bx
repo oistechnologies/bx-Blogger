@@ -9,7 +9,9 @@
  */
 class extends="coldbox.system.EventHandler" {
 
-    property name="cbauth" inject="AuthenticationService@cbauth";
+    property name="cbauth"      inject="AuthenticationService@cbauth";
+    property name="userService" inject="UserService";
+    property name="log"         inject="logbox:logger:{this}";
 
     this.layouts = { "Main.bxm" : "*" };
 
@@ -40,7 +42,88 @@ class extends="coldbox.system.EventHandler" {
     function editor( event, rc, prc ) {
         prc.userId    = val( rc.id ?: 0 );
         prc.pageTitle = prc.userId gt 0 ? "Edit user" : "New user";
+
+        // Seed the target user so the view's photo widget can render
+        // the current avatar + toggle the remove button. For a NEW
+        // user (id = 0) we pass null; the view hides the widget then
+        // and surfaces an explainer that photos land after first save.
+        if ( prc.userId gt 0 ) {
+            prc.targetUser = getInstance( "User" ).find( prc.userId );
+        }
+
         event.setView( view = "users/editor" );
+    }
+
+    /**
+     * POST /admin/users/editor/:id/photo — admin uploads a new
+     * profile photo for the target user. Delegates to the same
+     * UserService method the self-service account page uses — the
+     * permission gate inside the service lets `users.manage`
+     * holders act on any user.
+     */
+    function uploadPhoto( event, rc, prc ) {
+        var actor    = cbauth.getUser();
+        var targetId = val( rc.id ?: 0 );
+        if ( targetId lte 0 ) {
+            flash.put( "adminError", "Missing user id." );
+            relocate( event = "admin:Users.index" );
+            return;
+        }
+
+        if ( !structKeyExists( form, "photo" ) || !len( form.photo ) ) {
+            flash.put( "adminError", "Please choose an image file to upload." );
+            relocate( event = "admin:Users.editor", queryString = "id=" & targetId );
+            return;
+        }
+
+        try {
+            var uploaded = fileUpload(
+                destination  = getTempDirectory(),
+                fileField    = "photo",
+                nameConflict = "makeUnique",
+                accept       = "image/jpeg,image/png,image/webp"
+            );
+            var tmpPath = uploaded.serverDirectory & "/" & uploaded.serverFile;
+            userService.setProfilePhoto(
+                actor  = actor,
+                userId = targetId,
+                upload = {
+                    "tmpPath"          : tmpPath,
+                    "originalFilename" : uploaded.clientFile,
+                    "mimeType"         : uploaded.contentType & "/" & uploaded.contentSubType,
+                    "sizeBytes"        : uploaded.fileSize
+                }
+            );
+            try { fileDelete( tmpPath ); } catch ( any cleanupErr ) {}
+            flash.put( "adminMessage", "Profile photo updated." );
+        }
+        catch ( bxBlogger.UserValidation e ) { flash.put( "adminError", e.message ); }
+        catch ( bxBlogger.Forbidden      e ) { flash.put( "adminError", e.message ); }
+        catch ( any e ) {
+            log.warn( "Users.uploadPhoto: " & e.message );
+            flash.put( "adminError", "Upload failed. " & e.message );
+        }
+        relocate( event = "admin:Users.editor", queryString = "id=" & targetId );
+    }
+
+    /**
+     * POST /admin/users/editor/:id/photo/remove — clear the target
+     * user's profile photo. Harmless when no photo exists.
+     */
+    function removePhoto( event, rc, prc ) {
+        var actor    = cbauth.getUser();
+        var targetId = val( rc.id ?: 0 );
+        if ( targetId lte 0 ) {
+            flash.put( "adminError", "Missing user id." );
+            relocate( event = "admin:Users.index" );
+            return;
+        }
+        try {
+            userService.removeProfilePhoto( actor = actor, userId = targetId );
+            flash.put( "adminMessage", "Profile photo removed." );
+        }
+        catch ( bxBlogger.Forbidden e ) { flash.put( "adminError", e.message ); }
+        relocate( event = "admin:Users.editor", queryString = "id=" & targetId );
     }
 
 }

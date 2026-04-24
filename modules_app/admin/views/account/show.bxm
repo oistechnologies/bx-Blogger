@@ -10,7 +10,7 @@
 			<div class="alert alert-danger">#encodeForHTML( flash.get( "accountError" ) )#</div>
 		</bx:if>
 
-		<!---------- Display name ---------->
+		<!---------- Display name + bios + author slug ---------->
 		<div class="card stat-card stat-card-primary mb-4">
 			<div class="card-header card-header-soft card-header-soft-primary">
 				<span class="h6 mb-0">Profile</span>
@@ -28,7 +28,235 @@
 						       value="#encodeForHTMLAttribute( prc.user.getDisplayName() )#">
 						<div class="form-text">Shown on comments, the author page, and the admin header.</div>
 					</div>
+
+					<div class="mb-3">
+						<label for="authorSlug" class="form-label">Author slug</label>
+						<div class="input-group">
+							<span class="input-group-text">/author/</span>
+							<input type="text"
+							       class="form-control"
+							       id="authorSlug"
+							       name="authorSlug"
+							       maxlength="120"
+							       placeholder="auto-generated from display name on first save"
+							       value="#encodeForHTMLAttribute( prc.user.getAuthorSlug() ?: '' )#">
+						</div>
+						<div class="form-text">
+							URL segment for your public author page. Leave blank to auto-generate
+							from your display name. Must be unique across all authors.
+						</div>
+					</div>
+
+					<div class="mb-3">
+						<label for="bioShort" class="form-label">Short bio</label>
+						<input type="text"
+						       class="form-control"
+						       id="bioShort"
+						       name="bioShort"
+						       maxlength="255"
+						       value="#encodeForHTMLAttribute( prc.user.getBioShort() ?: '' )#">
+						<div class="form-text">
+							One line, shown on author cards under each post. Max 255 characters.
+						</div>
+					</div>
+
+					<div class="mb-3">
+						<label for="bio" class="form-label">Bio</label>
+						<textarea class="form-control account-bio-editor"
+						          id="bio"
+						          name="bio"
+						          rows="10">#encodeForHTML( prc.user.getBio() ?: '' )#</textarea>
+						<div class="form-text">
+							Long-form bio rendered on your public author page. Markdown
+							supported — same formatting options as post bodies.
+						</div>
+					</div>
+
 					<button type="submit" class="btn btn-primary">Save profile</button>
+				</form>
+			</div>
+		</div>
+
+		<!---------- Profile photo ---------->
+		<div class="card stat-card stat-card-primary mb-4">
+			<div class="card-header card-header-soft card-header-soft-primary">
+				<span class="h6 mb-0">Profile photo</span>
+			</div>
+			<div class="card-body">
+				<div class="d-flex align-items-start gap-3 flex-wrap">
+					<div class="flex-shrink-0">
+						<bx:if prc.user.hasProfilePhoto()>
+							<img src="#event.buildLink( prc.user.getProfilePhotoPath() )#?v=#dateTimeFormat( prc.user.getUpdatedAt(), 'yyyyMMddHHmmss' )#"
+							     alt="Current profile photo"
+							     width="128"
+							     height="128"
+							     class="rounded border"
+							     style="object-fit: cover;">
+						<bx:else>
+							<div class="rounded border bg-light d-flex align-items-center justify-content-center"
+							     style="width: 128px; height: 128px; color: ##adb5bd;">
+								<i class="bi bi-person-fill" style="font-size: 3rem;"></i>
+							</div>
+						</bx:if>
+					</div>
+					<div class="flex-grow-1" style="min-width: 260px;">
+						<form method="POST"
+						      action="#event.buildLink( 'admin/account/photo' )#"
+						      enctype="multipart/form-data">
+							<div class="mb-2">
+								<label for="photo" class="form-label">Upload new photo</label>
+								<input type="file"
+								       class="form-control"
+								       id="photo"
+								       name="photo"
+								       accept="image/jpeg,image/png,image/webp"
+								       required>
+								<div class="form-text">
+									JPEG, PNG, or WebP. Max 5 MB. Source up to 2000×2000 — will
+									be automatically cropped to a 512×512 square.
+								</div>
+							</div>
+							<button type="submit" class="btn btn-primary">
+								<i class="bi bi-upload me-1"></i> Upload
+							</button>
+							<bx:if prc.user.hasProfilePhoto()>
+								&nbsp;
+								<button type="submit"
+								        form="removePhotoForm"
+								        class="btn btn-outline-danger">
+									<i class="bi bi-trash me-1"></i> Remove
+								</button>
+							</bx:if>
+						</form>
+						<bx:if prc.user.hasProfilePhoto()>
+							<form id="removePhotoForm"
+							      method="POST"
+							      action="#event.buildLink( 'admin/account/photo/remove' )#"
+							      class="d-none"></form>
+						</bx:if>
+					</div>
+				</div>
+			</div>
+		</div>
+
+		<!---------- Social links ---------->
+		<div class="card stat-card stat-card-info mb-4">
+			<div class="card-header card-header-soft card-header-soft-info">
+				<span class="h6 mb-0">Social links</span>
+			</div>
+			<div class="card-body">
+				<form method="POST" action="#event.buildLink( 'admin/account/socials' )#">
+					<p class="text-muted small mb-3">
+						Optional. All links render on your public author page and in the
+						header of shareable OG cards. Leave any field blank to skip that
+						network.
+					</p>
+
+					<bx:script>
+						socialFields = [
+							{ name: "websiteUrl",  label: "Website",   icon: "bi-globe",          value: prc.user.getWebsiteUrl()  ?: "" },
+							{ name: "twitterUrl",  label: "Twitter/X", icon: "bi-twitter-x",      value: prc.user.getTwitterUrl()  ?: "" },
+							{ name: "linkedinUrl", label: "LinkedIn",  icon: "bi-linkedin",       value: prc.user.getLinkedinUrl() ?: "" },
+							{ name: "githubUrl",   label: "GitHub",    icon: "bi-github",         value: prc.user.getGithubUrl()   ?: "" },
+							{ name: "gitlabUrl",   label: "GitLab",    icon: "bi-git",            value: prc.user.getGitlabUrl()   ?: "" },
+							{ name: "mastodonUrl", label: "Mastodon",  icon: "bi-mastodon",       value: prc.user.getMastodonUrl() ?: "" },
+							{ name: "blueskyUrl",  label: "Bluesky",   icon: "bi-cloud",          value: prc.user.getBlueskyUrl()  ?: "" },
+							{ name: "facebookUrl", label: "Facebook",  icon: "bi-facebook",       value: prc.user.getFacebookUrl() ?: "" }
+						];
+					</bx:script>
+					<bx:loop array="#socialFields#" item="field">
+						<div class="mb-3">
+							<label for="#field.name#" class="form-label">
+								<i class="bi #field.icon# me-1"></i> #field.label#
+							</label>
+							<input type="url"
+							       class="form-control"
+							       id="#field.name#"
+							       name="#field.name#"
+							       maxlength="500"
+							       placeholder="https://..."
+							       value="#encodeForHTMLAttribute( field.value )#">
+						</div>
+					</bx:loop>
+
+					<button type="submit" class="btn btn-primary">Save social links</button>
+				</form>
+			</div>
+		</div>
+
+		<!---------- Preferences ---------->
+		<div class="card stat-card stat-card-success mb-4">
+			<div class="card-header card-header-soft card-header-soft-success">
+				<span class="h6 mb-0">Preferences</span>
+			</div>
+			<div class="card-body">
+				<form method="POST" action="#event.buildLink( 'admin/account/preferences' )#">
+					<div class="alert alert-info small mb-3">
+						<strong>Note:</strong> the three OG-inclusion toggles below govern
+						both the shareable OG image generated for your posts AND what appears
+						on your public author page. A social link you toggle off here is
+						hidden in both places.
+					</div>
+
+					<div class="form-check form-switch mb-3">
+						<input class="form-check-input"
+						       type="checkbox"
+						       id="ogIncludeProfilePhoto"
+						       name="ogIncludeProfilePhoto"
+						       value="1"
+						       <bx:if prc.user.getOgIncludeProfilePhoto()>checked</bx:if>>
+						<label class="form-check-label" for="ogIncludeProfilePhoto">
+							Include my profile photo
+						</label>
+					</div>
+
+					<div class="form-check form-switch mb-3">
+						<input class="form-check-input"
+						       type="checkbox"
+						       id="ogIncludeEmail"
+						       name="ogIncludeEmail"
+						       value="1"
+						       <bx:if prc.user.getOgIncludeEmail()>checked</bx:if>>
+						<label class="form-check-label" for="ogIncludeEmail">
+							Include my email address
+						</label>
+						<div class="form-text">Off by default for privacy. Even when on,
+						your email is only rendered on the OG image — not on the
+						public author page.</div>
+					</div>
+
+					<div class="form-check form-switch mb-3">
+						<input class="form-check-input"
+						       type="checkbox"
+						       id="ogIncludeSocialsAndUrl"
+						       name="ogIncludeSocialsAndUrl"
+						       value="1"
+						       <bx:if prc.user.getOgIncludeSocialsAndUrl()>checked</bx:if>>
+						<label class="form-check-label" for="ogIncludeSocialsAndUrl">
+							Include my social links and the post URL (with QR code)
+						</label>
+					</div>
+
+					<hr>
+
+					<div class="form-check form-switch mb-3">
+						<input class="form-check-input"
+						       type="checkbox"
+						       id="publicAuthorPageEnabled"
+						       name="publicAuthorPageEnabled"
+						       value="1"
+						       <bx:if prc.user.getPublicAuthorPageEnabled()>checked</bx:if>>
+						<label class="form-check-label" for="publicAuthorPageEnabled">
+							Enable my public author page
+						</label>
+						<div class="form-text">
+							When on, <code>/author/#encodeForHTML( prc.user.getAuthorSlug() ?: 'your-slug' )#</code>
+							renders your long bio, profile photo, social links (per the
+							toggles above), and a feed of your posts. Off = 404.
+						</div>
+					</div>
+
+					<button type="submit" class="btn btn-primary">Save preferences</button>
 				</form>
 			</div>
 		</div>
@@ -139,4 +367,43 @@
 		</div>
 	</div>
 </div>
+
+<!---------- EasyMDE init for the bio textarea ---------------------- --->
+<script>
+( function () {
+    function initBioEditor() {
+        var ta = document.getElementById( "bio" );
+        if ( !ta || ta.dataset.easymdeInit ) return;
+        if ( typeof EasyMDE === "undefined" ) {
+            // EasyMDE is loaded from CDN in admin Main.bxm; if it
+            // hasn't parsed yet, try again once DOMContentLoaded has
+            // fired (which re-hooks load events in order).
+            return;
+        }
+        ta.dataset.easymdeInit = "1";
+
+        new EasyMDE( {
+            element      : ta,
+            spellChecker : false,
+            minHeight    : "240px",
+            status       : [ "lines", "words", "cursor" ],
+            placeholder  : "Tell readers about yourself…",
+            toolbar      : [
+                "bold", "italic", "strikethrough", "heading",
+                "|", "quote", "unordered-list", "ordered-list", "code",
+                "|", "link", "table", "horizontal-rule",
+                "|", "preview", "side-by-side", "fullscreen",
+                "|", "guide"
+            ]
+        } );
+    }
+
+    if ( document.readyState === "loading" ) {
+        document.addEventListener( "DOMContentLoaded", initBioEditor );
+    } else {
+        initBioEditor();
+    }
+    window.addEventListener( "load", initBioEditor );
+} )();
+</script>
 </bx:output>
