@@ -175,6 +175,23 @@ class extends="coldbox.system.testing.BaseTestCase" {
             for ( var t in deleteOrder ) {
                 deleteAboveBoundary( qb, t, b[ t ] ?: 0 );
             }
+
+            // Clear any cbq jobs the spec dispatched but the worker
+            // hasn't picked up yet. Without this, the worker churns
+            // through stale OgImageJob / AuthorOgRegenJob payloads
+            // pointing at posts that have just been deleted —
+            // visible as a wall of "post N no longer exists — skipping"
+            // warnings + 5+ seconds of dead-cycle time per stale job.
+            // We delete every uncompleted job rather than try to match
+            // payload contents because the spec context is the only
+            // dispatcher in dev/CI and none of the legitimate
+            // production cron + jobs run during tests.
+            try {
+                qb.newQuery().from( "cbq_jobs" ).whereNull( "completedDate" ).delete();
+            }
+            catch ( any e ) {
+                writeLog( file = "testbox", text = "cbq_jobs sweep failed: " & e.message );
+            }
         }
         catch ( any e ) {
             writeLog( file = "testbox", text = "BaseIntegrationSpec boundary cleanup failed: " & e.message );
