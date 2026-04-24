@@ -73,8 +73,8 @@
         "connectionInfo":{
             "class":"com.mysql.cj.jdbc.Driver",
             "connectionString":"jdbc:mysql://mysql:3306/bx_blogger?useUnicode=true&characterEncoding=UTF-8&serverTimezone=UTC&useLegacyDatetimeCode=true&allowPublicKeyRetrieval=true&useSSL=false",
-            "username":"${env.DB_USERNAME:bx_blogger}",
-            "password":"${env.DB_PASSWORD:bxblog-dev-pass}"
+            "username":"${DB_USERNAME}",
+            "password":"${DB_PASSWORD}"
         }
     }
 }
