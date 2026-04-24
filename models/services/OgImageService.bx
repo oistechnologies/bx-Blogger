@@ -56,11 +56,19 @@ class accessors="true" singleton {
     // it when both are drawn. Pure visual breathing room.
     variables.authorLineGap   = 12;
 
-    // QR + URL (bottom-right) — only drawn when the author's
-    // ogIncludeSocialsAndUrl preference is on.
-    variables.qrModulePixels  = 6;     // pixel width per QR module
-    variables.qrQuietZonePx   = 12;    // white border around the QR
-    variables.qrSidePadding   = 16;    // gap between URL text + QR
+    // QR (bottom-right) — only drawn when the author's
+    // ogIncludeSocialsAndUrl preference is on. Pixel-per-module +
+    // quiet-zone tuned to land roughly 25% smaller than the original
+    // (6 px / 12 px) sizing while still being phone-scannable from
+    // typical share-card viewing distance.
+    variables.qrModulePixels  = 5;     // pixel width per QR module
+    variables.qrQuietZonePx   = 8;     // white border around the QR
+
+    // URL text (bottom-left) — sits BELOW the author block, left-
+    // aligned with the photo (or the text block if no photo). When
+    // both render, the author block shifts up by `urlLineReserve` so
+    // the URL line has its own row instead of overlapping.
+    variables.urlLineReserve  = 40;    // px of vertical space the URL line takes
 
     // --------------------------------------------------------------------
     // Public API
@@ -322,10 +330,14 @@ class accessors="true" singleton {
         var emailFont = arguments.Font.init( "SansSerif", arguments.Font.PLAIN, 22 );
 
         // Anchor: the baseline of the bottom-most line of text sits at
-        // `canvasHeight - paddingY`. With one line that's name-only;
-        // with email enabled, name goes up by emailLineHeight.
-        var baselineY = variables.canvasHeight - variables.paddingY;
-        var nameX     = variables.paddingX;
+        // `canvasHeight - paddingY`. When the URL line is going to
+        // render below, shift the author block up by urlLineReserve
+        // so the two stack cleanly with breathing room rather than
+        // colliding.
+        var willDrawUrl = arguments.ctx.includeSocials && len( arguments.ctx.postUrl );
+        var baselineY   = variables.canvasHeight - variables.paddingY
+            - ( willDrawUrl ? variables.urlLineReserve : 0 );
+        var nameX       = variables.paddingX;
 
         // Optional profile photo — sits to the LEFT of the text block,
         // shifts text rightward by photoSize + gap. Photo bytes are
@@ -386,43 +398,41 @@ class accessors="true" singleton {
     }
 
     /**
-     * Bottom-right URL text + paired QR code. Drawn only when the
-     * author has `ogIncludeSocialsAndUrl` enabled AND the post URL
-     * resolved to non-empty. Either piece missing skips the entire
-     * block — partial render would look broken.
+     * QR code (bottom-right) + URL text (bottom-left, below the
+     * author block). Drawn only when the author has
+     * `ogIncludeSocialsAndUrl` on AND the post URL resolved.
      *
-     * Layout: QR in the bottom-right corner with a quiet-zone white
-     * background (B2-friendly contrast against the dark canvas);
-     * URL text right-aligned to the QR's left edge, vertically
-     * centered with the QR. Long URLs are clipped with an ellipsis
-     * before they walk over the author block on the left.
+     * Layout decisions:
+     *   - QR sits in the bottom-right corner with a quiet-zone white
+     *     background for high contrast + phone-scan reliability.
+     *   - URL text is left-aligned with the photo (or the author
+     *     name when no photo) and lives BELOW the author block at
+     *     y = canvasHeight - paddingY. drawAuthorBlock has already
+     *     shifted itself up by `urlLineReserve` so the two stack.
+     *   - Long URLs ellipsize before they would hit the QR's left
+     *     edge.
      */
     private void function drawUrlAndQr( required any g, required any Font, required any Color, required struct ctx ) {
         if ( !arguments.ctx.includeSocials ) return;
         if ( !len( arguments.ctx.postUrl ) ) return;
 
         try {
+            // ---- QR code, bottom-right ----
             var QrCode    = createObject( "java", "io.nayuki.qrcodegen.QrCode" );
             var Ecc       = createObject( "java", "io.nayuki.qrcodegen.QrCode$Ecc" );
             var qr        = QrCode.encodeText( arguments.ctx.postUrl, Ecc.MEDIUM );
 
-            // Compute pixel size of the rendered QR + its quiet-zone
-            // white border. Nayuki's `qr.size` is the module count
-            // (e.g., 25 for v2 with 25×25 modules).
             var modules    = qr.size;
             var modulePx   = variables.qrModulePixels;
             var quiet      = variables.qrQuietZonePx;
             var qrPixels   = modules * modulePx;
             var blockSize  = qrPixels + ( 2 * quiet );
 
-            // Anchor: bottom-right, sitting just above the accent bar.
             var blockRight  = variables.canvasWidth  - variables.paddingX;
             var blockBottom = variables.canvasHeight - variables.paddingY;
             var blockLeft   = blockRight  - blockSize;
             var blockTop    = blockBottom - blockSize;
 
-            // White background rectangle (the quiet zone) so the QR
-            // is high-contrast against the dark canvas + scannable.
             arguments.g.setColor( decodeColor( arguments.Color, "##FFFFFF" ) );
             arguments.g.fillRoundRect(
                 javaCast( "int", blockLeft ),
@@ -432,8 +442,6 @@ class accessors="true" singleton {
                 javaCast( "int", 8 ),
                 javaCast( "int", 8 )
             );
-
-            // QR modules — solid black squares.
             arguments.g.setColor( decodeColor( arguments.Color, "##000000" ) );
             for ( var y = 0; y < modules; y++ ) {
                 for ( var x = 0; x < modules; x++ ) {
@@ -448,29 +456,27 @@ class accessors="true" singleton {
                 }
             }
 
-            // URL text — right-aligned to the QR's left edge,
-            // vertically centered with the QR. Trimmed to fit the
-            // available width on the left of the QR, with an
-            // ellipsis when it would otherwise collide with the
-            // author block on the left side of the canvas.
+            // ---- URL text, bottom-left, below the author block ----
             var urlFont = arguments.Font.init( "SansSerif", arguments.Font.PLAIN, 22 );
             arguments.g.setFont( urlFont );
             arguments.g.setColor( decodeColor( arguments.Color, variables.fgMutedHex ) );
-            var fm        = arguments.g.getFontMetrics();
-            // Leave the left half of the canvas to the author block —
-            // start text no further left than canvasWidth / 2.
-            var maxTextLeft  = int( variables.canvasWidth / 2 );
-            var maxTextWidth = blockLeft - variables.qrSidePadding - maxTextLeft;
+            var fm = arguments.g.getFontMetrics();
+
+            // Available width: from paddingX on the left, up to a
+            // small gap before the QR's left edge on the right.
+            var urlSideGap   = 24;
+            var maxTextWidth = blockLeft - urlSideGap - variables.paddingX;
             var displayUrl   = stripUrlScheme( arguments.ctx.postUrl );
             var fitted       = clipToWidth( fm, displayUrl, maxTextWidth );
-            // Ellipsize when clipping happened.
             if ( len( fitted ) < len( displayUrl ) ) {
                 fitted = clipToWidth( fm, fitted & "...", maxTextWidth );
             }
-            var textWidth = fm.stringWidth( fitted );
-            var textX     = blockLeft - variables.qrSidePadding - textWidth;
-            var textY     = int( ( blockTop + blockBottom ) / 2 ) + int( fm.getAscent() / 2 ) - 2;
-            arguments.g.drawString( fitted, javaCast( "int", textX ), javaCast( "int", textY ) );
+            var textY = variables.canvasHeight - variables.paddingY;
+            arguments.g.drawString(
+                fitted,
+                javaCast( "int", variables.paddingX ),
+                javaCast( "int", textY )
+            );
         }
         catch ( any e ) {
             log.warn( "OgImageService.drawUrlAndQr: skipped — " & e.message );
