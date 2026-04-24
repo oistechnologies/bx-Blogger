@@ -28,6 +28,9 @@ class extends="tests.support.BaseIntegrationSpec" {
     }
 
     function afterAll() {
+        // Tracked-path pass — the normal happy flow where every
+        // test remembered to call trackPath(). Runs before super
+        // because it's narrow + predictable.
         try {
             var disk = variables.cbfs.get( "og" );
             for ( var p in variables.createdOgPaths ) {
@@ -35,9 +38,37 @@ class extends="tests.support.BaseIntegrationSpec" {
             }
         }
         catch ( any e ) {
-            writeLog( file = "testbox", text = "OgImageServiceSpec cleanup failed: " & e.message );
+            writeLog( file = "testbox", text = "OgImageServiceSpec tracked cleanup failed: " & e.message );
         }
-        super.afterAll();
+
+        super.afterAll();   // boundary-snapshot cleanup wipes test posts
+
+        // Self-heal pass — AFTER the post rows are gone, any OG file
+        // whose postId is no longer in `posts` is definitionally an
+        // orphan (test transient that wasn't tracked, or leftover
+        // from an earlier failed run). Catches leakage from tests
+        // that errored before trackPath could fire. Production is
+        // untouched: real site posts stay in the DB, so their OG
+        // files never match the orphan predicate.
+        try {
+            var disk     = variables.cbfs.get( "og" );
+            var qb       = getInstance( "QueryBuilder@qb" );
+            var livePids = qb.newQuery().from( "posts" ).select( "id" ).get()
+                .map( function( r ) { return r.id; } );
+            var livePidSet = {};
+            for ( var pid in livePids ) livePidSet[ pid ] = true;
+            for ( var file in disk.files( "" ) ) {
+                var m = reFind( "^([0-9]+)-v[0-9]+\.png$", file, 1, true );
+                if ( m.len[ 1 ] == 0 ) continue;
+                var pid = val( mid( file, m.pos[ 2 ], m.len[ 2 ] ) );
+                if ( !structKeyExists( livePidSet, pid ) ) {
+                    try { disk.delete( file ); } catch ( any e ) {}
+                }
+            }
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "OgImageServiceSpec orphan sweep failed: " & e.message );
+        }
     }
 
     function run() {
