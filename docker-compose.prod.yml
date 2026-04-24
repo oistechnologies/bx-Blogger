@@ -81,37 +81,47 @@ services:
       - bx-blogger     # private — app ↔ mysql
       - proxy          # shared with NPM for inbound traffic
 
-  worker:
-    image: ghcr.io/oistechnologies/bx-blogger:${RELEASE_TAG:-latest}
-    container_name: ${COMPOSE_PROJECT_NAME:-bx-blogger}-worker
-    env_file: .env
-    environment:
-      ENVIRONMENT: production
-      LOG_FORMAT: json
-    # Phase 10.D — graceful-shutdown wrapper. Traps SIGTERM, forwards
-    # to the cbq:work child, waits up to CBQ_DRAIN_SECONDS (default 30s)
-    # for the child to finish its current job, then SIGKILL. See
-    # docker/cbq-worker-entrypoint.sh for the full rationale.
-    command: [ "/cbq-worker-entrypoint.sh" ]
-    # Docker's default stop-grace is 10s — too short for the 30s drain.
-    # 35s gives the wrapper a 5s buffer to handle its own SIGKILL branch
-    # before Docker itself escalates to SIGKILL.
-    stop_grace_period: 35s
-    volumes:
-      - backup-data:/var/backups/bx-blogger
-      # Share the app container's media/og/branding mounts so cbq jobs
-      # that write via cbfs (GenerateThumbnailsJob, WebpConvertJob,
-      # OgImageService renders kicked off from a background context)
-      # land in the same persistent host dirs as the web uploads.
-      - ${MEDIA_HOST_PATH:-./media}:/app/includes/public/media
-      - ${OG_HOST_PATH:-./og}:/app/includes/public/og
-      - ${BRANDING_HOST_PATH:-./branding}:/app/includes/public/branding
-    depends_on:
-      app:
-        condition: service_started
-    restart: unless-stopped
-    networks:
-      - bx-blogger     # private only — worker doesn't accept HTTP
+  # NOTE on the queue worker:
+  #
+  # cbq is configured (see config/cbq.bx) to register workers IN-PROCESS
+  # inside the `app` container — HTTP threads and worker threads share
+  # the same JVM. For blog-scale workloads (SendEmailJob, GenerateThumbnailsJob,
+  # RebuildSitemapJob, BackupDatabaseJob, RecordPostViewJob — all I/O-bound
+  # and bursty rather than sustained-CPU) that's the right default, and
+  # it's what the product's test suite + CI exercises.
+  #
+  # Earlier versions of this template shipped a standalone `worker` service
+  # that ran `box cbq:work` alongside the app. On every deploy it raced the
+  # in-process pool and crashed in ways that weren't obvious until you were
+  # debugging at 11pm. The service was removed here so operators copying
+  # this template don't fall into the same trap.
+  #
+  # If a future workload genuinely needs a split worker, re-introduce:
+  #
+  #   worker:
+  #     image: ghcr.io/oistechnologies/bx-blogger:${RELEASE_TAG:-latest}
+  #     container_name: ${COMPOSE_PROJECT_NAME:-bx-blogger}-worker
+  #     env_file: .env
+  #     environment:
+  #       ENVIRONMENT: production
+  #       LOG_FORMAT: json
+  #       CBQ_REGISTER_WORKERS: "false"   # turn OFF the in-process pool in `app`
+  #     command: [ "/cbq-worker-entrypoint.sh" ]
+  #     stop_grace_period: 35s
+  #     volumes:
+  #       - backup-data:/var/backups/bx-blogger
+  #       - ${MEDIA_HOST_PATH:-./media}:/app/includes/public/media
+  #       - ${OG_HOST_PATH:-./og}:/app/includes/public/og
+  #       - ${BRANDING_HOST_PATH:-./branding}:/app/includes/public/branding
+  #     depends_on:
+  #       app:
+  #         condition: service_started
+  #     restart: unless-stopped
+  #     networks:
+  #       - bx-blogger
+  #
+  # And flip CBQ_REGISTER_WORKERS=false on the app service so you don't
+  # end up with two pools racing again.
 
   mysql:
     # Containerized by default. Delete this block and set DB_HOST in prod .env
