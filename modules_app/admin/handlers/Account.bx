@@ -85,6 +85,8 @@ class extends="coldbox.system.EventHandler" {
     function updateProfile( event, rc, prc ) {
         param name="rc.displayName" default="";
 
+        writeLog( type = "info", text = "DIAG:updateProfile entered | rc keys=[#structKeyList( rc )#] displayName=[#rc.displayName#] currentRoute=[#event.getCurrentRoutedURL()#]" );
+
         var user    = cbauth.getUser();
         var newName = trim( rc.displayName );
         if ( !len( newName ) ) {
@@ -172,13 +174,17 @@ class extends="coldbox.system.EventHandler" {
         param name="rc.newPassword"     default="";
         param name="rc.confirmPassword" default="";
 
+        writeLog( type = "info", text = "DIAG:updatePassword entered | rc keys=[#structKeyList( rc )#] currentPwLen=[#len( rc.currentPassword )#] newPwLen=[#len( rc.newPassword )#] confirmPwLen=[#len( rc.confirmPassword )#] currentRoute=[#event.getCurrentRoutedURL()#]" );
+
         var user = cbauth.getUser();
         if ( !passwordService.verify( rc.currentPassword, user.getPasswordHash() ) ) {
+            writeLog( type = "info", text = "DIAG:updatePassword branch=current-password-incorrect" );
             flash.put( "accountError", "Current password is incorrect." );
             relocate( event = "admin:Account.show" );
             return;
         }
         if ( rc.newPassword != rc.confirmPassword ) {
+            writeLog( type = "info", text = "DIAG:updatePassword branch=passwords-mismatch" );
             flash.put( "accountError", "New passwords don't match." );
             relocate( event = "admin:Account.show" );
             return;
@@ -188,6 +194,7 @@ class extends="coldbox.system.EventHandler" {
             { "email" : user.getEmail(), "displayName" : user.getDisplayName() }
         );
         if ( !policy.valid ) {
+            writeLog( type = "info", text = "DIAG:updatePassword branch=policy-invalid errors=[#policy.errors.toList( " | " )#]" );
             flash.put( "accountError", policy.errors.toList( " " ) );
             relocate( event = "admin:Account.show" );
             return;
@@ -196,7 +203,14 @@ class extends="coldbox.system.EventHandler" {
         user.setPasswordHash( passwordService.hash( rc.newPassword ) );
         user.setPasswordChangedAt( now() );
         user.setMustChangePassword( 0 );
-        user.save();
+        try {
+            user.save();
+            writeLog( type = "info", text = "DIAG:updatePassword branch=saved-ok" );
+        }
+        catch ( any e ) {
+            writeLog( type = "error", text = "DIAG:updatePassword save threw type=[#e.type#] message=[#e.message#]" );
+            rethrow;
+        }
 
         flash.put( "accountMessage", "Password updated." );
         relocate( event = "admin:Account.show" );
