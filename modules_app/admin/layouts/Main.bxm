@@ -292,6 +292,74 @@
 	} )();
 	</script>
 
+	<!--- Admin-wide loading overlay — Bootstrap-native, zero deps beyond
+	      the bundle already loaded above. Exposed to wires + Alpine via
+	      window.WireOverlay.show() / .hide(). Wires can hide from
+	      server-side actions via `this.js( "WireOverlay.hide();" )`;
+	      auto-hide hooks on Livewire lifecycle events catch the
+	      success + error paths without per-action boilerplate. Dark-
+	      mode-aware via Bootstrap's CSS vars. --->
+	<div id="wire-loading-overlay"
+	     class="position-fixed top-0 start-0 w-100 h-100 d-none"
+	     aria-hidden="true"
+	     style="background: rgba( var( --bs-body-bg-rgb ), 0.75 ); z-index: 2000; backdrop-filter: blur( 1px );">
+		<div class="position-absolute top-50 start-50 translate-middle text-center">
+			<div class="spinner-border text-primary" style="width: 3rem; height: 3rem;" role="status">
+				<span class="visually-hidden">Loading&hellip;</span>
+			</div>
+			<div class="mt-2 small text-muted wire-overlay-msg d-none"></div>
+		</div>
+	</div>
+	<script>
+	( function () {
+	    if ( window.WireOverlay ) return;
+
+	    var el = document.getElementById( "wire-loading-overlay" );
+	    var msg = el ? el.querySelector( ".wire-overlay-msg" ) : null;
+
+	    window.WireOverlay = {
+	        show: function ( message ) {
+	            if ( !el ) return;
+	            if ( message && msg ) {
+	                msg.textContent = message;
+	                msg.classList.remove( "d-none" );
+	            } else if ( msg ) {
+	                msg.classList.add( "d-none" );
+	                msg.textContent = "";
+	            }
+	            el.classList.remove( "d-none" );
+	            el.setAttribute( "aria-hidden", "false" );
+	        },
+	        hide: function () {
+	            if ( !el ) return;
+	            el.classList.add( "d-none" );
+	            el.setAttribute( "aria-hidden", "true" );
+	            if ( msg ) {
+	                msg.classList.add( "d-none" );
+	                msg.textContent = "";
+	            }
+	        }
+	    };
+
+	    // Auto-hide on every Livewire/CBWIRE response. morph.updated fires
+	    // after a wire's DOM reconciles post-response; morph.added covers
+	    // newly inserted subtrees. Both cases mean "server responded,
+	    // drop the overlay."
+	    document.addEventListener( "livewire:init", function () {
+	        if ( typeof Livewire !== "undefined" && Livewire.hook ) {
+	            Livewire.hook( "morph.updated", function () { window.WireOverlay.hide(); } );
+	            Livewire.hook( "morph.added",   function () { window.WireOverlay.hide(); } );
+	        }
+	    } );
+
+	    // Error paths — Livewire 3 surfaces `livewire:failed` on 5xx;
+	    // the generic window.error covers unhandled JS exceptions that
+	    // would otherwise leave the overlay stuck.
+	    document.addEventListener( "livewire:failed", function () { window.WireOverlay.hide(); } );
+	    window.addEventListener( "error",              function () { window.WireOverlay.hide(); } );
+	} )();
+	</script>
+
 </body>
 </html>
 </bx:output>

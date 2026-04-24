@@ -722,13 +722,19 @@ private array function parseTagsText( required string text ) {
 <bx:output>
 <div>
 	<bx:if len( args.flashOk )>
-		<div class="alert alert-success alert-dismissible">
+		<div class="alert alert-success alert-dismissible fade show"
+		     role="alert"
+		     x-data
+		     x-init="setTimeout( () => window._postEditor &amp;&amp; window._postEditor.set( 'flashOk', '' ), 20000 )">
 			#encodeForHTML( args.flashOk )#
 			<button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
 		</div>
 	</bx:if>
 	<bx:if len( args.flashError )>
-		<div class="alert alert-danger alert-dismissible">
+		<div class="alert alert-danger alert-dismissible fade show"
+		     role="alert"
+		     x-data
+		     x-init="setTimeout( () => window._postEditor &amp;&amp; window._postEditor.set( 'flashError', '' ), 20000 )">
 			#encodeForHTML( args.flashError )#
 			<button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
 		</div>
@@ -821,11 +827,24 @@ private array function parseTagsText( required string text ) {
 										<i class="bi bi-eye-slash" aria-hidden="true"></i>
 									</button>
 								<bx:else>
+									<!---
+										Preview is an inline toggle, not a full
+										save — skipping the full-page overlay
+										would be overkill. Swapping the eye
+										icon for a spinner during the request
+										gives enough "working on it" feedback.
+									--->
 									<button type="button" class="btn btn-outline-secondary"
 									        wire:click="preview"
+									        wire:loading.attr="disabled"
+									        wire:target="preview"
 									        data-bs-toggle="tooltip" title="Preview"
 									        aria-label="Render a preview of the post body">
-										<i class="bi bi-eye" aria-hidden="true"></i>
+										<i class="bi bi-eye" aria-hidden="true"
+										   wire:loading.remove wire:target="preview"></i>
+										<span class="spinner-border spinner-border-sm" role="status"
+										      aria-hidden="true"
+										      wire:loading wire:target="preview"></span>
 									</button>
 								</bx:if>
 							</div>
@@ -914,7 +933,30 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 						       wire:model.blur="scheduledAt">
 					</div>
 					<div class="d-grid gap-2">
-						<button class="btn btn-outline-primary" wire:click="save">Save draft</button>
+						<!---
+							Each action button:
+							- `onclick` shows the shared Bootstrap overlay
+							  immediately (before the wire request leaves the
+							  browser) so slow operations get instant feedback.
+							- `wire:loading.attr="disabled"` greys the button
+							  during the in-flight request so accidental
+							  double-clicks don't stack.
+							- `wire:target` scopes the spinner + disabled state
+							  to this specific action — Save draft spinning
+							  while you click Publish would be wrong.
+							The layout's morph.updated hook hides the overlay
+							on response, livewire:failed hook hides on error.
+						--->
+						<button class="btn btn-outline-primary"
+						        wire:click="save"
+						        wire:loading.attr="disabled"
+						        wire:target="save"
+						        onclick="WireOverlay.show( 'Saving…' );">
+							<span class="spinner-border spinner-border-sm me-1"
+							      role="status" aria-hidden="true"
+							      wire:loading wire:target="save"></span>
+							Save draft
+						</button>
 						<!---
 							A7 — Submit for Review shows up for contributors
 							who lack publish rights. For authors + editors the
@@ -924,16 +966,45 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 						--->
 						<button class="btn btn-outline-secondary btn-sm"
 						        wire:click="submitForReview"
+						        wire:loading.attr="disabled"
+						        wire:target="submitForReview"
+						        onclick="WireOverlay.show( 'Submitting…' );"
 						        title="Flag as ready for an editor to review and publish">
+							<span class="spinner-border spinner-border-sm me-1"
+							      role="status" aria-hidden="true"
+							      wire:loading wire:target="submitForReview"></span>
 							Submit for review
 						</button>
-						<button class="btn btn-primary" wire:click="publish">
+						<button class="btn btn-primary"
+						        wire:click="publish"
+						        wire:loading.attr="disabled"
+						        wire:target="publish"
+						        onclick="WireOverlay.show( <bx:if len( args.scheduledAt )>'Scheduling…'<bx:else>'Publishing…'</bx:if> );">
+							<span class="spinner-border spinner-border-sm me-1"
+							      role="status" aria-hidden="true"
+							      wire:loading wire:target="publish"></span>
 							<bx:if len( args.scheduledAt )>Schedule<bx:else>Publish</bx:if>
 						</button>
 						<bx:if ( args.postId ?: 0 ) gt 0 && args.status != "trashed">
+							<!---
+								No `onclick` overlay here — `wire:confirm` owns
+								the confirmation dialog, and if we also called
+								WireOverlay.show() in onclick the overlay would
+								stick open when the user cancels (confirm
+								aborts the wire request so morph.updated never
+								fires to hide it). Button-level spinner + the
+								disabled state is enough feedback for a fast op.
+							--->
 							<button class="btn btn-outline-danger btn-sm"
 							        wire:click="trash"
-							        wire:confirm="Move this post to trash?">Move to trash</button>
+							        wire:loading.attr="disabled"
+							        wire:target="trash"
+							        wire:confirm="Move this post to trash?">
+								<span class="spinner-border spinner-border-sm me-1"
+								      role="status" aria-hidden="true"
+								      wire:loading wire:target="trash"></span>
+								Move to trash
+							</button>
 						</bx:if>
 						<!--- Phase 8.A — revision history link. Plain anchor
 						      (not a wire action) because we want a full page
