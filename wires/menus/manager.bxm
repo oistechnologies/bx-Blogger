@@ -358,6 +358,7 @@ private boolean function requirePerm( required string perm ) {
                         <ul class="mb-0 ps-3">
                             <li>Use <code>&rarr;</code> to nest an item under the one above it.</li>
                             <li>Delete cascades &mdash; the subtree under an item goes with it.</li>
+                            <li><strong>Menus are per-theme.</strong> Each theme keeps its own menu for each location it declares, so switching themes shows a fresh builder. Items you built for other themes stay safely stored and return when you activate that theme again.</li>
                             <li>Switching themes hides the nav builder for locations the new theme doesn't declare; data is preserved.</li>
                         </ul>
                     </div>
