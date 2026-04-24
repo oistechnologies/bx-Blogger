@@ -100,6 +100,144 @@
 		.dash-dl-rows { display: grid; grid-template-columns: 1fr auto; gap: .25rem .75rem; }
 		.dash-dl-rows dt { margin-top: 0; align-self: center; }
 		.dash-dl-rows dd { align-self: center; text-align: right; }
+
+		/* ===== Multi-level + rail-mode sidebar ====================== */
+
+		/* Default (full-width) layout. Icons sit in a fixed-width slot
+		   so labels align even when some items have a glyph and some
+		   don't. */
+		.admin-sidebar .nav-link {
+			display: flex;
+			align-items: center;
+			gap: .625rem;
+			white-space: nowrap;
+		}
+		.admin-sidebar .nav-icon {
+			flex: 0 0 1.25rem;
+			width: 1.25rem;
+			text-align: center;
+			font-size: 1rem;
+			line-height: 1;
+		}
+		.admin-sidebar .nav-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+
+		/* Collapsible parent styled like a nav-link but reset from the
+		   browser's <button> defaults. */
+		.admin-sidebar .nav-parent {
+			background: transparent;
+			border: 0;
+			border-left: 3px solid transparent;
+			width: 100%;
+			text-align: left;
+			font: inherit;
+			cursor: pointer;
+		}
+		.admin-sidebar .nav-parent .nav-chevron {
+			font-size: .75rem;
+			transition: transform .2s ease;
+			flex: 0 0 auto;
+		}
+		.admin-sidebar .nav-parent.collapsed .nav-chevron { transform: rotate( -90deg ); }
+
+		/* Sub-item indent on full-width — hides in rail mode. */
+		.admin-sidebar .nav-sub { padding-left: 1.75rem; }
+
+		/* Rail toggle button — matches nav-link look, chevron flips
+		   depending on mode. */
+		.admin-sidebar-toggle {
+			display: flex;
+			align-items: center;
+			gap: .5rem;
+			background: transparent;
+			border: 0;
+			color: ##6c757d;
+			padding: .5rem .75rem;
+			font-size: .8125rem;
+			border-top: 1px solid rgba( 0, 0, 0, .075 );
+			width: 100%;
+		}
+		.admin-sidebar-toggle:hover { color: ##212529; background: rgba( 0, 0, 0, .04 ); }
+		/* In full mode, show the ←← icon + "Collapse" label. */
+		.admin-sidebar-toggle [data-toggle-icon-rail] { display: none; }
+
+		/* ===== Rail mode (md+) ======================================
+		   Triggered by `html.admin-rail` which JS toggles from a
+		   localStorage-backed preference. Sidebar shrinks to an icon-
+		   width column; hovering expands a floating overlay so main
+		   content doesn't reflow. Mobile (<md) is unaffected — the
+		   whole rail UX is desktop-only. */
+		@media ( min-width: 768px ) {
+			html.admin-rail .admin-sidebar {
+				flex: 0 0 64px;
+				max-width: 64px;
+				width: 64px;
+				position: relative;
+			}
+			html.admin-rail .admin-sidebar-inner {
+				position: absolute;
+				top: 0;
+				left: calc( var( --bs-gutter-x, 1.5rem ) * 0.5 );
+				width: 56px;
+				overflow: hidden;
+				transition: width .2s ease, box-shadow .2s ease;
+				background: ##f8f9fa;
+				border-radius: .375rem;
+				z-index: 20;
+			}
+			html.admin-rail .admin-sidebar-inner:hover {
+				width: 220px;
+				box-shadow: 2px 0 12px rgba( 0, 0, 0, .12 );
+				overflow: visible;
+			}
+
+			/* Hide labels + chevrons + separator text in rail at rest. */
+			html.admin-rail .admin-sidebar-inner:not(:hover) .nav-label,
+			html.admin-rail .admin-sidebar-inner:not(:hover) .nav-chevron {
+				opacity: 0;
+				pointer-events: none;
+			}
+			html.admin-rail .admin-sidebar-inner .nav-label,
+			html.admin-rail .admin-sidebar-inner .nav-chevron {
+				transition: opacity .15s ease;
+			}
+
+			/* Sub-item indent collapses in rail (no room) so sub icons
+			   sit aligned with top-level icons; hover brings back full
+			   indent so the hierarchy reads correctly. */
+			html.admin-rail .admin-sidebar-inner:not(:hover) .nav-sub {
+				padding-left: calc( .75rem - 3px );
+			}
+
+			/* Hide the toggle's label in rail mode; swap the chevron. */
+			html.admin-rail .admin-sidebar-toggle { justify-content: center; }
+			html.admin-rail .admin-sidebar-inner:not(:hover) .admin-sidebar-toggle .nav-label {
+				display: none;
+			}
+			html.admin-rail .admin-sidebar-toggle [data-toggle-icon-full] { display: none; }
+			html.admin-rail .admin-sidebar-toggle [data-toggle-icon-rail] { display: inline-block; }
+
+			/* Main content widens to take the space the rail freed up,
+			   and pads its left edge so the absolutely-positioned rail
+			   doesn't visually overlap the first column of content.
+			   Padding = rail width (56px) + a gutter so content doesn't
+			   butt up against the rail. On hover the rail expands over
+			   the padding area by design — no reflow. */
+			html.admin-rail main.col-md-9,
+			html.admin-rail main.col-lg-10 {
+				flex: 1 1 auto;
+				max-width: none;
+				width: auto;
+				padding-left: calc( 56px + 1rem );
+			}
+		}
+
+		/* Respect reduced-motion: drop all the transitions to instant. */
+		@media ( prefers-reduced-motion: reduce ) {
+			.admin-sidebar-inner,
+			.admin-sidebar .nav-label,
+			.admin-sidebar .nav-chevron,
+			.admin-sidebar .nav-parent .nav-chevron { transition: none; }
+		}
 	</style>
 	<!--- CBWIRE assets — small inline JS + CSS used by reactive components.
 	      Rendered once per request; subsequent wire includes pick up the
@@ -131,6 +269,21 @@
 	      buttons in tables + toolbars. Admin-only (public themes
 	      stay lean). --->
 	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" crossorigin="anonymous">
+	<!--- Apply the persisted rail-mode class BEFORE the sidebar paints
+	      to avoid a flash of full-width layout on pages where the
+	      user has chosen the rail state. The class goes on
+	      `document.documentElement` (the <html> element, which
+	      exists at every point in parsing) so CSS below scopes off
+	      `html.admin-rail` rather than `html.admin-rail`. --->
+	<script>
+	( function () {
+	    try {
+	        if ( localStorage.getItem( "bxblogger_sidebar_rail" ) === "1" ) {
+	            document.documentElement.classList.add( "admin-rail" );
+	        }
+	    } catch ( e ) {}
+	} )();
+	</script>
 </head>
 <body class="d-flex flex-column min-vh-100">
 
@@ -164,54 +317,140 @@
 
 	<div class="container-fluid flex-grow-1 py-4">
 		<div class="row">
+			<bx:script>
+				currentEvent = event.getCurrentEvent();
+
+				// "System Settings" rollup — hide the parent when the user
+				// has NO rights to any child; show only the children the
+				// user is entitled to when at least one permission matches.
+				u = cbauth.isLoggedIn() ? cbauth.getUser() : "";
+				canSysUsers    = cbauth.isLoggedIn() && u.hasPermission( "users.manage" );
+				canSysSettings = cbauth.isLoggedIn() && u.hasPermission( "settings.manage" );
+				canSysThemes   = cbauth.isLoggedIn() && u.hasPermission( "themes.manage" );
+				canSysMenus    = cbauth.isLoggedIn() && u.hasPermission( "menus.manage" );
+				canSysRedir    = cbauth.isLoggedIn() && u.hasPermission( "redirects.manage" );
+				canSys404      = cbauth.isLoggedIn() && u.hasPermission( "broken_links.view" );
+				canSysAudit    = cbauth.isLoggedIn() && u.hasPermission( "audit.view" );
+				canSysPrivacy  = cbauth.isLoggedIn() && u.hasPermission( "users.export_data" );
+				hasSysAccess   = canSysUsers || canSysSettings || canSysThemes || canSysMenus
+				               || canSysRedir || canSys404 || canSysAudit || canSysPrivacy;
+
+				// Auto-expand System Settings when the active page is one
+				// of its children, otherwise it starts collapsed.
+				isInSystemSettings = !!reFindNoCase(
+					"^admin:(Users|Settings|Themes|Menus|Redirects|BrokenLinks|AuditLog|Privacy)\.",
+					currentEvent
+				);
+			</bx:script>
 			<aside class="col-12 col-md-3 col-lg-2 admin-sidebar mb-4">
-				<nav class="nav flex-column">
-					<bx:set currentEvent = event.getCurrentEvent()>
+				<div class="admin-sidebar-inner">
+				<nav class="nav flex-column admin-sidebar-nav">
 					<a class="nav-link #( currentEvent == 'admin:Dashboard.index' ? 'active' : '' )#"
-					   href="#event.buildLink( 'admin' )#">Dashboard</a>
+					   href="#event.buildLink( 'admin' )#"
+					   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Dashboard">
+						<i class="bi bi-speedometer2 nav-icon"></i><span class="nav-label">Dashboard</span>
+					</a>
 					<a class="nav-link #( currentEvent == 'admin:Posts.index' || currentEvent == 'admin:Posts.editor' ? 'active' : '' )#"
-					   href="#event.buildLink( 'admin:Posts.index' )#">Posts</a>
+					   href="#event.buildLink( 'admin:Posts.index' )#"
+					   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Posts">
+						<i class="bi bi-file-earmark-text nav-icon"></i><span class="nav-label">Posts</span>
+					</a>
 					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "posts.publish.others" )>
-						<a class="nav-link ps-4 #( currentEvent == 'admin:Posts.reviewQueue' ? 'active' : '' )#"
-						   href="#event.buildLink( 'admin:Posts.reviewQueue' )#">Review queue</a>
+						<a class="nav-link nav-sub #( currentEvent == 'admin:Posts.reviewQueue' ? 'active' : '' )#"
+						   href="#event.buildLink( 'admin:Posts.reviewQueue' )#"
+						   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Review queue">
+							<i class="bi bi-list-check nav-icon"></i><span class="nav-label">Review queue</span>
+						</a>
 					</bx:if>
 					<a class="nav-link #( currentEvent.startsWith( 'admin:Categories.' ) ? 'active' : '' )#"
-					   href="#event.buildLink( 'admin:Categories.index' )#">Categories</a>
+					   href="#event.buildLink( 'admin:Categories.index' )#"
+					   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Categories">
+						<i class="bi bi-folder2 nav-icon"></i><span class="nav-label">Categories</span>
+					</a>
 					<a class="nav-link #( currentEvent.startsWith( 'admin:Tags.' ) ? 'active' : '' )#"
-					   href="#event.buildLink( 'admin:Tags.index' )#">Tags</a>
+					   href="#event.buildLink( 'admin:Tags.index' )#"
+					   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Tags">
+						<i class="bi bi-tags nav-icon"></i><span class="nav-label">Tags</span>
+					</a>
 					<a class="nav-link #( currentEvent.startsWith( 'admin:Media.' ) ? 'active' : '' )#"
-					   href="#event.buildLink( 'admin:Media.index' )#">Media</a>
-					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "users.manage" )>
-						<a class="nav-link #( currentEvent.startsWith( 'admin:Users.' ) ? 'active' : '' )#"
-						   href="#event.buildLink( 'admin:Users.index' )#">Users</a>
-					</bx:if>
-					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "themes.manage" )>
-						<a class="nav-link #( currentEvent.startsWith( 'admin:Themes.' ) ? 'active' : '' )#"
-						   href="#event.buildLink( 'admin:Themes.index' )#">Themes</a>
-					</bx:if>
-					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "menus.manage" )>
-						<a class="nav-link #( currentEvent.startsWith( 'admin:Menus.' ) ? 'active' : '' )#"
-						   href="#event.buildLink( 'admin:Menus.index' )#">Menus</a>
-					</bx:if>
-					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "redirects.manage" )>
-						<a class="nav-link #( currentEvent.startsWith( 'admin:Redirects.' ) ? 'active' : '' )#"
-						   href="#event.buildLink( 'admin:Redirects.index' )#">Redirects</a>
-					</bx:if>
-					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "broken_links.view" )>
-						<a class="nav-link #( currentEvent.startsWith( 'admin:BrokenLinks.' ) ? 'active' : '' )#"
-						   href="#event.buildLink( 'admin:BrokenLinks.index' )#">404 Report</a>
-					</bx:if>
-					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "audit.view" )>
-						<a class="nav-link #( currentEvent.startsWith( 'admin:AuditLog.' ) ? 'active' : '' )#"
-						   href="#event.buildLink( 'admin:AuditLog.index' )#">Audit Log</a>
-					</bx:if>
-					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "users.export_data" )>
-						<a class="nav-link #( currentEvent.startsWith( 'admin:Privacy.' ) ? 'active' : '' )#"
-						   href="#event.buildLink( 'admin:Privacy.index' )#">Privacy</a>
-					</bx:if>
-					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "settings.manage" )>
-						<a class="nav-link #( currentEvent.startsWith( 'admin:Settings.' ) ? 'active' : '' )#"
-						   href="#event.buildLink( 'admin:Settings.index' )#">Settings</a>
+					   href="#event.buildLink( 'admin:Media.index' )#"
+					   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Media">
+						<i class="bi bi-images nav-icon"></i><span class="nav-label">Media</span>
+					</a>
+
+					<!--- System Settings — collapsible group. Parent visible
+					      only when the user has rights to any child; each
+					      child individually gated by its own permission. --->
+					<bx:if hasSysAccess>
+						<button type="button"
+						        class="nav-link nav-parent #( isInSystemSettings ? '' : 'collapsed' )#"
+						        data-bs-toggle="collapse"
+						        data-bs-target="##sidebarSystemSettings"
+						        aria-expanded="#isInSystemSettings ? 'true' : 'false'#"
+						        aria-controls="sidebarSystemSettings"
+						        data-bs-toggle-tooltip="right" title="System Settings">
+							<i class="bi bi-sliders nav-icon"></i>
+							<span class="nav-label">System Settings</span>
+							<i class="bi bi-chevron-down nav-chevron ms-auto"></i>
+						</button>
+						<div id="sidebarSystemSettings" class="collapse #( isInSystemSettings ? 'show' : '' )# admin-sidebar-submenu">
+							<bx:if canSysUsers>
+								<a class="nav-link nav-sub #( currentEvent.startsWith( 'admin:Users.' ) ? 'active' : '' )#"
+								   href="#event.buildLink( 'admin:Users.index' )#"
+								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Users">
+									<i class="bi bi-people nav-icon"></i><span class="nav-label">Users</span>
+								</a>
+							</bx:if>
+							<bx:if canSysSettings>
+								<a class="nav-link nav-sub #( currentEvent.startsWith( 'admin:Settings.' ) ? 'active' : '' )#"
+								   href="#event.buildLink( 'admin:Settings.index' )#"
+								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="SEO Settings">
+									<i class="bi bi-search nav-icon"></i><span class="nav-label">SEO Settings</span>
+								</a>
+							</bx:if>
+							<bx:if canSysThemes>
+								<a class="nav-link nav-sub #( currentEvent.startsWith( 'admin:Themes.' ) ? 'active' : '' )#"
+								   href="#event.buildLink( 'admin:Themes.index' )#"
+								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Themes">
+									<i class="bi bi-palette nav-icon"></i><span class="nav-label">Themes</span>
+								</a>
+							</bx:if>
+							<bx:if canSysMenus>
+								<a class="nav-link nav-sub #( currentEvent.startsWith( 'admin:Menus.' ) ? 'active' : '' )#"
+								   href="#event.buildLink( 'admin:Menus.index' )#"
+								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Menus">
+									<i class="bi bi-list nav-icon"></i><span class="nav-label">Menus</span>
+								</a>
+							</bx:if>
+							<bx:if canSysRedir>
+								<a class="nav-link nav-sub #( currentEvent.startsWith( 'admin:Redirects.' ) ? 'active' : '' )#"
+								   href="#event.buildLink( 'admin:Redirects.index' )#"
+								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Redirects">
+									<i class="bi bi-signpost-split nav-icon"></i><span class="nav-label">Redirects</span>
+								</a>
+							</bx:if>
+							<bx:if canSys404>
+								<a class="nav-link nav-sub #( currentEvent.startsWith( 'admin:BrokenLinks.' ) ? 'active' : '' )#"
+								   href="#event.buildLink( 'admin:BrokenLinks.index' )#"
+								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="404 Report">
+									<i class="bi bi-exclamation-triangle nav-icon"></i><span class="nav-label">404 Report</span>
+								</a>
+							</bx:if>
+							<bx:if canSysAudit>
+								<a class="nav-link nav-sub #( currentEvent.startsWith( 'admin:AuditLog.' ) ? 'active' : '' )#"
+								   href="#event.buildLink( 'admin:AuditLog.index' )#"
+								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Audit Log">
+									<i class="bi bi-journal-text nav-icon"></i><span class="nav-label">Audit Log</span>
+								</a>
+							</bx:if>
+							<bx:if canSysPrivacy>
+								<a class="nav-link nav-sub #( currentEvent.startsWith( 'admin:Privacy.' ) ? 'active' : '' )#"
+								   href="#event.buildLink( 'admin:Privacy.index' )#"
+								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Privacy">
+									<i class="bi bi-shield-lock nav-icon"></i><span class="nav-label">Privacy</span>
+								</a>
+							</bx:if>
+						</div>
 					</bx:if>
 
 					<!--- My account + Help — always visible to any signed-in
@@ -219,13 +458,33 @@
 					      links above with a spacer for visual grouping
 					      ("work stuff" vs "your account"). --->
 					<bx:if cbauth.isLoggedIn()>
-						<hr class="my-2">
+						<hr class="my-2 nav-separator">
 						<a class="nav-link #( currentEvent.startsWith( 'admin:Account.' ) ? 'active' : '' )#"
-						   href="#event.buildLink( 'admin:Account.show' )#">My account</a>
+						   href="#event.buildLink( 'admin:Account.show' )#"
+						   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="My account">
+							<i class="bi bi-person-circle nav-icon"></i><span class="nav-label">My account</span>
+						</a>
 						<a class="nav-link #( currentEvent.startsWith( 'admin:Help.' ) ? 'active' : '' )#"
-						   href="#event.buildLink( 'admin:Help.index' )#">Help</a>
+						   href="#event.buildLink( 'admin:Help.index' )#"
+						   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Help">
+							<i class="bi bi-question-circle nav-icon"></i><span class="nav-label">Help</span>
+						</a>
 					</bx:if>
+
+					<!--- Rail toggle — persists in localStorage as
+					      `bxblogger_sidebar_rail` (set in the IIFE near
+					      the bottom of this layout). Hidden below the
+					      md breakpoint where the whole rail UX is off. --->
+					<button type="button"
+					        class="admin-sidebar-toggle d-none d-md-flex mt-3"
+					        data-admin-sidebar-toggle
+					        aria-label="Collapse sidebar">
+						<i class="bi bi-chevron-double-left nav-icon" data-toggle-icon-full></i>
+						<i class="bi bi-chevron-double-right nav-icon" data-toggle-icon-rail></i>
+						<span class="nav-label ms-1">Collapse</span>
+					</button>
 				</nav>
+				</div>
 			</aside>
 			<main class="col-12 col-md-9 col-lg-10">
 				<!--- Flash messages --->
@@ -275,6 +534,32 @@
 	        crossorigin="anonymous" defer></script>
 	#wireScripts()#
 	<script src="https://cdn.jsdelivr.net/npm/easymde@2.18.0/dist/easymde.min.js" crossorigin="anonymous" defer></script>
+
+	<!--- Admin sidebar rail-mode toggle. The initial state was already
+	      applied to <html> by the inline script in <head>; here we
+	      wire up the toggle button so clicking it persists the user's
+	      choice to localStorage and flips the class without a reload. --->
+	<script>
+	( function () {
+	    if ( window.__bxBloggerSidebarRailHook ) return;
+	    window.__bxBloggerSidebarRailHook = true;
+
+	    function bind() {
+	        var btn = document.querySelector( "[data-admin-sidebar-toggle]" );
+	        if ( !btn ) return;
+	        btn.addEventListener( "click", function () {
+	            var on = document.documentElement.classList.toggle( "admin-rail" );
+	            try { localStorage.setItem( "bxblogger_sidebar_rail", on ? "1" : "0" ); } catch ( e ) {}
+	        } );
+	    }
+
+	    if ( document.readyState === "loading" ) {
+	        document.addEventListener( "DOMContentLoaded", bind );
+	    } else {
+	        bind();
+	    }
+	} )();
+	</script>
 
 	<!--- Bootstrap tooltip lifecycle — every [data-bs-toggle="tooltip"]
 	      gets a Bootstrap Tooltip instance on page load, and again
