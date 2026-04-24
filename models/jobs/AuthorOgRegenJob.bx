@@ -1,0 +1,71 @@
+/**
+ * bx-Blogger — AuthorOgRegenJob
+ *
+ * When an author changes a preference that affects OG composition —
+ * profile photo upload/remove, display name edit, OG-inclusion
+ * toggle change — every one of their posts needs a fresh OG render.
+ * Rather than enqueue a flood of OgImageJob payloads from inside
+ * the request handler, the handler dispatches a single
+ * AuthorOgRegenJob; this job runs on a worker, queries for the
+ * affected posts, and fans out one OgImageJob per post.
+ *
+ * Trashed + soft-deleted posts are skipped — their OG images aren't
+ * rendered for public consumption, so a stale card is harmless and
+ * a regen would just churn disk + the queue.
+ *
+ * Non-request-thread rules apply (CLAUDE.md): logging via writeLog,
+ * services via application.wireBox inside `handle()`.
+ */
+class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
+
+    function handle() {
+        var props    = variables.properties ?: {};
+        var authorId = structKeyExists( props, "authorId" ) ? props.authorId : 0;
+
+        if ( !isNumeric( authorId ) || int( authorId ) <= 0 ) {
+            throw(
+                type    = "bxBlogger.AuthorOgRegenJob.MalformedPayload",
+                message = "AuthorOgRegenJob requires a positive numeric authorId property."
+            );
+        }
+
+        var wirebox = application.wireBox;
+        var rows    = wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "posts" )
+            .where( "author_id", authorId )
+            .where( "status", "!=", "trashed" )
+            .whereNull( "deleted_at" )
+            .select( "id" )
+            .get();
+
+        // Propagate this job's connection to the downstream dispatches
+        // so a sync dispatch fans out sync (specs can verify the
+        // resulting og_version bumps in the same transaction) while
+        // a queue dispatch stays queue (production fire-and-forget).
+        var conn       = this.getConnection();
+        var dispatched = 0;
+        for ( var row in rows ) {
+            try {
+                wirebox.getInstance( "OgImageJob" )
+                    .onConnection( conn )
+                    .setProperties( { "postId" : int( row.id ) } )
+                    .dispatch();
+                dispatched++;
+            }
+            catch ( any e ) {
+                writeLog(
+                    file = "bxblogger",
+                    type = "warning",
+                    text = "AuthorOgRegenJob: dispatch failed for post=" & row.id & " — " & e.message
+                );
+            }
+        }
+
+        writeLog(
+            file = "bxblogger",
+            type = "information",
+            text = "AuthorOgRegenJob: dispatched " & dispatched & " of " & rows.len() & " posts for author=" & authorId
+        );
+    }
+
+}

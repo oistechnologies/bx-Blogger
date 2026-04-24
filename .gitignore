@@ -18,6 +18,12 @@ DEV-NOTES/
 
 # ForgeBox-installed dependencies — restored via `box install` (mvc layout)
 lib/
+# …but keep the project-root /lib/ folder where small Java JARs we
+# pull in via createObject("java",...) live. Application.bx adds
+# this dir to the classpath; the JARs ship with the repo so prod
+# image builds don't need to fetch them at runtime.
+!/lib/
+!/lib/*.jar
 
 # ForgeBox-installed dependencies — restored via `box install` (flat layout)
 modules/

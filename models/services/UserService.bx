@@ -524,6 +524,10 @@ class accessors="true" singleton {
         target.setProfilePhotoHeight( variables.profilePhotoOutDim );
         target.save();
 
+        // Photo just changed — every post by this author needs a
+        // fresh OG render so the new avatar shows on share cards.
+        dispatchAuthorOgRegen( arguments.userId );
+
         log.info( "UserService.setProfilePhoto: user=" & arguments.userId & " key=" & newKey );
         return target;
     }
@@ -563,8 +567,35 @@ class accessors="true" singleton {
             [ arguments.userId ]
         );
 
+        // Photo gone — same fan-out as upload so OG cards update.
+        dispatchAuthorOgRegen( arguments.userId );
+
         log.info( "UserService.removeProfilePhoto: user=" & arguments.userId & " key=" & oldKey );
         return target;
+    }
+
+    /**
+     * Public wrapper around the AuthorOgRegenJob dispatch — exposed
+     * so handlers (Account.updateProfile / Account.updatePreferences)
+     * can request a regen after persisting OG-affecting fields the
+     * service layer doesn't directly own (display_name, OG-inclusion
+     * toggles, the public-author-page flag, etc.). Callers that
+     * already touch the photo via this service get the fan-out
+     * for free.
+     */
+    void function dispatchAuthorOgRegenForUser( required numeric userId ) {
+        dispatchAuthorOgRegen( arguments.userId );
+    }
+
+    private void function dispatchAuthorOgRegen( required numeric userId ) {
+        try {
+            variables.wirebox.getInstance( "AuthorOgRegenJob" )
+                .setProperties( { "authorId" : int( arguments.userId ) } )
+                .dispatch();
+        }
+        catch ( any e ) {
+            log.warn( "UserService: AuthorOgRegenJob dispatch failed for user=" & arguments.userId & ": " & e.message );
+        }
     }
 
     // --------------------------------------------------------------------

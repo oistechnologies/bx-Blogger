@@ -138,6 +138,10 @@ class extends="coldbox.system.EventHandler" {
             userService.ensureAuthorSlug( user );
         }
 
+        // Display name shows on every OG card the user has ever
+        // authored — fan out a regen so the change propagates.
+        userService.dispatchAuthorOgRegenForUser( user.getId() );
+
         flash.put( "accountMessage", "Profile updated." );
         relocate( event = "admin:Account.show" );
     }
@@ -269,6 +273,10 @@ class extends="coldbox.system.EventHandler" {
         if ( user.getPublicAuthorPageEnabled() ) {
             userService.ensureAuthorSlug( user );
         }
+
+        // OG-include toggles affect what's composed on every share
+        // card; fan out a regen across the user's posts.
+        userService.dispatchAuthorOgRegenForUser( user.getId() );
 
         flash.put( "accountMessage", "Preferences updated." );
         relocate( event = "admin:Account.show" );

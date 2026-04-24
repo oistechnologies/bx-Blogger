@@ -28,6 +28,16 @@ class {
 	this.timezone             = getSystemSetting( "APP_TIMEZONE", "America/New_York" );
 	this.whiteSpaceManagement = "smart";
 
+	// JVM classpath additions — `/lib/*.jar` ships small Java libs we
+	// pull in via `createObject( "java", "..." )`. Currently:
+	//   - io.nayuki:qrcodegen:1.8.0 — single-file public-domain QR
+	//     code generator used by OgImageService for the URL+QR pair
+	//     in the bottom-right of share cards.
+	this.javaSettings = {
+		loadPaths      : [ "./lib/" ],
+		reloadOnChange : false
+	};
+
 	/**
 	 * ColdBox Bootstrap Settings
 	 *

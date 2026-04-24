@@ -56,6 +56,12 @@ class accessors="true" singleton {
     // it when both are drawn. Pure visual breathing room.
     variables.authorLineGap   = 12;
 
+    // QR + URL (bottom-right) — only drawn when the author's
+    // ogIncludeSocialsAndUrl preference is on.
+    variables.qrModulePixels  = 6;     // pixel width per QR module
+    variables.qrQuietZonePx   = 12;    // white border around the QR
+    variables.qrSidePadding   = 16;    // gap between URL text + QR
+
     // --------------------------------------------------------------------
     // Public API
     // --------------------------------------------------------------------
@@ -169,6 +175,7 @@ class accessors="true" singleton {
             drawSiteName( g, Font, Color, ctx );
             drawLogo(     g, ImageIO );
             drawAuthorBlock( g, Font, Color, ImageIO, ctx );
+            drawUrlAndQr(    g, Font, Color, ctx );
 
             var baos = BAOS.init();
             ImageIO.write( img, "png", baos );
@@ -215,8 +222,28 @@ class accessors="true" singleton {
             "includeEmail"     : includeEmail,
             "includeSocials"   : includeSocials,
             "hasUsablePhoto"   : hasUsablePhoto,
-            "profilePhotoKey"  : hasUsablePhoto ? author.getProfilePhotoPath() : ""
+            "profilePhotoKey"  : hasUsablePhoto ? author.getProfilePhotoPath() : "",
+            "postUrl"          : buildPostUrl( arguments.post )
         };
+    }
+
+    /**
+     * Absolute public URL for a post, derived from APP_URL + the post
+     * type's path convention. Mirrors the private `publicPathFor`
+     * used inside PostService — kept inline here rather than DRY'd
+     * because OgImageService is on the cbq worker thread and we
+     * want zero cross-service injection in the render path.
+     */
+    private string function buildPostUrl( required any post ) {
+        var base = trim( getSystemSetting( "APP_URL", "" ) );
+        if ( !len( base ) ) base = trim( settingService.get( "site_url", "" ) );
+        base = reReplace( base, "/+$", "", "all" );
+        if ( !len( base ) ) return "";
+
+        var slug = arguments.post.getSlug() ?: "";
+        var type = arguments.post.getPostType() ?: "post";
+        if ( !len( slug ) ) return base;
+        return type == "page" ? ( base & "/" & slug ) : ( base & "/blog/" & slug );
     }
 
     private void function drawTitle( required any g, required any Font, required any Color, required struct ctx ) {
@@ -356,6 +383,108 @@ class accessors="true" singleton {
             arguments.g.setColor( decodeColor( arguments.Color, variables.accentColorHex ) );
             arguments.g.drawString( "by " & arguments.ctx.authorName, nameX, nameBaseline );
         }
+    }
+
+    /**
+     * Bottom-right URL text + paired QR code. Drawn only when the
+     * author has `ogIncludeSocialsAndUrl` enabled AND the post URL
+     * resolved to non-empty. Either piece missing skips the entire
+     * block — partial render would look broken.
+     *
+     * Layout: QR in the bottom-right corner with a quiet-zone white
+     * background (B2-friendly contrast against the dark canvas);
+     * URL text right-aligned to the QR's left edge, vertically
+     * centered with the QR. Long URLs are clipped with an ellipsis
+     * before they walk over the author block on the left.
+     */
+    private void function drawUrlAndQr( required any g, required any Font, required any Color, required struct ctx ) {
+        if ( !arguments.ctx.includeSocials ) return;
+        if ( !len( arguments.ctx.postUrl ) ) return;
+
+        try {
+            var QrCode    = createObject( "java", "io.nayuki.qrcodegen.QrCode" );
+            var Ecc       = createObject( "java", "io.nayuki.qrcodegen.QrCode$Ecc" );
+            var qr        = QrCode.encodeText( arguments.ctx.postUrl, Ecc.MEDIUM );
+
+            // Compute pixel size of the rendered QR + its quiet-zone
+            // white border. Nayuki's `qr.size` is the module count
+            // (e.g., 25 for v2 with 25×25 modules).
+            var modules    = qr.size;
+            var modulePx   = variables.qrModulePixels;
+            var quiet      = variables.qrQuietZonePx;
+            var qrPixels   = modules * modulePx;
+            var blockSize  = qrPixels + ( 2 * quiet );
+
+            // Anchor: bottom-right, sitting just above the accent bar.
+            var blockRight  = variables.canvasWidth  - variables.paddingX;
+            var blockBottom = variables.canvasHeight - variables.paddingY;
+            var blockLeft   = blockRight  - blockSize;
+            var blockTop    = blockBottom - blockSize;
+
+            // White background rectangle (the quiet zone) so the QR
+            // is high-contrast against the dark canvas + scannable.
+            arguments.g.setColor( decodeColor( arguments.Color, "##FFFFFF" ) );
+            arguments.g.fillRoundRect(
+                javaCast( "int", blockLeft ),
+                javaCast( "int", blockTop ),
+                javaCast( "int", blockSize ),
+                javaCast( "int", blockSize ),
+                javaCast( "int", 8 ),
+                javaCast( "int", 8 )
+            );
+
+            // QR modules — solid black squares.
+            arguments.g.setColor( decodeColor( arguments.Color, "##000000" ) );
+            for ( var y = 0; y < modules; y++ ) {
+                for ( var x = 0; x < modules; x++ ) {
+                    if ( qr.getModule( javaCast( "int", x ), javaCast( "int", y ) ) ) {
+                        arguments.g.fillRect(
+                            javaCast( "int", blockLeft + quiet + ( x * modulePx ) ),
+                            javaCast( "int", blockTop  + quiet + ( y * modulePx ) ),
+                            javaCast( "int", modulePx ),
+                            javaCast( "int", modulePx )
+                        );
+                    }
+                }
+            }
+
+            // URL text — right-aligned to the QR's left edge,
+            // vertically centered with the QR. Trimmed to fit the
+            // available width on the left of the QR, with an
+            // ellipsis when it would otherwise collide with the
+            // author block on the left side of the canvas.
+            var urlFont = arguments.Font.init( "SansSerif", arguments.Font.PLAIN, 22 );
+            arguments.g.setFont( urlFont );
+            arguments.g.setColor( decodeColor( arguments.Color, variables.fgMutedHex ) );
+            var fm        = arguments.g.getFontMetrics();
+            // Leave the left half of the canvas to the author block —
+            // start text no further left than canvasWidth / 2.
+            var maxTextLeft  = int( variables.canvasWidth / 2 );
+            var maxTextWidth = blockLeft - variables.qrSidePadding - maxTextLeft;
+            var displayUrl   = stripUrlScheme( arguments.ctx.postUrl );
+            var fitted       = clipToWidth( fm, displayUrl, maxTextWidth );
+            // Ellipsize when clipping happened.
+            if ( len( fitted ) < len( displayUrl ) ) {
+                fitted = clipToWidth( fm, fitted & "...", maxTextWidth );
+            }
+            var textWidth = fm.stringWidth( fitted );
+            var textX     = blockLeft - variables.qrSidePadding - textWidth;
+            var textY     = int( ( blockTop + blockBottom ) / 2 ) + int( fm.getAscent() / 2 ) - 2;
+            arguments.g.drawString( fitted, javaCast( "int", textX ), javaCast( "int", textY ) );
+        }
+        catch ( any e ) {
+            log.warn( "OgImageService.drawUrlAndQr: skipped — " & e.message );
+        }
+    }
+
+    /**
+     * Trim the leading scheme from a URL (`https://` / `http://`)
+     * for compact display next to the QR. The QR itself encodes the
+     * full URL; the visible text is just for humans skimming the
+     * card.
+     */
+    private string function stripUrlScheme( required string url ) {
+        return reReplaceNoCase( arguments.url, "^https?://", "" );
     }
 
     /**

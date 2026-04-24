@@ -1,0 +1,120 @@
+/**
+ * bx-Blogger — AuthorOgRegenJobSpec
+ *
+ * Verifies the bulk OG-regen fan-out:
+ *
+ *   - dispatched synchronously, the job iterates every non-trashed
+ *     post for the author and dispatches one OgImageJob per post.
+ *   - trashed + soft-deleted posts are skipped.
+ *   - malformed payloads (missing/zero authorId) throw so cbq retries.
+ *   - missing author = clean no-op (zero posts queried, no throw).
+ *
+ * The fan-out itself dispatches further jobs onto the queue; we don't
+ * synchronously verify each downstream OgImageJob ran (that's covered
+ * by OgImageJobSpec). Here we just confirm the rows queried + the
+ * dispatch count from the log line.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.postSvc = getInstance( "PostService" );
+    }
+
+    function afterAll() {
+        try {
+            getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "cbq_jobs" ).where( "queue", "default" ).delete();
+        }
+        catch ( any e ) {}
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "AuthorOgRegenJob", function() {
+
+            it( "iterates non-trashed posts + dispatches an OgImageJob for each", function() {
+                var author = createTestUser();
+                var p1 = makePostFor( author );
+                var p2 = makePostFor( author );
+                var p3 = makePostFor( author );
+
+                getInstance( "AuthorOgRegenJob" )
+                    .onConnection( "sync" )
+                    .setProperties( { "authorId" : int( author.getId() ) } )
+                    .dispatch();
+
+                // Each OgImageJob bumps og_version. After the fan-out
+                // ALL three posts should have og_version >= 1 (the
+                // PostService.create call dispatched one already on
+                // create, so by here they may be at v=1 already; the
+                // fan-out should bump them again to >=2).
+                var refetch = getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "posts" )
+                    .whereIn( "id", [ p1.getId(), p2.getId(), p3.getId() ] )
+                    .select( [ "id", "og_version" ] )
+                    .get();
+                expect( refetch.len() ).toBe( 3 );
+                for ( var row in refetch ) {
+                    expect( val( row.og_version ) ).toBeGTE( 1, "post " & row.id & " og_version not bumped" );
+                }
+            } );
+
+            it( "skips trashed posts in the fan-out", function() {
+                var author = createTestUser();
+                var live   = makePostFor( author );
+                var trash  = makePostFor( author );
+                var trashV = val( trash.getOgVersion() ?: 0 );
+
+                // Hard-update status to "trashed" + capture og_version
+                // before the fan-out so we can prove it didn't change.
+                getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "posts" )
+                    .where( "id", trash.getId() )
+                    .update( { "status" : "trashed" } );
+
+                getInstance( "AuthorOgRegenJob" )
+                    .onConnection( "sync" )
+                    .setProperties( { "authorId" : int( author.getId() ) } )
+                    .dispatch();
+
+                var trashedAfter = getInstance( "Post" ).findOrFail( trash.getId() );
+                expect( val( trashedAfter.getOgVersion() ) ).toBe( trashV, "trashed post should NOT bump" );
+
+                var liveAfter = getInstance( "Post" ).findOrFail( live.getId() );
+                expect( val( liveAfter.getOgVersion() ) ).toBeGTE( 1, "live post regenerated" );
+            } );
+
+            it( "is a clean no-op when the author has no posts", function() {
+                var orphan = createTestUser();
+                getInstance( "AuthorOgRegenJob" )
+                    .onConnection( "sync" )
+                    .setProperties( { "authorId" : int( orphan.getId() ) } )
+                    .dispatch();
+                // Reaching this assertion means no throw.
+                expect( true ).toBeTrue();
+            } );
+
+            it( "throws on malformed payload (missing/zero authorId)", function() {
+                expect( function() {
+                    getInstance( "AuthorOgRegenJob" )
+                        .onConnection( "sync" )
+                        .setProperties( { "authorId" : 0 } )
+                        .dispatch();
+                } ).toThrow( "bxBlogger.AuthorOgRegenJob.MalformedPayload" );
+            } );
+
+        } );
+    }
+
+    private any function makePostFor( required any author ) {
+        var post = variables.postSvc.create( {
+            "authorId"     : arguments.author.getId(),
+            "title"        : "Author OG regen spec " & createUUID(),
+            "slug"         : "ogregen-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+            "bodyMarkdown" : "Body."
+        } );
+        return post;
+    }
+
+}

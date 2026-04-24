@@ -13,6 +13,14 @@ class {
 	this.sessionTimeout     = createTimespan( 0, 0, 15, 0 );
 	this.applicationTimeout = createTimespan( 0, 0, 15, 0 );
 
+	// Mirror the main Application.bx — pull in /lib/*.jar so specs
+	// that exercise OgImageService's QR code generation can resolve
+	// `io.nayuki.qrcodegen.QrCode`.
+	this.javaSettings = {
+		loadPaths      : [ "../lib/" ],
+		reloadOnChange : false
+	};
+
 	// Datasource — mirrors /Application.bx so tests hit the same MySQL instance
 	this.datasources = {
 		"coldbox": {
