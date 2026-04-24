@@ -1,14 +1,23 @@
 <bx:output>
 #view( view = "partials/heading", args = { "title" : "My account" } )#
 
+<!--- Flash messages span both columns. --->
+<bx:if flash.exists( "accountMessage" )>
+	<div class="alert alert-success">#encodeForHTML( flash.get( "accountMessage" ) )#</div>
+</bx:if>
+<bx:if flash.exists( "accountError" )>
+	<div class="alert alert-danger">#encodeForHTML( flash.get( "accountError" ) )#</div>
+</bx:if>
+
 <div class="row">
-	<div class="col-12 col-lg-8">
-		<bx:if flash.exists( "accountMessage" )>
-			<div class="alert alert-success">#encodeForHTML( flash.get( "accountMessage" ) )#</div>
-		</bx:if>
-		<bx:if flash.exists( "accountError" )>
-			<div class="alert alert-danger">#encodeForHTML( flash.get( "accountError" ) )#</div>
-		</bx:if>
+	<!---=============================================================
+	     LEFT COLUMN (wider) — identity + security + preferences.
+	     col-lg-7 / col-lg-5 gives the left column the wider share of
+	     the admin main pane so the bio EasyMDE has room to breathe
+	     while the right column keeps its smaller media-ish cards
+	     compact.
+	==============================================================--->
+	<div class="col-12 col-lg-7">
 
 		<!---------- Display name + bios + author slug ---------->
 		<div class="card stat-card stat-card-primary mb-4">
@@ -77,109 +86,88 @@
 			</div>
 		</div>
 
-		<!---------- Profile photo ---------->
-		<div class="card stat-card stat-card-primary mb-4">
-			<div class="card-header card-header-soft card-header-soft-primary">
-				<span class="h6 mb-0">Profile photo</span>
+		<!---------- Email change ---------->
+		<div class="card stat-card stat-card-info mb-4">
+			<div class="card-header card-header-soft card-header-soft-info">
+				<span class="h6 mb-0">Email address</span>
 			</div>
 			<div class="card-body">
-				<div class="d-flex align-items-start gap-3 flex-wrap">
-					<div class="flex-shrink-0">
-						<bx:if prc.user.hasProfilePhoto()>
-							<img src="#event.buildLink( prc.user.getProfilePhotoPath() )#?v=#dateTimeFormat( prc.user.getUpdatedAt(), 'yyyyMMddHHmmss' )#"
-							     alt="Current profile photo"
-							     width="128"
-							     height="128"
-							     class="rounded border"
-							     style="object-fit: cover;">
-						<bx:else>
-							<div class="rounded border bg-light d-flex align-items-center justify-content-center"
-							     style="width: 128px; height: 128px; color: ##adb5bd;">
-								<i class="bi bi-person-fill" style="font-size: 3rem;"></i>
-							</div>
-						</bx:if>
+				<p class="text-muted small">
+					Current: <code>#encodeForHTML( prc.user.getEmail() )#</code>
+					<bx:if len( prc.user.getPendingEmail() ?: "" )>
+						<br>
+						<span class="badge bg-warning text-dark">Pending</span>
+						Waiting for verification of <code>#encodeForHTML( prc.user.getPendingEmail() )#</code>.
+					</bx:if>
+				</p>
+				<form method="POST" action="#event.buildLink( 'admin/account/email' )#" autocomplete="off">
+					<div class="mb-3">
+						<label for="email" class="form-label">New email address</label>
+						<input type="email"
+						       class="form-control"
+						       id="email"
+						       name="email"
+						       required
+						       autocomplete="email">
+						<div class="form-text">
+							We'll send a verification link to the new address. Your current email
+							stays in place until you click the link.
+						</div>
 					</div>
-					<div class="flex-grow-1" style="min-width: 260px;">
-						<form method="POST"
-						      action="#event.buildLink( 'admin/account/photo' )#"
-						      enctype="multipart/form-data">
-							<div class="mb-2">
-								<label for="photo" class="form-label">Upload new photo</label>
-								<input type="file"
-								       class="form-control"
-								       id="photo"
-								       name="photo"
-								       accept="image/jpeg,image/png,image/webp"
-								       required>
-								<div class="form-text">
-									JPEG, PNG, or WebP. Max 5 MB. Source up to 2000×2000 — will
-									be automatically cropped to a 512×512 square.
-								</div>
-							</div>
-							<button type="submit" class="btn btn-primary">
-								<i class="bi bi-upload me-1"></i> Upload
-							</button>
-							<bx:if prc.user.hasProfilePhoto()>
-								&nbsp;
-								<button type="submit"
-								        form="removePhotoForm"
-								        class="btn btn-outline-danger">
-									<i class="bi bi-trash me-1"></i> Remove
-								</button>
-							</bx:if>
-						</form>
-						<bx:if prc.user.hasProfilePhoto()>
-							<form id="removePhotoForm"
-							      method="POST"
-							      action="#event.buildLink( 'admin/account/photo/remove' )#"
-							      class="d-none"></form>
-						</bx:if>
+					<div class="mb-3">
+						<label for="emailCurrentPassword" class="form-label">Current password</label>
+						<input type="password"
+						       class="form-control"
+						       id="emailCurrentPassword"
+						       name="currentPassword"
+						       required
+						       autocomplete="current-password">
 					</div>
-				</div>
+					<button type="submit" class="btn btn-outline-primary">Request email change</button>
+				</form>
 			</div>
 		</div>
 
-		<!---------- Social links ---------->
-		<div class="card stat-card stat-card-info mb-4">
-			<div class="card-header card-header-soft card-header-soft-info">
-				<span class="h6 mb-0">Social links</span>
+		<!---------- Password change ---------->
+		<div class="card stat-card stat-card-warning mb-4">
+			<div class="card-header card-header-soft card-header-soft-warning">
+				<span class="h6 mb-0">Password</span>
 			</div>
 			<div class="card-body">
-				<form method="POST" action="#event.buildLink( 'admin/account/socials' )#">
-					<p class="text-muted small mb-3">
-						Optional. All links render on your public author page and in the
-						header of shareable OG cards. Leave any field blank to skip that
-						network.
-					</p>
-
-					<bx:script>
-						socialFields = [
-							{ name: "websiteUrl",  label: "Website",   icon: "bi-globe",          value: prc.user.getWebsiteUrl()  ?: "" },
-							{ name: "twitterUrl",  label: "Twitter/X", icon: "bi-twitter-x",      value: prc.user.getTwitterUrl()  ?: "" },
-							{ name: "linkedinUrl", label: "LinkedIn",  icon: "bi-linkedin",       value: prc.user.getLinkedinUrl() ?: "" },
-							{ name: "githubUrl",   label: "GitHub",    icon: "bi-github",         value: prc.user.getGithubUrl()   ?: "" },
-							{ name: "gitlabUrl",   label: "GitLab",    icon: "bi-git",            value: prc.user.getGitlabUrl()   ?: "" },
-							{ name: "mastodonUrl", label: "Mastodon",  icon: "bi-mastodon",       value: prc.user.getMastodonUrl() ?: "" },
-							{ name: "blueskyUrl",  label: "Bluesky",   icon: "bi-cloud",          value: prc.user.getBlueskyUrl()  ?: "" },
-							{ name: "facebookUrl", label: "Facebook",  icon: "bi-facebook",       value: prc.user.getFacebookUrl() ?: "" }
-						];
-					</bx:script>
-					<bx:loop array="#socialFields#" item="field">
-						<div class="mb-3">
-							<label for="#field.name#" class="form-label">
-								<i class="bi #field.icon# me-1"></i> #field.label#
-							</label>
-							<input type="url"
-							       class="form-control"
-							       id="#field.name#"
-							       name="#field.name#"
-							       maxlength="500"
-							       placeholder="https://..."
-							       value="#encodeForHTMLAttribute( field.value )#">
+				<form method="POST" action="#event.buildLink( 'admin/account/password' )#" autocomplete="off">
+					<div class="mb-3">
+						<label for="currentPassword" class="form-label">Current password</label>
+						<input type="password"
+						       class="form-control"
+						       id="currentPassword"
+						       name="currentPassword"
+						       required
+						       autocomplete="current-password">
+					</div>
+					<div class="mb-3">
+						<label for="newPassword" class="form-label">New password</label>
+						<input type="password"
+						       class="form-control"
+						       id="newPassword"
+						       name="newPassword"
+						       required
+						       minlength="12"
+						       autocomplete="new-password">
+						<div class="form-text">
+							At least 12 characters, with a letter and a digit. Avoid your name or email.
 						</div>
-					</bx:loop>
-
-					<button type="submit" class="btn btn-primary">Save social links</button>
+					</div>
+					<div class="mb-3">
+						<label for="confirmPassword" class="form-label">Confirm new password</label>
+						<input type="password"
+						       class="form-control"
+						       id="confirmPassword"
+						       name="confirmPassword"
+						       required
+						       minlength="12"
+						       autocomplete="new-password">
+					</div>
+					<button type="submit" class="btn btn-primary">Change password</button>
 				</form>
 			</div>
 		</div>
@@ -261,94 +249,122 @@
 			</div>
 		</div>
 
-		<!---------- Email change ---------->
-		<div class="card stat-card stat-card-info mb-4">
-			<div class="card-header card-header-soft card-header-soft-info">
-				<span class="h6 mb-0">Email address</span>
+	</div>
+
+	<!---=============================================================
+	     RIGHT COLUMN (narrower) — media-ish things + data export.
+	==============================================================--->
+	<div class="col-12 col-lg-5">
+
+		<!---------- Profile photo ---------->
+		<div class="card stat-card stat-card-primary mb-4">
+			<div class="card-header card-header-soft card-header-soft-primary">
+				<span class="h6 mb-0">Profile photo</span>
 			</div>
 			<div class="card-body">
-				<p class="text-muted small">
-					Current: <code>#encodeForHTML( prc.user.getEmail() )#</code>
-					<bx:if len( prc.user.getPendingEmail() ?: "" )>
-						<br>
-						<span class="badge bg-warning text-dark">Pending</span>
-						Waiting for verification of <code>#encodeForHTML( prc.user.getPendingEmail() )#</code>.
-					</bx:if>
-				</p>
-				<form method="POST" action="#event.buildLink( 'admin/account/email' )#" autocomplete="off">
-					<div class="mb-3">
-						<label for="email" class="form-label">New email address</label>
-						<input type="email"
-						       class="form-control"
-						       id="email"
-						       name="email"
-						       required
-						       autocomplete="email">
-						<div class="form-text">
-							We'll send a verification link to the new address. Your current email
-							stays in place until you click the link.
-						</div>
+				<div class="d-flex align-items-start gap-3 flex-wrap">
+					<div class="flex-shrink-0">
+						<bx:if prc.user.hasProfilePhoto()>
+							<img src="#prc.profilePhotoUrl#?v=#dateTimeFormat( prc.user.getUpdatedAt(), 'yyyyMMddHHmmss' )#"
+							     alt="Current profile photo"
+							     width="128"
+							     height="128"
+							     class="rounded border"
+							     style="object-fit: cover;">
+						<bx:else>
+							<div class="rounded border bg-light d-flex align-items-center justify-content-center"
+							     style="width: 128px; height: 128px; color: ##adb5bd;">
+								<i class="bi bi-person-fill" style="font-size: 3rem;"></i>
+							</div>
+						</bx:if>
 					</div>
-					<div class="mb-3">
-						<label for="emailCurrentPassword" class="form-label">Current password</label>
-						<input type="password"
-						       class="form-control"
-						       id="emailCurrentPassword"
-						       name="currentPassword"
-						       required
-						       autocomplete="current-password">
+					<div class="flex-grow-1" style="min-width: 180px;">
+						<form method="POST"
+						      action="#event.buildLink( 'admin/account/photo' )#"
+						      enctype="multipart/form-data">
+							<div class="mb-2">
+								<label for="photo" class="form-label">Upload new photo</label>
+								<input type="file"
+								       class="form-control"
+								       id="photo"
+								       name="photo"
+								       accept="image/jpeg,image/png,image/webp"
+								       required>
+								<div class="form-text">
+									JPEG, PNG, or WebP. Max 5 MB. Source up to 2000×2000 — will
+									be automatically cropped to a 512×512 square.
+								</div>
+							</div>
+							<button type="submit" class="btn btn-primary">
+								<i class="bi bi-upload me-1"></i> Upload
+							</button>
+							<bx:if prc.user.hasProfilePhoto()>
+								&nbsp;
+								<button type="submit"
+								        form="removePhotoForm"
+								        class="btn btn-outline-danger">
+									<i class="bi bi-trash me-1"></i> Remove
+								</button>
+							</bx:if>
+						</form>
+						<bx:if prc.user.hasProfilePhoto()>
+							<form id="removePhotoForm"
+							      method="POST"
+							      action="#event.buildLink( 'admin/account/photo/remove' )#"
+							      class="d-none"></form>
+						</bx:if>
 					</div>
-					<button type="submit" class="btn btn-outline-primary">Request email change</button>
-				</form>
+				</div>
 			</div>
 		</div>
 
-		<!---------- Password change ---------->
-		<div class="card stat-card stat-card-warning">
-			<div class="card-header card-header-soft card-header-soft-warning">
-				<span class="h6 mb-0">Password</span>
+		<!---------- Social links ---------->
+		<div class="card stat-card stat-card-info mb-4">
+			<div class="card-header card-header-soft card-header-soft-info">
+				<span class="h6 mb-0">Social links</span>
 			</div>
 			<div class="card-body">
-				<form method="POST" action="#event.buildLink( 'admin/account/password' )#" autocomplete="off">
-					<div class="mb-3">
-						<label for="currentPassword" class="form-label">Current password</label>
-						<input type="password"
-						       class="form-control"
-						       id="currentPassword"
-						       name="currentPassword"
-						       required
-						       autocomplete="current-password">
-					</div>
-					<div class="mb-3">
-						<label for="newPassword" class="form-label">New password</label>
-						<input type="password"
-						       class="form-control"
-						       id="newPassword"
-						       name="newPassword"
-						       required
-						       minlength="12"
-						       autocomplete="new-password">
-						<div class="form-text">
-							At least 12 characters, with a letter and a digit. Avoid your name or email.
+				<form method="POST" action="#event.buildLink( 'admin/account/socials' )#">
+					<p class="text-muted small mb-3">
+						Optional. All links render on your public author page and in the
+						header of shareable OG cards. Leave any field blank to skip that
+						network.
+					</p>
+
+					<bx:script>
+						socialFields = [
+							{ name: "websiteUrl",  label: "Website",   icon: "bi-globe",     value: prc.user.getWebsiteUrl()  ?: "" },
+							{ name: "twitterUrl",  label: "Twitter/X", icon: "bi-twitter-x", value: prc.user.getTwitterUrl()  ?: "" },
+							{ name: "linkedinUrl", label: "LinkedIn",  icon: "bi-linkedin",  value: prc.user.getLinkedinUrl() ?: "" },
+							{ name: "githubUrl",   label: "GitHub",    icon: "bi-github",    value: prc.user.getGithubUrl()   ?: "" },
+							{ name: "gitlabUrl",   label: "GitLab",    icon: "bi-git",       value: prc.user.getGitlabUrl()   ?: "" },
+							{ name: "mastodonUrl", label: "Mastodon",  icon: "bi-mastodon",  value: prc.user.getMastodonUrl() ?: "" },
+							{ name: "blueskyUrl",  label: "Bluesky",   icon: "bi-cloud",     value: prc.user.getBlueskyUrl()  ?: "" },
+							{ name: "facebookUrl", label: "Facebook",  icon: "bi-facebook",  value: prc.user.getFacebookUrl() ?: "" }
+						];
+					</bx:script>
+					<bx:loop array="#socialFields#" item="field">
+						<div class="mb-3">
+							<label for="#field.name#" class="form-label">
+								<i class="bi #field.icon# me-1"></i> #field.label#
+							</label>
+							<input type="url"
+							       class="form-control"
+							       id="#field.name#"
+							       name="#field.name#"
+							       maxlength="500"
+							       placeholder="https://..."
+							       value="#encodeForHTMLAttribute( field.value )#">
 						</div>
-					</div>
-					<div class="mb-3">
-						<label for="confirmPassword" class="form-label">Confirm new password</label>
-						<input type="password"
-						       class="form-control"
-						       id="confirmPassword"
-						       name="confirmPassword"
-						       required
-						       minlength="12"
-						       autocomplete="new-password">
-					</div>
-					<button type="submit" class="btn btn-primary">Change password</button>
+					</bx:loop>
+
+					<button type="submit" class="btn btn-primary">Save social links</button>
 				</form>
 			</div>
 		</div>
 
 		<!---------- Phase 8.D.1 — GDPR self-serve data export ---------->
-		<div class="card stat-card stat-card-secondary mt-4">
+		<div class="card stat-card stat-card-secondary mb-4">
 			<div class="card-header card-header-soft card-header-soft-secondary">
 				<span class="h6 mb-0">Download my data</span>
 			</div>
@@ -365,6 +381,7 @@
 				</a>
 			</div>
 		</div>
+
 	</div>
 </div>
 

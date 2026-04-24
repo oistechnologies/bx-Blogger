@@ -672,6 +672,20 @@ class accessors="true" singleton {
         return baos.toByteArray();
     }
 
+    /**
+     * Public-facing URL for a user's profile photo, via the cbfs
+     * `media` disk's own `url()` helper. Returns "" when no photo
+     * is on file. Callers (admin views, theme templates, OG
+     * composition) should ALWAYS route through this rather than
+     * concatenating paths themselves — it's the only way the URL
+     * stays correct when the disk provider is flipped between
+     * Local and S3.
+     */
+    string function profilePhotoUrl( required any user ) {
+        if ( !arguments.user.hasProfilePhoto() ) return "";
+        return variables.cbfs.get( "media" ).url( arguments.user.getProfilePhotoPath() );
+    }
+
     private void function deleteProfilePhotoFileSafe( required string path ) {
         if ( !len( arguments.path ) ) return;
         try {

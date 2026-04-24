@@ -48,7 +48,10 @@ class extends="coldbox.system.EventHandler" {
         // user (id = 0) we pass null; the view hides the widget then
         // and surfaces an explainer that photos land after first save.
         if ( prc.userId gt 0 ) {
-            prc.targetUser = getInstance( "User" ).find( prc.userId );
+            prc.targetUser            = getInstance( "User" ).find( prc.userId );
+            prc.targetProfilePhotoUrl = isNull( prc.targetUser )
+                ? ""
+                : userService.profilePhotoUrl( prc.targetUser );
         }
 
         event.setView( view = "users/editor" );

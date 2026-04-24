@@ -26,7 +26,7 @@
 			<div class="d-flex align-items-start gap-3 flex-wrap">
 				<div class="flex-shrink-0">
 					<bx:if prc.targetUser.hasProfilePhoto()>
-						<img src="#event.buildLink( prc.targetUser.getProfilePhotoPath() )#?v=#dateTimeFormat( prc.targetUser.getUpdatedAt(), 'yyyyMMddHHmmss' )#"
+						<img src="#prc.targetProfilePhotoUrl#?v=#dateTimeFormat( prc.targetUser.getUpdatedAt(), 'yyyyMMddHHmmss' )#"
 						     alt="Current profile photo"
 						     width="128"
 						     height="128"

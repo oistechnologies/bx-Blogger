@@ -35,8 +35,9 @@ class extends="coldbox.system.EventHandler" {
      * GET /admin/account — render the profile form.
      */
     function show( event, rc, prc ) {
-        prc.pageTitle = "My account";
-        prc.user      = cbauth.getUser();
+        prc.pageTitle       = "My account";
+        prc.user            = cbauth.getUser();
+        prc.profilePhotoUrl = userService.profilePhotoUrl( prc.user );
         event.setView( view = "account/show" );
     }
 
@@ -110,10 +111,8 @@ class extends="coldbox.system.EventHandler" {
             return;
         }
 
-        // author_slug is optional. Populate only when the user asked
-        // for one (left blank preserves whatever was there, including
-        // nothing — the public author page requires both the toggle +
-        // a slug; absent slug = 404 same as opt-out).
+        // Explicit slug change: validate + save now so we can bail
+        // early on collision without discarding the rest of the form.
         if ( len( trim( rc.authorSlug ) ) ) {
             try {
                 userService.setAuthorSlug( user, rc.authorSlug );
@@ -129,6 +128,15 @@ class extends="coldbox.system.EventHandler" {
         user.setBioShort( bioShort );
         user.setBio( rc.bio ?: "" );    // long markdown — no length cap beyond TEXT
         user.save();
+
+        // Auto-generate a slug if the user left the field blank AND
+        // doesn't have one on file yet. Matches the placeholder
+        // promise ("auto-generated on first save"). Runs AFTER save
+        // so the new display_name (if it just changed) feeds the
+        // slugifier rather than the stale value.
+        if ( !len( trim( rc.authorSlug ) ) && !len( user.getAuthorSlug() ?: "" ) ) {
+            userService.ensureAuthorSlug( user );
+        }
 
         flash.put( "accountMessage", "Profile updated." );
         relocate( event = "admin:Account.show" );
