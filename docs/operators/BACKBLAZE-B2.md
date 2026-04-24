@@ -161,7 +161,19 @@ BACKUP_S3_ENDPOINT=https://s3.us-west-004.backblazeb2.com
 BACKUP_S3_REGION=us-west-004
 BACKUP_S3_ACCESS_KEY=<keyID from §3.2>
 BACKUP_S3_SECRET_KEY=<applicationKey from §3.2>
+
+# Optional — folder prefix inside the bucket. Defaults to the compose
+# project name (see docker-compose.prod.yml), which gives each stack
+# its own folder when several bx-Blogger installs share one bucket.
+# Leave blank if you want objects at the bucket root.
+# BACKUP_S3_PREFIX=site-a
 ```
+
+**On the `backups` key's scope:** configure it as **write-only** (check *Write files* only, leave *Read files* unchecked when you create the application key in §3.2). The app never needs to read its own backups — restore is an ops-tooling concern done from a separate key. A write-only key means a compromised app container can't exfiltrate old backups.
+
+**`BACKUP_S3_URL_STYLE`** stays on its default (`path`) for B2. s3sdk's virtual-style URL builder only knows how to inject the bucket name into `amazonaws.com`-shaped hostnames; for every non-AWS provider (B2, DO Spaces, Wasabi, MinIO) path-style is the working configuration.
+
+**Endpoint mangling — already handled, FYI only:** s3sdk's URL builder tries to prepend `<awsRegion>.` onto `awsDomain` for non-AWS hosts, which would turn `s3.us-west-004.backblazeb2.com` into `us-west-004.s3.us-west-004.backblazeb2.com` (valid DNS, wrong service entry). The `CbfsEndpointRepairInterceptor` rewrites the hostname at disk-start to match `BACKUP_S3_ENDPOINT` verbatim — you don't need to do anything special. If you see 403 AccessDenied with body "Access Denied", first verify the bucket + key scope in B2's console; endpoint shape is already correct.
 
 **Region notes:**
 

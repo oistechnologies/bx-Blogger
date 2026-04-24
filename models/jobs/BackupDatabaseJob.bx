@@ -162,9 +162,14 @@ class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
     /**
      * Upload the backup to S3 when `BACKUP_S3_BUCKET` is configured.
      * Uses cbfs's S3 provider registered as the `backups` disk in
-     * config/Coldbox.bx (added in Phase 6.G when this job ships).
-     * Silent no-op if the bucket isn't set — local-only is a valid
-     * deployment.
+     * config/Coldbox.bx. Silent no-op if the bucket isn't set —
+     * local-only is a valid deployment.
+     *
+     * Uploads are prefixed with `BACKUP_S3_PREFIX` (defaults to the
+     * compose project name in docker-compose.prod.yml) so multiple
+     * bx-Blogger installs can share one bucket without stepping on
+     * each other. Empty prefix = bare filename at bucket root for
+     * single-tenant installs that don't need namespacing.
      */
     private void function maybeSyncToS3( required string localPath ) {
         var bucket = getSystemSetting( "BACKUP_S3_BUCKET", "" );
@@ -174,14 +179,27 @@ class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
             var cbfs = application.wireBox.getInstance( "DiskService@cbfs" );
             if ( !cbfs.has( "backups" ) ) return;
 
-            var disk = cbfs.get( "backups" );
+            var disk     = cbfs.get( "backups" );
             var filename = listLast( arguments.localPath, "/" );
+            var prefix   = trim( getSystemSetting( "BACKUP_S3_PREFIX", "" ) );
+            // Normalize: drop leading/trailing slashes so the join below
+            // always produces exactly one separator regardless of what
+            // the operator pasted in .env.
+            prefix = reReplace( prefix, "^/+|/+$", "", "all" );
+            var remotePath = len( prefix ) ? prefix & "/" & filename : filename;
+
             var Files = createObject( "java", "java.nio.file.Files" );
             var Paths = createObject( "java", "java.nio.file.Paths" );
             var bytes = Files.readAllBytes(
                 Paths.get( arguments.localPath, javaCast( "String[]", [] ) )
             );
-            disk.create( path = filename, contents = bytes, overwrite = true );
+            disk.create( path = remotePath, contents = bytes, overwrite = true );
+
+            writeLog(
+                file = "bxblogger",
+                type = "information",
+                text = "BackupDatabaseJob: S3 upload complete — " & bucket & "/" & remotePath
+            );
         }
         catch ( any e ) {
             writeLog(

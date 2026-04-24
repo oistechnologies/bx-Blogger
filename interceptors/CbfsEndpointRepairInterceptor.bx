@@ -1,0 +1,71 @@
+/**
+ * bx-Blogger — CbfsEndpointRepairInterceptor
+ *
+ * Patches the `backups` cbfs S3 disk's endpoint hostname when s3sdk's
+ * path-style URL builder mangles it for non-AWS domains. See
+ * `modules/cbfs/modules/s3sdk/models/AmazonS3.cfc:267 (buildUrlEndpoint)` —
+ * the builder unconditionally prepends `<awsRegion>.` to `awsDomain`
+ * when the domain isn't `amazonaws.com`, but the operator-supplied
+ * BACKUP_S3_ENDPOINT for Backblaze / DO Spaces / Wasabi already contains
+ * the region (e.g. `s3.us-west-004.backblazeb2.com`). Result: the built
+ * URL comes out as `us-west-004.s3.us-west-004.backblazeb2.com`, a
+ * legitimate subdomain that resolves to B2's S3 frontend but returns
+ * 403 AccessDenied because no bucket exists there.
+ *
+ * Fix: listen for `cbfsOnDiskStart`, compare the built hostname against
+ * the raw BACKUP_S3_ENDPOINT, and overwrite via the setters (accessors
+ * generates on AmazonS3.cfc). Runs once per disk-start — fires for the
+ * main app, for each test VirtualApp, and for any background thread
+ * that triggers lazy disk instantiation.
+ *
+ * No-op when BACKUP_S3_ENDPOINT is unset (disk isn't registered),
+ * when the disk isn't `backups` (we don't touch media/og), or when the
+ * built hostname already matches (e.g. real AWS S3 where s3sdk's
+ * builder works correctly).
+ */
+class {
+
+    function configure() {}
+
+    /**
+     * cbfs fires this event with `{ disk : <provider instance> }` after
+     * each disk finishes its `startup()` call. We care only about the
+     * S3-provider `backups` disk.
+     */
+    function cbfsOnDiskStart( event, interceptData, rc, prc, buffer ) {
+        var disk = arguments.interceptData.disk ?: "";
+        if ( isSimpleValue( disk ) || disk.getName() != "backups" ) return;
+        // Non-S3 providers have no getS3() — skip.
+        if ( !structKeyExists( disk, "getS3" ) ) return;
+
+        var rawEndpoint = trim( getSystemSetting( "BACKUP_S3_ENDPOINT", "" ) );
+        if ( !len( rawEndpoint ) ) return;
+
+        var desiredHostname = reReplaceNoCase( rawEndpoint, "^https?://", "" );
+        var desiredUrl      = rawEndpoint contains "://"
+            ? rawEndpoint
+            : "https://" & desiredHostname;
+
+        try {
+            var s3 = disk.getS3();
+            if ( s3.getURLEndpointHostname() == desiredHostname ) return;
+
+            s3.setURLEndpointHostname( desiredHostname );
+            s3.setURLEndpoint( desiredUrl );
+
+            writeLog(
+                file = "bxblogger",
+                type = "information",
+                text = "CbfsEndpointRepairInterceptor: patched backups disk endpoint → " & desiredUrl
+            );
+        }
+        catch ( any e ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "CbfsEndpointRepairInterceptor failed: " & e.message
+            );
+        }
+    }
+
+}

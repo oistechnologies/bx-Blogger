@@ -42,6 +42,12 @@ services:
       # log driver (journald / fluentd / Loki / ELK) can index every
       # event by level/category without regex-scraping free text.
       LOG_FORMAT: json
+      # Default the S3 backup prefix to the compose project name so
+      # multiple bx-Blogger stacks on one host / sharing one B2
+      # bucket land under distinct folders (e.g., `site-a/…`,
+      # `site-b/…`). Operator can override in .env if they want a
+      # different folder scheme.
+      BACKUP_S3_PREFIX: ${BACKUP_S3_PREFIX:-${COMPOSE_PROJECT_NAME:-bx-blogger}}
     # No `ports:` block — the app is not published to the host. NPM reaches
     # it via the shared `proxy` network below using container DNS:
     #     scheme=http, host=${COMPOSE_PROJECT_NAME:-bx-blogger}-app, port=8080

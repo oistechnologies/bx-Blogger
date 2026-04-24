@@ -235,6 +235,14 @@ class {
 		 * it up in Phase 7) and returns HTTP 429 to the caller.
 		 */
 		variables.interceptors = [
+			// Patches the `backups` cbfs S3 disk endpoint at
+			// disk-start so Backblaze / DO Spaces / Wasabi-style
+			// endpoints (which already embed the region) don't get
+			// double-regioned by s3sdk's buildUrlEndpoint(). Must
+			// come before any interceptor that resolves cbfs disks
+			// so the fix is in place the first time anything reads
+			// a backup file.
+			{ class : "interceptors.CbfsEndpointRepairInterceptor" },
 			// 10.A — resolves the real client IP on `preProcess` and
 			// stamps it on `prc.clientIp` for every downstream
 			// consumer (RateLimit, Security audit, BrokenLinks,
@@ -455,6 +463,54 @@ class {
 				}
 			}
 		};
+
+		// ----------------------------------------------------------------
+		// Off-host DB backups — register a `backups` cbfs disk pointing
+		// at the operator's S3-compatible bucket. Conditional on
+		// BACKUP_S3_BUCKET being set so a fresh install with no S3
+		// configured doesn't error at boot trying to authenticate
+		// against empty credentials.
+		//
+		// s3sdk wants `awsDomain` as a bare hostname, not a URL — strip
+		// the scheme if the operator pasted a full endpoint URL (our
+		// BACKBLAZE-B2.md runbook tells them to). ACL is forced to
+		// private because nobody should ever fetch a raw DB dump by URL.
+		// ----------------------------------------------------------------
+		var backupBucket = getSystemSetting( "BACKUP_S3_BUCKET", "" );
+		if ( len( backupBucket ) ) {
+			var backupDomain = reReplaceNoCase(
+				getSystemSetting( "BACKUP_S3_ENDPOINT", "" ),
+				"^https?://",
+				""
+			);
+			variables.moduleSettings.cbfs.disks.backups = {
+				"provider"   : "S3",
+				"properties" : {
+					"accessKey"         : getSystemSetting( "BACKUP_S3_ACCESS_KEY", "" ),
+					"secretKey"         : getSystemSetting( "BACKUP_S3_SECRET_KEY", "" ),
+					"awsDomain"         : len( backupDomain ) ? backupDomain : "amazonaws.com",
+					"awsRegion"         : getSystemSetting( "BACKUP_S3_REGION", "us-east-1" ),
+					"defaultBucketName" : backupBucket,
+					"defaultACL"        : "private",
+					"visibility"        : "private",
+					"ssl"               : true,
+					// Default to path-style URLs (`<endpoint>/<bucket>/<key>`) —
+					// the only style s3sdk's URL builder supports for non-AWS
+					// domains (see `buildUrlEndpoint` in s3sdk/AmazonS3.cfc:267 —
+					// its `virtual` branch only injects the bucket when the
+					// awsDomain contains `amazonaws.com`, so B2 / DO Spaces /
+					// MinIO get a URL with the bucket missing entirely and the
+					// request silently writes to nowhere). Operators pointed
+					// directly at AWS S3 can flip BACKUP_S3_URL_STYLE=virtual.
+					"urlStyle"          : getSystemSetting( "BACKUP_S3_URL_STYLE", "path" ),
+					// cbfs's S3 provider reads properties.path unconditionally in
+					// buildPath(). Providing an empty string keeps the job in
+					// control of key prefixing (via BACKUP_S3_PREFIX) while
+					// preventing the "key [PATH] was not found" struct error.
+					"path"              : ""
+				}
+			};
+		}
 
 		/**
 		 * ----------------------------------------------------------------
