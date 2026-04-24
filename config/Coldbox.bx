@@ -512,6 +512,71 @@ class {
 			};
 		}
 
+		// ----------------------------------------------------------------
+		// User-uploaded media — swap the `media` disk over to S3 when
+		// S3_BUCKET_MEDIA is configured. Falls back to the Local default
+		// registered above when the env var is empty, so dev installs
+		// using the repo bind-mount keep working out of the box.
+		//
+		// `urlStyle=path` + `publicDomain=S3_PUBLIC_URL` covers Backblaze
+		// B2 (and anything behind a Cloudflare/CDN proxy fronting B2), DO
+		// Spaces, Wasabi, and a self-hosted MinIO. AWS S3 operators flip
+		// S3_URL_STYLE=virtual when they want the bucket-hostname URL.
+		//
+		// Visibility is `public` because media is served to anonymous
+		// readers on public post pages; publicDomain determines what the
+		// app puts in `<img src=...>`.
+		// ----------------------------------------------------------------
+		var mediaBucket = getSystemSetting( "S3_BUCKET_MEDIA", "" );
+		if ( len( mediaBucket ) ) {
+			var mediaDomain = reReplaceNoCase(
+				getSystemSetting( "S3_ENDPOINT", "" ),
+				"^https?://",
+				""
+			);
+			var mediaProps = {
+				"accessKey"         : getSystemSetting( "S3_ACCESS_KEY", "" ),
+				"secretKey"         : getSystemSetting( "S3_SECRET_KEY", "" ),
+				"awsDomain"         : len( mediaDomain ) ? mediaDomain : "amazonaws.com",
+				"awsRegion"         : getSystemSetting( "S3_REGION", "us-east-1" ),
+				"defaultBucketName" : mediaBucket,
+				"defaultACL"        : "public-read",
+				"visibility"        : "public",
+				"ssl"               : getSystemSetting( "S3_FORCE_HTTPS", true ),
+				"urlStyle"          : getSystemSetting( "S3_URL_STYLE", "path" ),
+				// cbfs-level prefix — every uploaded key gets prepended
+				// with this + "/", so multi-tenant hosts sharing one
+				// bucket don't collide. Empty = bucket root (single-tenant).
+				"path"              : trim( getSystemSetting( "S3_MEDIA_PREFIX", "" ) )
+			};
+			// publicDomain backs cbfs's `disk.url( path )` — swaps the API
+			// endpoint for the public-facing hostname so urlFor( media )
+			// resolves to the CDN / B2-public URL instead of the signed
+			// API endpoint. cbfs doesn't inject the bucket into path-
+			// style public URLs on its own (its built-in default is
+			// virtual-style `<bucket>.<endpoint>`), so for path-style
+			// providers we append `/<bucket>` to the operator's base
+			// URL when they haven't already embedded it (e.g. B2's
+			// `/file/<bucket>` shape — operators setting the full path
+			// get left alone).
+			var mediaPublic = reReplaceNoCase(
+				getSystemSetting( "S3_PUBLIC_URL", "" ),
+				"^https?://",
+				""
+			);
+			if ( len( mediaPublic ) ) {
+				if ( mediaProps.urlStyle == "path" && !( mediaPublic contains "/" ) ) {
+					mediaPublic &= "/" & mediaBucket;
+				}
+				mediaProps.publicDomain = mediaPublic;
+			}
+
+			variables.moduleSettings.cbfs.disks.media = {
+				"provider"   : "S3",
+				"properties" : mediaProps
+			};
+		}
+
 		/**
 		 * ----------------------------------------------------------------
 		 * Flash Scope Settings
