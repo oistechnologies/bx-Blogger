@@ -55,7 +55,14 @@ class {
 			"port"     : getSystemSetting( "DB_PORT", "3306" ),
 			"username" : getSystemSetting( "DB_USERNAME", "bx_blogger" ),
 			"password" : getSystemSetting( "DB_PASSWORD", "bxblog-dev-pass" ),
-			"custom"   : "useUnicode=true&characterEncoding=UTF-8&serverTimezone=UTC&allowPublicKeyRetrieval=true&useSSL=false&useLegacyDatetimeCode=true"
+			// `serverTimezone` intentionally omitted — when set it tells
+			// MySQL Connector/J to convert JVM-local dates to that zone
+			// before writing + back on read, which drops a -04h shift on
+			// every timestamp when the JVM/container already run in
+			// America/New_York via TZ env. Letting the driver fall back
+			// to the JVM default keeps write-time and NOW() comparisons
+			// in the same zone without any conversion.
+			"custom"   : "useUnicode=true&characterEncoding=UTF-8&allowPublicKeyRetrieval=true&useSSL=false&useLegacyDatetimeCode=true"
 		}
 	};
 	this.datasource = "coldbox";

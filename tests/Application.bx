@@ -22,7 +22,10 @@ class {
 			"port"     : getSystemSetting( "DB_PORT", "3306" ),
 			"username" : getSystemSetting( "DB_USERNAME", "bx_blogger" ),
 			"password" : getSystemSetting( "DB_PASSWORD", "bxblog-dev-pass" ),
-			"custom"   : "useUnicode=true&characterEncoding=UTF-8&serverTimezone=UTC&allowPublicKeyRetrieval=true&useSSL=false&useLegacyDatetimeCode=true"
+			// See /Application.bx — serverTimezone omitted intentionally
+			// so the MySQL JDBC driver uses JVM local (America/New_York
+			// via TZ env) for both writes and comparisons.
+			"custom"   : "useUnicode=true&characterEncoding=UTF-8&allowPublicKeyRetrieval=true&useSSL=false&useLegacyDatetimeCode=true"
 		}
 	};
 	this.datasource = "coldbox";
