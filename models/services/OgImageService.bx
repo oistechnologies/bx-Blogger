@@ -52,6 +52,9 @@ class accessors="true" singleton {
     variables.fgMutedHex     = "##B0B6C8";
     variables.accentColorHex = "##00DBFF";
     variables.authorPhotoSize = 64;
+    // Vertical gap between the email line and the name line above
+    // it when both are drawn. Pure visual breathing room.
+    variables.authorLineGap   = 12;
 
     // --------------------------------------------------------------------
     // Public API
@@ -194,37 +197,25 @@ class accessors="true" singleton {
         var includeEmail    = hasAuthor && !!author.getOgIncludeEmail();
         var includeSocials  = hasAuthor && !!author.getOgIncludeSocialsAndUrl();
 
-        var photoPath = "";
-        if ( includePhoto && hasAuthor && author.hasProfilePhoto() ) {
-            // Resolve the photo to an absolute filesystem path the
-            // BufferedImage reader can open. Local cbfs returns a
-            // disk-relative path; we expand it through the disk's
-            // own properties.path. For S3-backed media this branch
-            // is skipped (we don't pull bytes back through the
-            // network on every render — Step 4b adds a local cache).
-            try {
-                var mediaDisk = variables.cbfs.get( "media" );
-                if ( structKeyExists( mediaDisk, "getProperties" ) ) {
-                    var diskProps = mediaDisk.getProperties();
-                    if ( structKeyExists( diskProps, "path" ) && len( diskProps.path ) ) {
-                        photoPath = diskProps.path & "/" & author.getProfilePhotoPath();
-                    }
-                }
-            }
-            catch ( any e ) { /* leave photoPath blank — render skips block */ }
-        }
+        // Decide whether to attempt a profile-photo read. We don't
+        // resolve bytes here — that happens in drawAuthorBlock
+        // through the cbfs disk's own getAsBinary() so the path-
+        // resolution logic (Local filesystem path vs. S3 GET vs.
+        // anything else cbfs supports) stays inside the provider.
+        var hasUsablePhoto = includePhoto && hasAuthor && author.hasProfilePhoto();
 
         return {
-            "post"           : arguments.post,
-            "title"          : arguments.post.getTitle() ?: "",
-            "siteName"       : siteName,
-            "author"         : hasAuthor ? author : javaCast( "null", "" ),
-            "authorName"     : hasAuthor ? ( author.getDisplayName() ?: "" ) : "",
-            "authorEmail"    : hasAuthor ? ( author.getEmail() ?: "" ) : "",
-            "includePhoto"   : includePhoto,
-            "includeEmail"   : includeEmail,
-            "includeSocials" : includeSocials,
-            "photoPath"      : photoPath
+            "post"             : arguments.post,
+            "title"            : arguments.post.getTitle() ?: "",
+            "siteName"         : siteName,
+            "author"           : hasAuthor ? author : javaCast( "null", "" ),
+            "authorName"       : hasAuthor ? ( author.getDisplayName() ?: "" ) : "",
+            "authorEmail"      : hasAuthor ? ( author.getEmail() ?: "" ) : "",
+            "includePhoto"     : includePhoto,
+            "includeEmail"     : includeEmail,
+            "includeSocials"   : includeSocials,
+            "hasUsablePhoto"   : hasUsablePhoto,
+            "profilePhotoKey"  : hasUsablePhoto ? author.getProfilePhotoPath() : ""
         };
     }
 
@@ -310,24 +301,36 @@ class accessors="true" singleton {
         var nameX     = variables.paddingX;
 
         // Optional profile photo — sits to the LEFT of the text block,
-        // shifts text rightward by photoSize + gap.
-        var drewPhoto = false;
-        if ( arguments.ctx.includePhoto && len( arguments.ctx.photoPath ) && fileExists( arguments.ctx.photoPath ) ) {
+        // shifts text rightward by photoSize + gap. Photo bytes are
+        // fetched via `readPhotoBytes()` rather than cbfs.getAsBinary
+        // because the latter routes through s3sdk.getObject(), which
+        // calls buildUrlEndpoint() as a side effect and re-introduces
+        // the broken double-region hostname for non-AWS providers
+        // (B2 / DO Spaces). That mutation persists on the singleton
+        // disk instance and breaks every subsequent PUT until the
+        // next fwreinit. readPhotoBytes() avoids the trap by going
+        // either filesystem-direct (Local cbfs) or HTTP-direct
+        // through the disk's public URL (S3-backed cbfs).
+        if ( arguments.ctx.hasUsablePhoto && len( arguments.ctx.profilePhotoKey ) ) {
             try {
-                var photoImg = arguments.ImageIO.read( createObject( "java", "java.io.File" ).init( arguments.ctx.photoPath ) );
-                if ( !isNull( photoImg ) ) {
-                    var photoSize = variables.authorPhotoSize;
-                    var photoY    = baselineY - photoSize + 8;  // sit on baseline-ish
-                    arguments.g.drawImage(
-                        photoImg,
-                        variables.paddingX,
-                        photoY,
-                        photoSize,
-                        photoSize,
-                        javaCast( "null", "" )
-                    );
-                    nameX = variables.paddingX + photoSize + 16;
-                    drewPhoto = true;
+                var photoBytes = readPhotoBytes( arguments.ctx.profilePhotoKey );
+                if ( !isNull( photoBytes ) && isBinary( photoBytes ) ) {
+                    var bais = createObject( "java", "java.io.ByteArrayInputStream" ).init( photoBytes );
+                    var photoImg = arguments.ImageIO.read( bais );
+                    bais.close();
+                    if ( !isNull( photoImg ) ) {
+                        var photoSize = variables.authorPhotoSize;
+                        var photoY    = baselineY - photoSize + 8;
+                        arguments.g.drawImage(
+                            photoImg,
+                            variables.paddingX,
+                            photoY,
+                            photoSize,
+                            photoSize,
+                            javaCast( "null", "" )
+                        );
+                        nameX = variables.paddingX + photoSize + 16;
+                    }
                 }
             }
             catch ( any e ) {
@@ -342,7 +345,9 @@ class accessors="true" singleton {
             arguments.g.setColor( decodeColor( arguments.Color, variables.fgMutedHex ) );
             var efm = arguments.g.getFontMetrics();
             arguments.g.drawString( arguments.ctx.authorEmail, nameX, baselineY );
-            nameBaseline = baselineY - efm.getHeight() + 4;
+            // Push the name baseline up by one full email-line height
+            // PLUS the configured gap so the two lines breathe.
+            nameBaseline = baselineY - efm.getHeight() - variables.authorLineGap;
         }
 
         // Name line in cyan accent.
@@ -351,6 +356,94 @@ class accessors="true" singleton {
             arguments.g.setColor( decodeColor( arguments.Color, variables.accentColorHex ) );
             arguments.g.drawString( "by " & arguments.ctx.authorName, nameX, nameBaseline );
         }
+    }
+
+    /**
+     * Read profile-photo bytes from the `media` cbfs disk WITHOUT
+     * routing through cbfs.getAsBinary, which calls s3sdk.getObject
+     * and overwrites our patched URL via buildUrlEndpoint() as a
+     * side effect. Two paths:
+     *
+     *   - Local cbfs: properties.path holds a real filesystem
+     *     directory; concatenate the key + read directly.
+     *   - S3 cbfs (MinIO / B2 / DO Spaces): the disk's public URL
+     *     resolves to the bucket's public-read endpoint; cfhttp it.
+     *
+     * Returns binary bytes on success, null on miss/failure. Caller
+     * silently degrades to "no profile photo on the OG card" when
+     * the photo can't be read — never blocks a render.
+     */
+    private any function readPhotoBytes( required string profilePhotoKey ) {
+        var mediaDisk = variables.cbfs.get( "media" );
+
+        try {
+            if ( structKeyExists( mediaDisk, "getProperties" ) ) {
+                var props = mediaDisk.getProperties();
+                if ( structKeyExists( props, "path" ) && len( props.path ) ) {
+                    var localPath = props.path & "/" & arguments.profilePhotoKey;
+                    if ( fileExists( localPath ) ) {
+                        return fileReadBinary( localPath );
+                    }
+                }
+            }
+        }
+        catch ( any e ) { /* fall through to HTTP */ }
+
+        try {
+            var pubUrl = mediaDisk.url( arguments.profilePhotoKey );
+            if ( !len( pubUrl ) || !( pubUrl contains "://" ) ) {
+                return javaCast( "null", "" );
+            }
+
+            // Use java.net.URL directly rather than `cfhttp(...)` —
+            // OG renders run on cbq worker threads, where the BoxLang
+            // compat layer for cfhttp isn't always wired up
+            // ("Function [cfhttp] not found" on non-request threads,
+            // analogous to the LogBox-from-non-request-thread caveat
+            // in CLAUDE.md). Java's URLConnection is JDK-core and
+            // works from any thread.
+            //
+            // Local var is `JavaUrl` (not `URL`) because `URL` is a
+            // reserved CFML scope name — `var URL = createObject(...)`
+            // resolves to `ortus.boxlang.web.scopes.URLScope` instead
+            // of the Java class. Same trap as the global CLAUDE.md
+            // reserved-scope-collision note.
+            var JavaUrl = createObject( "java", "java.net.URL" );
+            var u       = JavaUrl.init( pubUrl );
+            var conn = u.openConnection();
+            conn.setConnectTimeout( javaCast( "int", 5000 )  );
+            conn.setReadTimeout(    javaCast( "int", 10000 ) );
+            conn.setRequestMethod( "GET" );
+
+            var status = conn.getResponseCode();
+            if ( status != 200 ) {
+                log.warn( "OgImageService.readPhotoBytes: HTTP " & status & " for " & pubUrl );
+                return javaCast( "null", "" );
+            }
+
+            var inStream = conn.getInputStream();
+            try {
+                var BAOS = createObject( "java", "java.io.ByteArrayOutputStream" );
+                var baos = BAOS.init();
+                // Allocate a 4 KB reusable read buffer. `.getBytes()` on
+                // a CFML string yields a Java byte[] — cheaper than
+                // routing through java.lang.reflect.Array.newInstance.
+                var buf = repeatString( " ", 4096 ).getBytes();
+                var n = inStream.read( buf );
+                while ( n > -1 ) {
+                    baos.write( buf, javaCast( "int", 0 ), javaCast( "int", n ) );
+                    n = inStream.read( buf );
+                }
+                return baos.toByteArray();
+            }
+            finally {
+                inStream.close();
+            }
+        }
+        catch ( any e ) {
+            log.warn( "OgImageService.readPhotoBytes: HTTP fetch failed for " & arguments.profilePhotoKey & " — " & e.message );
+        }
+        return javaCast( "null", "" );
     }
 
     // --------------------------------------------------------------------
