@@ -58,22 +58,28 @@ function addItem() {
     clearFlashes();
     if ( !requirePerm( "menus.manage" ) ) return;
     if ( !len( data.selectedLoc ) ) { data.flashError = "Pick a location first."; return; }
-    var label = trim( data.newLabel );
-    var url   = trim( data.newUrl );
-    if ( !len( label ) ) { data.flashError = "Label is required."; return; }
-    if ( !len( url ) )   url = "##";
+    // NOTE: local var named `itemUrl`, NOT `url` — `url` is a CFML
+    // reserved scope name. A `var url = ...` is silently shadowed
+    // when referenced later, so the named arg `url = url` ends up
+    // passing the URL scope struct into menuService.addItem and
+    // tripping its `string url` type check. See CLAUDE.md §reserved
+    // scope name collisions.
+    var label   = trim( data.newLabel ?: "" );
+    var itemUrl = trim( data.newUrl   ?: "" );
+    if ( !len( label )   ) { data.flashError = "Label is required."; return; }
+    if ( !len( itemUrl ) ) itemUrl = "##";
 
     var menu = menuService.ensureMenu( data.activeSlug, data.selectedLoc );
     menuService.addItem(
         menuId     = menu.id,
         label      = label,
-        url        = url,
+        url        = itemUrl,
         linkTarget = trim( data.newTarget )
     );
-    data.newLabel = "";
-    data.newUrl = "";
+    data.newLabel  = "";
+    data.newUrl    = "";
     data.newTarget = "";
-    data.flashOk = "Menu item added.";
+    data.flashOk   = "Menu item added.";
 }
 
 function startEdit( required numeric id ) {

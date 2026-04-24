@@ -85,8 +85,11 @@ class extends="coldbox.system.Interceptor" {
             return arguments.immediateHop;
         }
         if ( !len( arguments.xff ) ) return arguments.immediateHop;
-        var client = firstForwardedClient( arguments.xff );
-        return len( client ) ? client : arguments.immediateHop;
+        // NOTE: non-reserved local name; `client` is a CFML scope
+        // whose var-declaration gets silently shadowed. See
+        // CLAUDE.md §reserved scope name collisions.
+        var clientIp = firstForwardedClient( arguments.xff );
+        return len( clientIp ) ? clientIp : arguments.immediateHop;
     }
 
     /**

@@ -124,7 +124,8 @@ class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
         var URI          = createObject( "java", "java.net.URI" );
         var Duration     = createObject( "java", "java.time.Duration" );
 
-        var client = HttpClient.newBuilder()
+        // `httpClient` not `client` — CFML reserved scope name.
+        var httpClient = HttpClient.newBuilder()
             .connectTimeout( Duration.ofSeconds( javaCast( "long", variables.requestTimeoutS ) ) )
             .build();
 
@@ -135,7 +136,7 @@ class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
             .POST( BodyPubs.ofString( arguments.body ) )
             .build();
 
-        var res = client.send( req, BodyHandlers.discarding() );
+        var res = httpClient.send( req, BodyHandlers.discarding() );
         return res.statusCode();
     }
 

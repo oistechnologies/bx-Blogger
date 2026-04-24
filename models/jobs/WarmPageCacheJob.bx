@@ -48,7 +48,11 @@ class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
         var Duration    = createObject( "java", "java.time.Duration" );
         var BodyHandlers = createObject( "java", "java.net.http.HttpResponse$BodyHandlers" );
 
-        var client = HttpClient.newBuilder()
+        // NOTE: `httpClient` (not `client`) — `client` is a reserved
+        // CFML scope; a `var client = ...` declaration gets silently
+        // shadowed by the scope, so later `client.send()` calls fail
+        // with cryptic errors. See CLAUDE.md §reserved scope names.
+        var httpClient = HttpClient.newBuilder()
             .connectTimeout( Duration.ofSeconds( javaCast( "long", variables.warmTimeoutSeconds ) ) )
             .build();
 
@@ -71,7 +75,7 @@ class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
                     .timeout( Duration.ofSeconds( javaCast( "long", variables.warmTimeoutSeconds ) ) )
                     .GET()
                     .build();
-                var res = client.send( req, BodyHandlers.discarding() );
+                var res = httpClient.send( req, BodyHandlers.discarding() );
                 var status = res.statusCode();
                 if ( status >= 200 && status < 400 ) {
                     warmed++;

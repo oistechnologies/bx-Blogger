@@ -288,7 +288,8 @@ class accessors="true" singleton {
             & "url=" & urlEncodedFormat( arguments.url )
             & "&maxwidth=" & variables.oembedMaxWidth;
 
-        var client = HttpClient.newBuilder()
+        // `httpClient` not `client` — CFML reserved scope name.
+        var httpClient = HttpClient.newBuilder()
             .connectTimeout( Duration.ofSeconds( javaCast( "long", variables.httpTimeoutSeconds ) ) )
             .build();
         var req = HttpRequest.newBuilder()
@@ -298,7 +299,7 @@ class accessors="true" singleton {
             .header( "User-Agent", "bx-Blogger/1.0 (+OembedService)" )
             .GET()
             .build();
-        var res = client.send( req, BodyHandlers.ofString() );
+        var res = httpClient.send( req, BodyHandlers.ofString() );
 
         var status = res.statusCode();
         if ( status < 200 || status >= 300 ) {

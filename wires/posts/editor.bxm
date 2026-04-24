@@ -347,11 +347,12 @@ function closeMediaPicker() { data.showMediaPicker = false; }
 function insertMedia( required id ) {
     var m = getInstance( "Media" ).find( arguments.id );
     if ( isNull( m ) ) return;
-    var url    = getInstance( "MediaService" ).urlFor( m );
-    var alt    = m.getAltText() ?: m.getOriginalFilename();
-    var snippet = "
+    // `mediaUrl` not `url` — CFML reserved scope name.
+    var mediaUrl = getInstance( "MediaService" ).urlFor( m );
+    var alt      = m.getAltText() ?: m.getOriginalFilename();
+    var snippet  = "
 
-![" & alt & "](" & url & ")
+![" & alt & "](" & mediaUrl & ")
 ";
     data.bodyMarkdown = ( data.bodyMarkdown ?: "" ) & snippet;
     closeMediaPicker();
@@ -554,14 +555,15 @@ function useImagePreview( required previewId ) {
             role      = data.imageTarget
         );
 
-        var url = getInstance( "MediaService" ).urlFor( media );
-        var alt = media.getAltText() ?: "Generated image";
+        // `mediaUrl` not `url` — CFML reserved scope name.
+        var mediaUrl = getInstance( "MediaService" ).urlFor( media );
+        var alt      = media.getAltText() ?: "Generated image";
 
         if ( data.imageTarget == "featured" ) {
             data.featuredMediaId = media.getId();
             data.flashOk = "Featured image set.";
         } else {
-            var snippet = char( 10 ) & char( 10 ) & "![" & alt & "](" & url & ")" & char( 10 );
+            var snippet = char( 10 ) & char( 10 ) & "![" & alt & "](" & mediaUrl & ")" & char( 10 );
             data.bodyMarkdown = ( data.bodyMarkdown ?: "" ) & snippet;
             data.flashOk = "Image inserted into the post body.";
         }

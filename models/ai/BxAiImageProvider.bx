@@ -128,11 +128,12 @@ class accessors="true" singleton {
             for ( var choice in arguments.response.choices ) {
                 var images = choice.message.images ?: [];
                 for ( var img in images ) {
-                    var url = img.image_url.url ?: ( img.url ?: "" );
-                    if ( !len( url ) ) continue;
+                    // `imageUrl` not `url` — CFML reserved scope name.
+                    var imageUrl = img.image_url.url ?: ( img.url ?: "" );
+                    if ( !len( imageUrl ) ) continue;
                     var previewId = lCase( hash( createUUID(), "SHA-256" ) ).left( 12 );
                     variables.previewIndex[ previewId ] = {
-                        "providerUrl" : url,
+                        "providerUrl" : imageUrl,
                         "expiresAt"   : expiresAt,
                         "mime"        : "image/png",
                         "width"       : img.width  ?: 0,
@@ -140,7 +141,7 @@ class accessors="true" singleton {
                     };
                     previews.append( {
                         "previewId"   : previewId,
-                        "providerUrl" : url,
+                        "providerUrl" : imageUrl,
                         "expiresAt"   : expiresAt,
                         "width"       : img.width  ?: 0,
                         "height"      : img.height ?: 0,
