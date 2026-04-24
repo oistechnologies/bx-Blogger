@@ -3,8 +3,25 @@
     [data-bs-theme="dark"]  .footer-logo-light-mode { display: none; }
     [data-bs-theme="light"] .footer-logo-dark-mode  { display: none; }
 </style>
+<bx:set footerMenu = prc.theme.menu( "footer" )>
 <footer class="border-top bg-body py-4 mt-5 site-footer">
-    <div class="container d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+    <div class="container">
+        <!---
+            Footer menu row — top-level items only (no dropdowns in
+            the footer). Styled in the same uppercase / letter-spaced
+            tone as the header nav for aesthetic consistency.
+        --->
+        <bx:if footerMenu.len()>
+            <nav class="d-flex flex-wrap gap-3 gap-md-4 justify-content-center justify-content-md-start mb-3 pb-3 border-bottom text-uppercase small letter-spaced" aria-label="Footer">
+                <bx:loop array="#footerMenu#" item="item">
+                    <a href="#encodeForHTMLAttribute( item.url )#" class="link-secondary text-decoration-none"
+                       <bx:if len( item.target )>target="#encodeForHTMLAttribute( item.target )#"</bx:if>>
+                        #encodeForHTML( item.label )#
+                    </a>
+                </bx:loop>
+            </nav>
+        </bx:if>
+        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
         <div class="d-flex align-items-center gap-3">
             <a href="/" class="d-inline-block">
                 <img class="footer-logo footer-logo-light-mode"
@@ -37,6 +54,7 @@
                 </a>
             </bx:if>
         </p>
+        </div>
     </div>
 </footer>
 </bx:output>

@@ -3,8 +3,27 @@
     [data-bs-theme="dark"]  .footer-logo-light-mode { display: none; }
     [data-bs-theme="light"] .footer-logo-dark-mode  { display: none; }
 </style>
+<bx:set footerMenu = prc.theme.menu( "footer" )>
 <footer class="border-top bg-body-tertiary py-4 mt-5 site-footer">
-    <div class="container d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
+    <div class="container">
+        <!---
+            Footer menu row — renders only when an admin has built
+            something for the "footer" menu location (theme.json
+            declares both header + footer). Nested children are
+            flattened to top-level only; dropdowns in footers are
+            unusual and read poorly.
+        --->
+        <bx:if footerMenu.len()>
+            <nav class="d-flex flex-wrap gap-3 gap-md-4 justify-content-center justify-content-md-start mb-3 pb-3 border-bottom" aria-label="Footer">
+                <bx:loop array="#footerMenu#" item="item">
+                    <a href="#encodeForHTMLAttribute( item.url )#" class="link-secondary small text-decoration-none"
+                       <bx:if len( item.target )>target="#encodeForHTMLAttribute( item.target )#"</bx:if>>
+                        #encodeForHTML( item.label )#
+                    </a>
+                </bx:loop>
+            </nav>
+        </bx:if>
+        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
         <div class="d-flex align-items-center gap-3">
             <a href="/" class="d-inline-block">
                 <!--- Two logo tags, CSS below swaps on [data-bs-theme]. The
@@ -41,6 +60,7 @@
                 </a>
             </bx:if>
         </p>
+        </div>
     </div>
 </footer>
 </bx:output>
