@@ -24,8 +24,20 @@ data = {
     "postTypeFilter" : "post",  // default to hiding pages in the posts list
     "page"       : 1,
     "perPage"    : 20,
+    "sortField"  : "updated_at",
+    "sortDir"    : "desc",
     "flashOk"    : "",
     "flashError" : ""
+};
+
+// Whitelist of sortable columns → DB column name. Guards against arbitrary
+// user input reaching qb.orderBy, which would splice straight into SQL.
+variables.sortableFields = {
+    "title"        : "title",
+    "status"       : "status",
+    "post_type"    : "post_type",
+    "updated_at"   : "updated_at",
+    "published_at" : "published_at"
 };
 
 /**
@@ -70,9 +82,12 @@ function getRowsAndCount() {
     var offset = ( data.page - 1 ) * data.perPage;
     if ( offset < 0 ) offset = 0;
 
+    var sortCol = variables.sortableFields[ data.sortField ] ?: "updated_at";
+    var sortDir = ( data.sortDir == "asc" ) ? "asc" : "desc";
+
     rows = rows
         .select( [ "id", "title", "slug", "post_type", "status", "author_id", "updated_at", "published_at" ] )
-        .orderBy( "updated_at", "desc" )
+        .orderBy( sortCol, sortDir )
         .limit( data.perPage )
         .offset( offset )
         .get();
@@ -90,6 +105,24 @@ function applyFilters() {
 function gotoPage( required pageNumber ) {
     if ( pageNumber < 1 ) pageNumber = 1;
     data.page = pageNumber;
+}
+
+/**
+ * Action: click a column header. Toggles direction if the same column is
+ * clicked again; otherwise switches to the new column with a sensible
+ * default direction (date-ish columns default desc, text columns asc).
+ * Resets pagination to 1 so the user isn't left on an out-of-range page.
+ */
+function setSort( required field ) {
+    if ( !structKeyExists( variables.sortableFields, arguments.field ) ) return;
+
+    if ( data.sortField == arguments.field ) {
+        data.sortDir = ( data.sortDir == "asc" ) ? "desc" : "asc";
+    } else {
+        data.sortField = arguments.field;
+        data.sortDir   = listFindNoCase( "updated_at,published_at", arguments.field ) ? "desc" : "asc";
+    }
+    data.page = 1;
 }
 
 /**
@@ -182,13 +215,40 @@ function trashPost( required postId ) {
 				No posts match those filters.
 			</div>
 		<bx:else>
+			<bx:script>
+				// Precompute the sort-indicator icon class per sortable column so
+				// the markup below stays shallow. Active column gets a directional
+				// arrow; inactive columns get a dim neutral glyph.
+				sortIcons = {
+					"title"        : args.sortField == "title"        ? ( args.sortDir == "asc" ? "bi-arrow-up-short" : "bi-arrow-down-short" ) : "bi-arrow-down-up text-muted opacity-50",
+					"status"       : args.sortField == "status"       ? ( args.sortDir == "asc" ? "bi-arrow-up-short" : "bi-arrow-down-short" ) : "bi-arrow-down-up text-muted opacity-50",
+					"post_type"    : args.sortField == "post_type"    ? ( args.sortDir == "asc" ? "bi-arrow-up-short" : "bi-arrow-down-short" ) : "bi-arrow-down-up text-muted opacity-50",
+					"updated_at"   : args.sortField == "updated_at"   ? ( args.sortDir == "asc" ? "bi-arrow-up-short" : "bi-arrow-down-short" ) : "bi-arrow-down-up text-muted opacity-50"
+				};
+			</bx:script>
 			<table class="table table-hover mb-0">
 				<thead class="table-light">
 					<tr>
-						<th>Title</th>
-						<th>Status</th>
-						<th>Type</th>
-						<th>Updated</th>
+						<th>
+							<button type="button" class="btn btn-link btn-sm p-0 text-decoration-none text-reset fw-semibold" wire:click="setSort('title')">
+								Title <i class="bi #sortIcons.title#" aria-hidden="true"></i>
+							</button>
+						</th>
+						<th>
+							<button type="button" class="btn btn-link btn-sm p-0 text-decoration-none text-reset fw-semibold" wire:click="setSort('status')">
+								Status <i class="bi #sortIcons.status#" aria-hidden="true"></i>
+							</button>
+						</th>
+						<th>
+							<button type="button" class="btn btn-link btn-sm p-0 text-decoration-none text-reset fw-semibold" wire:click="setSort('post_type')">
+								Type <i class="bi #sortIcons.post_type#" aria-hidden="true"></i>
+							</button>
+						</th>
+						<th>
+							<button type="button" class="btn btn-link btn-sm p-0 text-decoration-none text-reset fw-semibold" wire:click="setSort('updated_at')">
+								Updated <i class="bi #sortIcons.updated_at#" aria-hidden="true"></i>
+							</button>
+						</th>
 						<th></th>
 					</tr>
 				</thead>
