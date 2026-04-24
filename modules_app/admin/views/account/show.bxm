@@ -16,7 +16,7 @@
 				<span class="h6 mb-0">Profile</span>
 			</div>
 			<div class="card-body">
-				<form method="POST" action="#event.buildLink( 'admin:Account.updateProfile' )#">
+				<form method="POST" action="#event.buildLink( 'admin/account' )#">
 					<div class="mb-3">
 						<label for="displayName" class="form-label">Display name</label>
 						<input type="text"
@@ -47,7 +47,7 @@
 						Waiting for verification of <code>#encodeForHTML( prc.user.getPendingEmail() )#</code>.
 					</bx:if>
 				</p>
-				<form method="POST" action="#event.buildLink( 'admin:Account.updateEmail' )#" autocomplete="off">
+				<form method="POST" action="#event.buildLink( 'admin/account/email' )#" autocomplete="off">
 					<div class="mb-3">
 						<label for="email" class="form-label">New email address</label>
 						<input type="email"
@@ -81,7 +81,7 @@
 				<span class="h6 mb-0">Password</span>
 			</div>
 			<div class="card-body">
-				<form method="POST" action="#event.buildLink( 'admin:Account.updatePassword' )#" autocomplete="off">
+				<form method="POST" action="#event.buildLink( 'admin/account/password' )#" autocomplete="off">
 					<div class="mb-3">
 						<label for="currentPassword" class="form-label">Current password</label>
 						<input type="password"
@@ -117,24 +117,24 @@
 					<button type="submit" class="btn btn-primary">Change password</button>
 				</form>
 			</div>
+		</div>
 
-			<!---------- Phase 8.D.1 — GDPR self-serve data export ---------->
-			<div class="card stat-card stat-card-secondary mt-4">
-				<div class="card-header card-header-soft card-header-soft-secondary">
-					<span class="h6 mb-0">Download my data</span>
-				</div>
-				<div class="card-body">
-					<p class="text-muted small mb-3">
-						Download a ZIP of every piece of information the platform holds about
-						your account &mdash; profile, posts, revisions, audit-log entries,
-						and a manifest of media you&rsquo;ve uploaded. Nothing is deleted;
-						the export is a read-only snapshot.
-					</p>
-					<a class="btn btn-outline-primary"
-					   href="#event.buildLink( 'admin:Account.exportMyData' )#">
-						Download my data (ZIP)
-					</a>
-				</div>
+		<!---------- Phase 8.D.1 — GDPR self-serve data export ---------->
+		<div class="card stat-card stat-card-secondary mt-4">
+			<div class="card-header card-header-soft card-header-soft-secondary">
+				<span class="h6 mb-0">Download my data</span>
+			</div>
+			<div class="card-body">
+				<p class="text-muted small mb-3">
+					Download a ZIP of every piece of information the platform holds about
+					your account &mdash; profile, posts, revisions, audit-log entries,
+					and a manifest of media you&rsquo;ve uploaded. Nothing is deleted;
+					the export is a read-only snapshot.
+				</p>
+				<a class="btn btn-outline-primary"
+				   href="#event.buildLink( 'admin:Account.exportMyData' )#">
+					Download my data (ZIP)
+				</a>
 			</div>
 		</div>
 	</div>
