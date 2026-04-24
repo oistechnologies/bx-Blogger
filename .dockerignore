@@ -16,8 +16,8 @@ npm-debug.log
 yarn-debug.log
 yarn-error.log
 
-# Build outputs (regenerated inside the Dockerfile asset-builder stage)
-public/themes/*/assets
+# Build outputs (regenerated inside the Dockerfile theme-builder stage)
+themes/*/assets
 dist
 build
 

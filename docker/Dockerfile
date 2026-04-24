@@ -1,23 +1,55 @@
 # =============================================================================
 # bx-Blogger Dockerfile (flat layout)
 #
+# Two-stage build:
+#
+#   1. theme-builder  — node:20-alpine. Installs the npm deps declared
+#      in package.json (vite, sass, bootstrap, glob) and runs
+#      `npm run build` (→ build-themes.mjs) to produce
+#      themes/{slug}/assets/{css,js}/ for every registered theme.
+#      `themes/*/assets/` is gitignored, so this stage is the only
+#      place compiled CSS/JS gets produced for the published image.
+#
+#   2. runtime        — ortussolutions/commandbox. The actual app
+#      image: copies the source, overlays built theme assets from
+#      stage 1, installs box.json deps, warms up the server home.
+#
 # Based on the cbtemplate-flat pattern:
 #   https://github.com/coldbox-templates/flat/blob/development/docker/Dockerfile
 #
-# Key differences from the old mvc-layout Dockerfile:
-#   - Single COPY of the whole project (flat layout = single tree)
-#   - Uses ortussolutions/commandbox base (cfengine:boxlang@1 in server.json
-#     tells CommandBox to install BoxLang — no need for the boxlang-tagged variant)
-#   - Uses Ortus image's built-in warmup-server.sh + run.sh (our entrypoint
-#     just wraps it to add migrations)
-#   - No multi-stage — Vite theme compilation re-introduced in Phase 3
-#     (Phase 0 ships no themes)
+# cfengine:boxlang@1 in server.json tells CommandBox to install BoxLang
+# on first server start, so we don't need the :boxlang image variant.
 # =============================================================================
 
+# -----------------------------------------------------------------------------
+# Stage 1 — theme-builder
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS theme-builder
+
+WORKDIR /build
+
+# Install deps first so Docker caches the npm layer across builds
+# that only touch theme source (the expected common case). A change
+# to package.json / package-lock.json busts this cache; theme-only
+# edits skip straight to the build step.
+COPY package.json package-lock.json ./
+RUN npm ci
+
+# Build driver + theme sources. Everything `build-themes.mjs` needs.
+COPY vite.config.js build-themes.mjs ./
+COPY themes ./themes
+
+# Produces themes/{slug}/assets/{css,js}/ for every discovered theme.
+RUN npm run build
+
+
+# -----------------------------------------------------------------------------
+# Stage 2 — runtime
+# -----------------------------------------------------------------------------
 FROM ortussolutions/commandbox
 
 LABEL maintainer="Michael Rigsby"
-LABEL repository="https://github.com/mrigsby/bx-Blogger"
+LABEL repository="https://github.com/oistechnologies/bx-Blogger"
 
 # Healthcheck endpoint the Ortus image uses to verify the server is live.
 # ${PORT} is provided by the base image (default 8080).
@@ -37,8 +69,14 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends webp default-mysql-client gzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the full project — .dockerignore filters out .git, DEV-NOTES, .env, etc.
+# Copy the full project — .dockerignore filters out .git, DEV-NOTES, .env,
+# node_modules, themes/*/assets, etc.
 COPY ./ ${APP_DIR}/
+
+# Overlay compiled theme assets from stage 1. The builder's `themes/`
+# is a superset of the source (same files + built `assets/` per theme),
+# so this replaces the themes/ dir wholesale — safe and idempotent.
+COPY --from=theme-builder /build/themes ${APP_DIR}/themes
 
 # Install ColdBox + modules from box.json. Dev image includes devDependencies
 # (testbox, cbdebugger, etc.) so `docker compose exec app box run-script test`
