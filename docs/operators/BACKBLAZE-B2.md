@@ -138,9 +138,9 @@ S3_REGION=us-west-004
 S3_ACCESS_KEY=<keyID from §3.1>
 S3_SECRET_KEY=<applicationKey from §3.1>
 
-# Bucket name from §2. OG images stay on the Local cbfs disk by
-# design (see config/Coldbox.bx) — no S3_BUCKET_OG needed.
+# Bucket name from §2.
 S3_BUCKET_MEDIA=bxblog-media-prod
+# S3_BUCKET_OG=bxblog-og-prod    # currently inactive — see note below
 
 # URL style — `path` works with every S3-compatible provider; s3sdk's
 # virtual-style builder can't inject non-AWS bucket names into the

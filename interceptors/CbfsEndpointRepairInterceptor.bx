@@ -12,11 +12,32 @@
  * region) or `us-east-1.minio:9000` (invalid host) that either resolve
  * to the wrong service or fail DNS entirely.
  *
- * Fix: listen for `cbfsOnDiskStart`; for any S3 disk where the
- * configured `awsDomain` is non-AWS + path-style + the built hostname
- * doesn't already match `awsDomain`, overwrite the hostname (+ URL
- * endpoint) with `awsDomain` verbatim. sigV4 signing still uses
- * `awsRegion` so the signature stays valid.
+ * Fix: on `cbfsOnDiskStart`, set URLEndpointHostname + URLEndpoint to
+ * the operator's intended value (just `awsDomain` — the operator-
+ * supplied endpoint already includes the region). sigV4 signing
+ * still reads `awsRegion` directly so signatures stay valid; we
+ * never touch the region.
+ *
+ * KNOWN LIMITATION: this patch is ONE-SHOT. Any subsequent call to
+ * s3sdk's `getObject(bucketName)` (or the few other entry points
+ * that invoke `buildUrlEndpoint(bucketName)` as a side effect)
+ * recomputes the broken `<awsRegion>.<awsDomain>` shape and clobbers
+ * our patched values for the rest of the disk's lifetime. Reads
+ * THEMSELVES return broken bytes (B2 silently 200s a PUT to the
+ * wrong sub-domain without persisting; subsequent reads can't find
+ * the file), and every write on the singleton disk after the first
+ * read silently lands at the wrong endpoint.
+ *
+ * Workarounds in app code:
+ *   - OG profile-photo render bypasses cbfs.getAsBinary entirely,
+ *     fetching via java.net.URL from the disk's public URL instead
+ *     (OgImageService.readPhotoBytes). Local cbfs falls back to a
+ *     direct filesystem read.
+ *   - cbfs disks here set `cacheLookups: false` so a write+exists
+ *     round-trip doesn't get poisoned by a pre-write `false` cache.
+ *
+ * Proper fix is a subclassed S3 provider that swaps in a custom
+ * AmazonS3 with a corrected buildUrlEndpoint — tracked separately.
  *
  * Skipped intentionally:
  *   - AWS S3 (`amazonaws.com`) — s3sdk's builder is correct here.
@@ -43,10 +64,9 @@ class {
             if ( !len( awsDomain ) ) return;
             if ( awsDomain contains "amazonaws.com" ) return;
             if ( s3.getUrlStyle() != "path" ) return;
-            if ( s3.getURLEndpointHostname() == awsDomain ) return;
 
-            var scheme      = s3.getSsl() ? "https://" : "http://";
-            var desiredUrl  = scheme & awsDomain;
+            var scheme     = s3.getSsl() ? "https://" : "http://";
+            var desiredUrl = scheme & awsDomain;
 
             s3.setURLEndpointHostname( awsDomain );
             s3.setURLEndpoint( desiredUrl );

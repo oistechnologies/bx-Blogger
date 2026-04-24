@@ -547,7 +547,12 @@ class {
 				// cbfs-level prefix — every uploaded key gets prepended
 				// with this + "/", so multi-tenant hosts sharing one
 				// bucket don't collide. Empty = bucket root (single-tenant).
-				"path"              : trim( getSystemSetting( "S3_MEDIA_PREFIX", "" ) )
+				"path"              : trim( getSystemSetting( "S3_MEDIA_PREFIX", "" ) ),
+				// Disable cbfs's built-in exists()-lookup cache: write+
+				// exists round-trips (profile-photo upload then verify;
+				// thumbnail/WebP probe-then-write) get poisoned by the
+				// pre-write "false" cache entry otherwise.
+				"cacheLookups"      : false
 			};
 			// publicDomain backs cbfs's `disk.url( path )` — swaps the API
 			// endpoint for the public-facing hostname so urlFor( media )
@@ -579,6 +584,42 @@ class {
 				"properties" : mediaProps
 			};
 		}
+
+		// ----------------------------------------------------------------
+		// OG share-card images — INTENDED to flip the `og` disk over to
+		// S3 when S3_BUCKET_OG is set, mirroring the media disk. Code
+		// path is staged but currently DISABLED because of an s3sdk
+		// URL-builder defect.
+		//
+		// The defect: s3sdk's `getObject(bucketName)` (and a few other
+		// reads) call `buildUrlEndpoint(bucketName)` as a side-effect of
+		// fetching, which rebuilds `URLEndpointHostname` from awsDomain
+		// + awsRegion using the path-style formula
+		// `<awsRegion>.<awsDomain>`. For non-AWS providers whose
+		// awsDomain already includes the region (B2's
+		// `s3.us-west-004.backblazeb2.com`, DO Spaces, etc.) the result
+		// is the broken double-region hostname `<region>.<awsDomain>`.
+		// Our `CbfsEndpointRepairInterceptor` patches the canonical
+		// values at disk-start, but any subsequent read on the disk
+		// re-runs buildUrlEndpoint and overwrites the patch — every
+		// subsequent PUT silently lands at the wrong sub-domain.
+		// Method-replacement of buildUrlEndpoint via `s3.fnName = closure`
+		// doesn't help: `getObject` calls the unqualified name which
+		// resolves to `variables.buildUrlEndpoint` (the original),
+		// bypassing any closure attached to the `this` scope.
+		//
+		// Proper fix: ship a custom S3 provider class that subclasses
+		// cbfs's S3Provider + overrides startup() to swap in an s3sdk
+		// AmazonS3 instance with a corrected buildUrlEndpoint. Larger
+		// lift than Step 4's scope; tracked as a follow-up. Until then
+		// OG stays on the Local cbfs disk in both dev + prod.
+		//
+		// The S3_BUCKET_OG env var + .env.example + Backblaze runbook
+		// references stay in place so operators can drop in the bucket
+		// name when the proper fix lands without re-editing config.
+		// ----------------------------------------------------------------
+		// var ogBucket = getSystemSetting( "S3_BUCKET_OG", "" );
+		// if ( len( ogBucket ) ) { ... S3 disk config ... }
 
 		/**
 		 * ----------------------------------------------------------------

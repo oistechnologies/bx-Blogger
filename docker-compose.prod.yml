@@ -53,6 +53,11 @@ services:
       # Dropping this to blank in .env puts files at the bucket root,
       # which is the right call for single-tenant installs.
       S3_MEDIA_PREFIX: ${S3_MEDIA_PREFIX:-${COMPOSE_PROJECT_NAME:-bx-blogger}}
+      # Mirrors the media prefix for the OG share-card disk when
+      # S3_BUCKET_OG is set in .env. Same default — multi-instance
+      # hosts get auto-namespacing, single-tenant installs override
+      # to blank for a flat bucket layout.
+      S3_OG_PREFIX:    ${S3_OG_PREFIX:-${COMPOSE_PROJECT_NAME:-bx-blogger}}
     # No `ports:` block — the app is not published to the host. NPM reaches
     # it via the shared `proxy` network below using container DNS:
     #     scheme=http, host=${COMPOSE_PROJECT_NAME:-bx-blogger}-app, port=8080
