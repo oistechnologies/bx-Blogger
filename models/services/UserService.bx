@@ -324,6 +324,130 @@ class accessors="true" singleton {
     }
 
     // --------------------------------------------------------------------
+    // Author slug — URL segment for /author/{slug}. Generated from
+    // display_name on demand (first time the user opts into a public
+    // author page, or explicit admin regen). Kept unique site-wide;
+    // collisions get a `-2`, `-3` numeric suffix.
+    // --------------------------------------------------------------------
+
+    /**
+     * Returns a URL-safe lowercased slug from the given source string.
+     * Accent-folded so "José" → "jose". Empty / all-punctuation input
+     * collapses to `""` so the caller can fall back to `user-{id}`.
+     *
+     * Kept local to UserService rather than a shared helper because
+     * authorSlug is the only cross-entity slug that isn't already
+     * handled inside its own service (CategoryService / TagService /
+     * PostService each own their slugify). A later refactor can
+     * consolidate once patterns align.
+     */
+    string function slugifyText( required string source ) {
+        var s = lCase( trim( arguments.source ) );
+        s = replaceList( s,
+            "à,á,â,ã,ä,å,ç,è,é,ê,ë,ì,í,î,ï,ñ,ò,ó,ô,õ,ö,ø,ù,ú,û,ü,ý,ÿ",
+            "a,a,a,a,a,a,c,e,e,e,e,i,i,i,i,n,o,o,o,o,o,o,u,u,u,u,y,y"
+        );
+        s = reReplace( s, "[^a-z0-9]+", "-", "all" );
+        s = reReplace( s, "^-+|-+$", "", "all" );
+        // Cap at the column width (120). Trailing dashes after the
+        // cut get stripped so we don't end up with `foo-bar-`.
+        if ( len( s ) > 120 ) {
+            s = left( s, 120 );
+            s = reReplace( s, "-+$", "", "all" );
+        }
+        return s;
+    }
+
+    /**
+     * Ensure the given user has an `author_slug`, creating one if
+     * missing. Returns the slug. Idempotent — a user who already has
+     * a slug gets it back unchanged.
+     *
+     * Preferred base is the display_name; falls back to `user-{id}`
+     * when the display name slugifies to empty (accent-stripped
+     * punctuation, CJK, etc.). Uniqueness is enforced by appending
+     * `-2`, `-3`, ... until no row collides.
+     */
+    string function ensureAuthorSlug( required any user ) {
+        var existing = trim( arguments.user.getAuthorSlug() ?: "" );
+        if ( len( existing ) ) return existing;
+
+        var base = slugifyText( arguments.user.getDisplayName() ?: "" );
+        if ( !len( base ) ) base = "user-" & arguments.user.getId();
+
+        var candidate = ensureUniqueAuthorSlug( base, arguments.user.getId() );
+        arguments.user.setAuthorSlug( candidate );
+        arguments.user.save();
+        return candidate;
+    }
+
+    /**
+     * Set an explicit author slug on `user`, validating shape + global
+     * uniqueness. Throws `bxBlogger.UserValidation` when the slug is
+     * empty, too long, or taken by another user. Admins use this when
+     * editing the slug from the Users editor; self-service via
+     * `/admin/account` lands here too once that UI ships in Step 3.
+     */
+    string function setAuthorSlug( required any user, required string rawSlug ) {
+        var normalized = slugifyText( arguments.rawSlug );
+        if ( !len( normalized ) ) {
+            throw(
+                type    = "bxBlogger.UserValidation",
+                message = "Author slug must contain at least one alphanumeric character."
+            );
+        }
+        // Uniqueness: only error when another user holds it. Same user
+        // re-submitting their own slug is a no-op.
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "users" )
+            .where( "author_slug", normalized )
+            .where( "id", "!=", arguments.user.getId() )
+            .selectRaw( "COUNT(*) AS n" )
+            .first();
+        if ( val( qb.n ?: 0 ) > 0 ) {
+            throw(
+                type    = "bxBlogger.UserValidation",
+                message = "Author slug '" & normalized & "' is already taken."
+            );
+        }
+        arguments.user.setAuthorSlug( normalized );
+        arguments.user.save();
+        return normalized;
+    }
+
+    /**
+     * Find-or-fail by author_slug — used by the public Author handler.
+     * Caller is responsible for the `publicAuthorPageEnabled` check;
+     * this method just resolves the slug.
+     */
+    any function findByAuthorSlug( required string slug ) {
+        var User = variables.wirebox.getInstance( "User" );
+        return User.where( "author_slug", arguments.slug )
+            .whereNull( "deleted_at" )
+            .first();
+    }
+
+    private string function ensureUniqueAuthorSlug( required string base, required numeric excludeId ) {
+        var candidate = arguments.base;
+        var suffix    = 1;
+        while ( authorSlugTakenBy( candidate, arguments.excludeId ) ) {
+            suffix++;
+            candidate = arguments.base & "-" & suffix;
+        }
+        return candidate;
+    }
+
+    private boolean function authorSlugTakenBy( required string slug, required numeric excludeId ) {
+        var row = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "users" )
+            .where( "author_slug", arguments.slug )
+            .where( "id", "!=", arguments.excludeId )
+            .selectRaw( "COUNT(*) AS n" )
+            .first();
+        return val( row.n ?: 0 ) > 0;
+    }
+
+    // --------------------------------------------------------------------
     // Phase 8.D.1 — GDPR export
     // --------------------------------------------------------------------
 

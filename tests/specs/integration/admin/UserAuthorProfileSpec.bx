@@ -1,0 +1,175 @@
+/**
+ * Covers the Step 1 schema + entity + service additions for author
+ * profile data (bio, socials, OG preferences, photo metadata,
+ * author_slug).
+ *
+ * Profile photo UPLOAD flow lands in Step 2 — this spec only exercises
+ * the column shape + in-memory setter/getter path.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function run() {
+
+        describe( "User entity — author profile columns", function() {
+
+            it( "persists + reads every new profile column", function() {
+                var user = createTestUser();
+
+                user.setBioShort( "Writer. Builder. Occasional snark." );
+                user.setBio( "## About me\n\nLong-form markdown goes here." );
+                user.setWebsiteUrl(  "https://example.com" );
+                user.setTwitterUrl(  "https://twitter.com/example" );
+                user.setLinkedinUrl( "https://linkedin.com/in/example" );
+                user.setGithubUrl(   "https://github.com/example" );
+                user.setGitlabUrl(   "https://gitlab.com/example" );
+                user.setMastodonUrl( "https://hachyderm.io/@example" );
+                user.setBlueskyUrl(  "https://bsky.app/profile/example" );
+                user.setFacebookUrl( "https://facebook.com/example" );
+                user.setProfilePhotoPath(   "profile_images/" & user.getId() & "/abc.png" );
+                user.setProfilePhotoMime(   "image/png" );
+                user.setProfilePhotoWidth(  512 );
+                user.setProfilePhotoHeight( 512 );
+                user.setOgIncludeProfilePhoto(  1 );
+                user.setOgIncludeEmail(         0 );
+                user.setOgIncludeSocialsAndUrl( 1 );
+                user.setPublicAuthorPageEnabled( 1 );
+                user.save();
+
+                // Round-trip through a fresh fetch to prove the columns
+                // are actually persisted (not just held on the instance).
+                var reloaded = getInstance( "User" ).findOrFail( user.getId() );
+                expect( reloaded.getBioShort() ).toBe( "Writer. Builder. Occasional snark." );
+                expect( reloaded.getBio() contains "About me" ).toBeTrue();
+                expect( reloaded.getTwitterUrl() ).toBe( "https://twitter.com/example" );
+                expect( reloaded.getGitlabUrl()  ).toBe( "https://gitlab.com/example" );
+                expect( reloaded.getFacebookUrl() ).toBe( "https://facebook.com/example" );
+                expect( reloaded.getProfilePhotoPath()   contains ".png" ).toBeTrue();
+                expect( val( reloaded.getProfilePhotoWidth() ) ).toBe( 512 );
+                // Quick returns booleans as 0/1 on MySQL TINYINT but may
+                // normalize to "true"/"false" in some contexts — compare
+                // by truthiness so either shape passes.
+                expect( !!reloaded.getOgIncludeProfilePhoto() ).toBeTrue( "og_include_profile_photo should be truthy" );
+                expect( !!reloaded.getOgIncludeEmail()        ).toBeFalse( "og_include_email should be falsy" );
+                expect( !!reloaded.getOgIncludeSocialsAndUrl() ).toBeTrue( "og_include_socials_and_url should be truthy" );
+                expect( !!reloaded.getPublicAuthorPageEnabled() ).toBeTrue( "public_author_page_enabled should be truthy" );
+            } );
+
+            it( "hasProfilePhoto() reflects the path column", function() {
+                var user = createTestUser();
+                expect( user.hasProfilePhoto() ).toBeFalse( "no photo on fresh user" );
+                user.setProfilePhotoPath( "profile_images/" & user.getId() & "/x.png" );
+                expect( user.hasProfilePhoto() ).toBeTrue( "populated path => true" );
+            } );
+
+            it( "socialUrls() drops empty values + preserves order", function() {
+                var user = createTestUser();
+                user.setTwitterUrl(  "https://twitter.com/a" );
+                user.setGithubUrl(   "https://github.com/a" );
+                user.setLinkedinUrl( "" );  // explicitly empty
+                user.save();
+
+                var out  = user.socialUrls();
+                var keys = structKeyArray( out );
+
+                expect( out ).notToHaveKey( "linkedin" );
+                expect( out ).notToHaveKey( "facebook" );
+                expect( out.twitter ).toBe( "https://twitter.com/a" );
+                expect( out.github  ).toBe( "https://github.com/a" );
+
+                // Order is preserved by our insertion; with LinkedHashMap-
+                // backed BL structs twitter should come before github.
+                expect( keys.indexOf( "twitter" ) ).toBeLT( keys.indexOf( "github" ) );
+            } );
+
+        } );
+
+        describe( "UserService — author slug helpers", function() {
+
+            it( "slugifies display names with accent folding + punctuation collapse", function() {
+                var svc = getInstance( "UserService" );
+                expect( svc.slugifyText( "José García" )     ).toBe( "jose-garcia" );
+                expect( svc.slugifyText( "  Mike  Rigsby " ) ).toBe( "mike-rigsby" );
+                expect( svc.slugifyText( "---" )             ).toBe( "" );
+                expect( svc.slugifyText( "Ümlauts & Co." )   ).toBe( "umlauts-co" );
+            } );
+
+            it( "ensureAuthorSlug() generates from display_name on first call, idempotent after", function() {
+                var svc  = getInstance( "UserService" );
+                var user = createTestUser( { "displayName": "Ensure Slug Tester " & createUUID() } );
+
+                var first = svc.ensureAuthorSlug( user );
+                expect( first ).toStartWith( "ensure-slug-tester" );
+
+                // Idempotent — re-calling returns the same string.
+                expect( svc.ensureAuthorSlug( user ) ).toBe( first );
+            } );
+
+            it( "ensureAuthorSlug() falls back to user-{id} when display_name slugifies to empty", function() {
+                var svc  = getInstance( "UserService" );
+                var user = createTestUser( { "displayName": "!!!" } );
+
+                var slug = svc.ensureAuthorSlug( user );
+                expect( slug ).toBe( "user-" & user.getId() );
+            } );
+
+            it( "ensureAuthorSlug() disambiguates with -2 / -3 when another user holds the base", function() {
+                var svc   = getInstance( "UserService" );
+                var shared = "Shared Author " & createUUID();
+
+                var first  = createTestUser( { "displayName": shared } );
+                var slugA  = svc.ensureAuthorSlug( first );
+
+                var second = createTestUser( { "displayName": shared } );
+                var slugB  = svc.ensureAuthorSlug( second );
+
+                expect( slugB ).notToBe( slugA, "same display_name => different slug" );
+                expect( slugB ).toEndWith( "-2" );
+
+                var third = createTestUser( { "displayName": shared } );
+                var slugC = svc.ensureAuthorSlug( third );
+                expect( slugC ).toEndWith( "-3" );
+            } );
+
+            it( "setAuthorSlug() validates + throws on collision with another user", function() {
+                var svc = getInstance( "UserService" );
+                var a   = createTestUser();
+                var b   = createTestUser();
+
+                svc.setAuthorSlug( a, "my-fixed-handle-" & createUUID() );
+                var aSlug = a.getAuthorSlug();
+
+                expect( function() {
+                    svc.setAuthorSlug( b, aSlug );
+                } ).toThrow( "bxBlogger.UserValidation" );
+
+                // Same user resetting their own slug is a no-op + returns fine.
+                expect( svc.setAuthorSlug( a, aSlug ) ).toBe( aSlug );
+            } );
+
+            it( "setAuthorSlug() rejects slugs that reduce to empty after normalization", function() {
+                var svc  = getInstance( "UserService" );
+                var user = createTestUser();
+
+                expect( function() {
+                    svc.setAuthorSlug( user, "!!!" );
+                } ).toThrow( "bxBlogger.UserValidation" );
+            } );
+
+            it( "findByAuthorSlug() returns the user when one exists, null otherwise", function() {
+                var svc  = getInstance( "UserService" );
+                var user = createTestUser();
+                var slug = svc.ensureAuthorSlug( user );
+
+                var hit = svc.findByAuthorSlug( slug );
+                expect( isNull( hit ) ).toBeFalse();
+                expect( hit.getId() ).toBe( user.getId() );
+
+                var miss = svc.findByAuthorSlug( "definitely-nobody-" & createUUID() );
+                expect( isNull( miss ) ).toBeTrue();
+            } );
+
+        } );
+
+    }
+
+}

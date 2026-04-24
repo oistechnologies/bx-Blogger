@@ -32,6 +32,31 @@ class extends="quick.models.BaseEntity" accessors="true" {
     property name="aiMonthlyTokens"              column="ai_monthly_tokens";
     property name="aiMonthlyImages"              column="ai_monthly_images";
     property name="aiImageVariantsPerRequest"    column="ai_image_variants_per_request";
+
+    // Author profile (OG image + public author page)
+    property name="bioShort"             column="bio_short";
+    property name="bio"                  column="bio";
+    property name="authorSlug"           column="author_slug";
+
+    property name="websiteUrl"           column="website_url";
+    property name="twitterUrl"           column="twitter_url";
+    property name="linkedinUrl"          column="linkedin_url";
+    property name="githubUrl"            column="github_url";
+    property name="gitlabUrl"            column="gitlab_url";
+    property name="mastodonUrl"          column="mastodon_url";
+    property name="blueskyUrl"           column="bluesky_url";
+    property name="facebookUrl"          column="facebook_url";
+
+    property name="profilePhotoPath"     column="profile_photo_path";
+    property name="profilePhotoMime"     column="profile_photo_mime";
+    property name="profilePhotoWidth"    column="profile_photo_width";
+    property name="profilePhotoHeight"   column="profile_photo_height";
+
+    property name="ogIncludeProfilePhoto"    column="og_include_profile_photo";
+    property name="ogIncludeEmail"           column="og_include_email";
+    property name="ogIncludeSocialsAndUrl"   column="og_include_socials_and_url";
+    property name="publicAuthorPageEnabled"  column="public_author_page_enabled";
+
     property name="deletedAt"                    column="deleted_at";
     property name="createdAt"            column="created_at";
     property name="updatedAt"            column="updated_at";
@@ -95,6 +120,41 @@ class extends="quick.models.BaseEntity" accessors="true" {
     }
 
     /**
+     * True when a profile photo exists for this user. Just a readable
+     * shorthand for callers — OG composition, author page renderer, admin
+     * editor preview — to avoid re-checking `getProfilePhotoPath() != ""`
+     * in five places.
+     */
+    boolean function hasProfilePhoto() {
+        return len( getProfilePhotoPath() ?: "" ) > 0;
+    }
+
+    /**
+     * The set of social URLs this user has filled in, in the order they
+     * should render (alphabetical-by-platform is noise — this order puts
+     * the common ones first). Empty values are dropped. The returned
+     * struct shape is `{ platform : url }` so templates can iterate
+     * without null checks.
+     */
+    struct function socialUrls() {
+        var out   = [:];
+        var pairs = [
+            { key: "website",  value: getWebsiteUrl()  ?: "" },
+            { key: "twitter",  value: getTwitterUrl()  ?: "" },
+            { key: "linkedin", value: getLinkedinUrl() ?: "" },
+            { key: "github",   value: getGithubUrl()   ?: "" },
+            { key: "gitlab",   value: getGitlabUrl()   ?: "" },
+            { key: "mastodon", value: getMastodonUrl() ?: "" },
+            { key: "bluesky",  value: getBlueskyUrl()  ?: "" },
+            { key: "facebook", value: getFacebookUrl() ?: "" }
+        ];
+        for ( var p in pairs ) {
+            if ( len( p.value ) ) out[ p.key ] = p.value;
+        }
+        return out;
+    }
+
+    /**
      * Mementifier configuration.
      * - `default` memento is the shape admin APIs return
      * - `public` memento strips sensitive fields (no passwordHash, no IP, no pendingEmail)
@@ -105,6 +165,7 @@ class extends="quick.models.BaseEntity" accessors="true" {
             "email",
             "displayName",
             "username",
+            "authorSlug",
             "isActive",
             "twoFactorEnabled",
             "emailVerifiedAt",
@@ -122,14 +183,30 @@ class extends="quick.models.BaseEntity" accessors="true" {
         ],
         // Additional named profiles for specific response shapes
         profiles: {
+            // `public` strips everything that isn't safe to serve
+            // anonymously; used by the public author page + by any
+            // future public JSON endpoints that list authors.
             "public": {
-                defaultIncludes: [ "id", "displayName", "username" ]
+                defaultIncludes: [
+                    "id", "displayName", "username", "authorSlug",
+                    "bioShort", "bio",
+                    "profilePhotoPath", "profilePhotoMime",
+                    "websiteUrl", "twitterUrl", "linkedinUrl", "githubUrl",
+                    "gitlabUrl", "mastodonUrl", "blueskyUrl", "facebookUrl",
+                    "ogIncludeEmail", "publicAuthorPageEnabled"
+                ]
             },
             "admin": {
                 defaultIncludes: [
-                    "id", "email", "displayName", "username", "isActive",
-                    "twoFactorEnabled", "emailVerifiedAt", "lastLoginAt",
-                    "lastLoginIp", "createdAt", "updatedAt"
+                    "id", "email", "displayName", "username", "authorSlug",
+                    "isActive", "twoFactorEnabled", "emailVerifiedAt",
+                    "lastLoginAt", "lastLoginIp", "createdAt", "updatedAt",
+                    "bioShort", "bio",
+                    "profilePhotoPath", "profilePhotoMime",
+                    "websiteUrl", "twitterUrl", "linkedinUrl", "githubUrl",
+                    "gitlabUrl", "mastodonUrl", "blueskyUrl", "facebookUrl",
+                    "ogIncludeProfilePhoto", "ogIncludeEmail",
+                    "ogIncludeSocialsAndUrl", "publicAuthorPageEnabled"
                 ]
             }
         }
