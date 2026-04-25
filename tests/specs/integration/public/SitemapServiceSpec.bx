@@ -189,6 +189,43 @@ class extends="tests.support.BaseIntegrationSpec" {
                 expect( xml ).notToInclude( "/blog/" & post.getSlug() );
             } );
 
+            it( "emits an author URL for an opted-in author with a published post", function() {
+                var author = createTestUser();
+                author.setPublicAuthorPageEnabled( 1 );
+                author.save();
+                var slug = getInstance( "UserService" ).ensureAuthorSlug( author );
+                publishNew( author, "Public author post" );
+                svc.invalidate();
+
+                var xml = svc.forBaseUrl( "https://example.test" );
+                expect( xml ).toInclude( "/author/" & slug );
+            } );
+
+            it( "omits authors who have not opted into a public author page", function() {
+                var author = createTestUser();
+                // No public_author_page_enabled toggle.
+                var slug = getInstance( "UserService" ).ensureAuthorSlug( author );
+                publishNew( author, "Hidden author post" );
+                svc.invalidate();
+
+                var xml = svc.forBaseUrl( "https://example.test" );
+                expect( xml ).notToInclude( "/author/" & slug );
+            } );
+
+            it( "omits opted-in authors who have no published public posts", function() {
+                var author = createTestUser();
+                author.setPublicAuthorPageEnabled( 1 );
+                author.save();
+                var slug = getInstance( "UserService" ).ensureAuthorSlug( author );
+                // No publishNew() call — no public post tying the author
+                // to the sitemap (search engines don't need a 404-but-
+                // valid /author/:slug page indexed).
+                svc.invalidate();
+
+                var xml = svc.forBaseUrl( "https://example.test" );
+                expect( xml ).notToInclude( "/author/" & slug );
+            } );
+
             it( "activeYears() returns each distinct published year", function() {
                 var author = createTestUser();
                 publishNew( author, "Old", dateAdd( "yyyy", -1, now() ) );

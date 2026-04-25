@@ -170,6 +170,189 @@ class extends="tests.support.BaseIntegrationSpec" {
 
         } );
 
+        describe( "UserService.listPublicAuthors()", function() {
+
+            it( "returns view-ready structs carrying every card field", function() {
+                var u = optedInAuthor( {
+                    "displayName"             : "Card Shape Spec",
+                    "bioShort"                : "A short tagline",
+                    "ogIncludeSocialsAndUrl"  : 1,
+                    "twitterUrl"              : "https://twitter.com/cardshape"
+                } );
+
+                var card = pickAuthor( getInstance( "UserService" ).listPublicAuthors(), u.getId() );
+                expect( isNull( card ) ).toBeFalse( "expected the opted-in test user to appear" );
+                expect( card.id ).toBe( u.getId() );
+                expect( card.displayName ).toBe( "Card Shape Spec" );
+                expect( card.authorSlug   ).toBe( u.getAuthorSlug() );
+                expect( card.bioShort     ).toBe( "A short tagline" );
+                expect( card.showSocials  ).toBeTrue();
+                expect( card.socials.twitter ).toBe( "https://twitter.com/cardshape" );
+                expect( val( card.postCount ) ).toBe( 0 );
+                expect( structKeyExists( card, "photoUrl" ) ).toBeTrue();
+            } );
+
+            it( "orders authors alphabetically by display_name", function() {
+                // Names chosen so insertion order != alphabetical order.
+                var c = optedInAuthor( { "displayName" : "Charlie " & createUUID() } );
+                var a = optedInAuthor( { "displayName" : "Alpha "   & createUUID() } );
+                var b = optedInAuthor( { "displayName" : "Bravo "   & createUUID() } );
+
+                var rows  = getInstance( "UserService" ).listPublicAuthors();
+                var posA  = positionOf( rows, a.getId() );
+                var posB  = positionOf( rows, b.getId() );
+                var posC  = positionOf( rows, c.getId() );
+                expect( posA ).toBeGT( 0 );
+                expect( posB ).toBeGT( posA );
+                expect( posC ).toBeGT( posB );
+            } );
+
+            it( "excludes users who haven't opted into a public author page", function() {
+                var hidden = createTestUser( {
+                    "displayName" : "Hidden " & createUUID()
+                } );
+                getInstance( "UserService" ).ensureAuthorSlug( hidden );
+                // Note: NOT enabling public_author_page_enabled.
+
+                var card = pickAuthor( getInstance( "UserService" ).listPublicAuthors(), hidden.getId() );
+                expect( isNull( card ) ).toBeTrue( "opted-out users must not surface in the public roster" );
+            } );
+
+            it( "excludes users without an author_slug", function() {
+                var noSlug = createTestUser( { "displayName" : "Slugless " & createUUID() } );
+                noSlug.setPublicAuthorPageEnabled( 1 );
+                noSlug.save();
+                // No ensureAuthorSlug call → author_slug stays null.
+
+                var card = pickAuthor( getInstance( "UserService" ).listPublicAuthors(), noSlug.getId() );
+                expect( isNull( card ) ).toBeTrue( "opted-in users without a slug have no public route, must be excluded" );
+            } );
+
+            it( "excludes soft-deleted users", function() {
+                var u = optedInAuthor( { "displayName" : "Tombstoned " & createUUID() } );
+                getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "users" )
+                    .where( "id", u.getId() )
+                    .update( { "deleted_at" : dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" ) } );
+
+                var card = pickAuthor( getInstance( "UserService" ).listPublicAuthors(), u.getId() );
+                expect( isNull( card ) ).toBeTrue( "soft-deleted users must not surface" );
+            } );
+
+            it( "includes opted-in users with zero published posts (postCount=0)", function() {
+                var u = optedInAuthor( { "displayName" : "Quiet " & createUUID() } );
+
+                var card = pickAuthor( getInstance( "UserService" ).listPublicAuthors(), u.getId() );
+                expect( isNull( card ) ).toBeFalse();
+                expect( val( card.postCount ) ).toBe( 0 );
+            } );
+
+            it( "counts only published public posts; ignores drafts / trashed / scheduled-future", function() {
+                var u = optedInAuthor( { "displayName" : "Counter " & createUUID() } );
+
+                publishedPost( u );                          // counts
+                publishedPost( u );                          // counts
+                draftPost( u );                              // ignored
+                trashedPost( u );                            // ignored
+                publishedPost( u, dateAdd( "d", 7, now() ) ); // future — ignored
+
+                var card = pickAuthor( getInstance( "UserService" ).listPublicAuthors(), u.getId() );
+                expect( isNull( card ) ).toBeFalse();
+                expect( val( card.postCount ) ).toBe( 2 );
+            } );
+
+            it( "drops socials when og_include_socials_and_url is off", function() {
+                var u = optedInAuthor( {
+                    "displayName"             : "No Socials " & createUUID(),
+                    "twitterUrl"              : "https://twitter.com/nope",
+                    "ogIncludeSocialsAndUrl"  : 0
+                } );
+
+                var card = pickAuthor( getInstance( "UserService" ).listPublicAuthors(), u.getId() );
+                expect( card.showSocials ).toBeFalse();
+                expect( structIsEmpty( card.socials ) ).toBeTrue( "socials struct must be empty when the toggle is off" );
+            } );
+
+        } );
+
+    }
+
+    // --------------------------------------------------------------------
+    // Local helpers — opt-in author fixtures + post fixtures + result-set
+    // pickers. Kept private to this spec so other specs aren't tempted
+    // to reach in for them.
+    // --------------------------------------------------------------------
+
+    private any function optedInAuthor( struct overrides = {} ) {
+        var user = createTestUser( arguments.overrides );
+        user.setPublicAuthorPageEnabled( 1 );
+        // Default the socials toggle on unless the override explicitly
+        // turned it off — the listing's social-row gate is one of the
+        // branches we exercise in these specs.
+        if ( !structKeyExists( arguments.overrides, "ogIncludeSocialsAndUrl" ) ) {
+            user.setOgIncludeSocialsAndUrl( 1 );
+        }
+        if ( structKeyExists( arguments.overrides, "twitterUrl" ) ) {
+            user.setTwitterUrl( arguments.overrides.twitterUrl );
+        }
+        if ( structKeyExists( arguments.overrides, "bioShort" ) ) {
+            user.setBioShort( arguments.overrides.bioShort );
+        }
+        user.save();
+        getInstance( "UserService" ).ensureAuthorSlug( user );
+        return user;
+    }
+
+    private struct function pickAuthor( required array rows, required numeric authorId ) {
+        for ( var r in arguments.rows ) {
+            if ( val( r.id ) == val( arguments.authorId ) ) return r;
+        }
+        return javaCast( "null", "" );
+    }
+
+    private numeric function positionOf( required array rows, required numeric authorId ) {
+        for ( var i = 1; i <= arrayLen( arguments.rows ); i++ ) {
+            if ( val( arguments.rows[ i ].id ) == val( arguments.authorId ) ) return i;
+        }
+        return 0;
+    }
+
+    private any function publishedPost( required any author, any publishedAt = now() ) {
+        return persistPostWithStatus( arguments.author, "published", arguments.publishedAt, false );
+    }
+
+    private any function draftPost( required any author ) {
+        return persistPostWithStatus( arguments.author, "draft", now(), false );
+    }
+
+    private any function trashedPost( required any author ) {
+        return persistPostWithStatus( arguments.author, "published", now(), true );
+    }
+
+    private any function persistPostWithStatus(
+        required any     author,
+        required string  status,
+        required any     publishedAt,
+        required boolean trashed
+    ) {
+        var post = getInstance( "PostService" ).create( {
+            "authorId"    : arguments.author.getId(),
+            "title"       : "spec-post-" & left( createUUID(), 8 ),
+            "slug"        : "spec-post-" & left( createUUID(), 12 ),
+            "bodyMarkdown": "body"
+        } );
+        var update = {
+            "status"       : arguments.status,
+            "published_at" : dateTimeFormat( arguments.publishedAt, "yyyy-mm-dd HH:nn:ss" )
+        };
+        if ( arguments.trashed ) {
+            update[ "deleted_at" ] = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+        }
+        getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "posts" )
+            .where( "id", post.getId() )
+            .update( update );
+        return post;
     }
 
 }
