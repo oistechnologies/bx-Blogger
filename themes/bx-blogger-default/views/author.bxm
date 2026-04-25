@@ -32,8 +32,9 @@
 			};
 		</bx:script>
 		<div class="d-flex flex-wrap gap-2 mb-3" aria-label="Social profiles">
-			<bx:loop collection="#prc.authorSocials#" item="key" value="url">
-				<a href="#encodeForHTMLAttribute( url )#"
+			<bx:loop collection="#prc.authorSocials#" item="key">
+				<bx:set socialUrl = prc.authorSocials[ key ]>
+				<a href="#encodeForHTMLAttribute( socialUrl )#"
 				   target="_blank"
 				   rel="me noopener"
 				   class="btn btn-sm btn-outline-secondary"
@@ -52,7 +53,7 @@
 	</bx:if>
 
 	<bx:if len( prc.authorBioHtml ?: "" )>
-		<div class="author-bio">
+		<div class="author-bio post-body">
 			#prc.authorBioHtml#
 		</div>
 	</bx:if>

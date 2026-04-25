@@ -57,6 +57,8 @@
             color: var(--bs-secondary-color);
             font-style: italic;
             margin: 1.25rem 0;
+
+            p { margin-bottom: 0; }
         }
         h2, h3 { margin-top: 1.75rem; }
 
