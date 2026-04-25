@@ -42,6 +42,7 @@ class extends="coldbox.system.testing.BaseTestCase" {
         "draft_preview_tokens",
         "menu_items",
         "ai_usage",
+        "ai_prompts",
         "login_audit",
         "audit_log",
         "password_resets",
@@ -68,9 +69,46 @@ class extends="coldbox.system.testing.BaseTestCase" {
     function beforeAll() {
         super.beforeAll();
         setup();
+        forceMockAiProviders();
         variables.createdUserIds = [];
         variables.specBoundary   = snapshotBoundaries();
         variables.diskBoundary   = snapshotMediaFiles();
+    }
+
+    /**
+     * Re-bind the AiProvider / AiImageProvider WireBox aliases to the
+     * mock implementations and flush the singleton cache so any
+     * service that already cached the real provider gets re-injected
+     * with the mock on next resolve.
+     *
+     * Why this approach instead of setting AI_PROVIDER=mock as a Java
+     * system property: `box testbox run` makes an HTTP request into
+     * the running CommandBox JVM, so a system property set here would
+     * leak into the live app's context and break /admin/posts/editor's
+     * real provider call. WireBox re-binding is scoped to the test
+     * controller's binder.
+     *
+     * Quietly skips if either binding wasn't already declared (e.g.,
+     * a future split where image/text providers move into separate
+     * modules) — the failing spec will tell us via the existing
+     * `setSimulateFailure not found` error.
+     */
+    private void function forceMockAiProviders() {
+        try {
+            var binder    = getController().getWireBox().getBinder();
+            var singleton = getController().getWireBox().getScope( "singleton" );
+
+            binder.map( "AiProvider"      ).to( "models.ai.MockAiProvider"      ).asSingleton();
+            binder.map( "AiImageProvider" ).to( "models.ai.MockAiImageProvider" ).asSingleton();
+
+            // Drop any singleton instance already created against the live
+            // binding (e.g. AiAssistantService / AiImageService cached the
+            // real provider at first resolve).
+            singleton.clearAll();
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "BaseIntegrationSpec.forceMockAiProviders failed: " & e.message );
+        }
     }
 
     function afterAll() {
@@ -160,6 +198,7 @@ class extends="coldbox.system.testing.BaseTestCase" {
                 "draft_preview_tokens",
                 "menu_items",
                 "ai_usage",
+                "ai_prompts",
                 "login_audit",
                 "audit_log",
                 "password_resets",
@@ -249,9 +288,29 @@ class extends="coldbox.system.testing.BaseTestCase" {
         }
     }
 
+    /**
+     * Tables whose seed rows carry an `is_system` column. The cleanup
+     * always pins those rows so a beforeAll snapshot that captures
+     * boundary=0 (e.g. on a fresh container start before any spec
+     * has touched the table) doesn't accidentally wipe shipped data
+     * — themes, ai_prompts, roles, permissions all behave this way
+     * and the dev session loses the seeded admin / fallback theme /
+     * default AI prompts the moment the suite runs.
+     */
+    variables.systemSeedProtected = [ "themes", "ai_prompts", "roles", "permissions" ];
+
     private void function deleteAboveBoundary( required any qb, required string table, required numeric boundary ) {
         try {
-            arguments.qb.newQuery().from( arguments.table ).where( "id", ">", arguments.boundary ).delete();
+            var query = arguments.qb.newQuery().from( arguments.table ).where( "id", ">", arguments.boundary );
+            if ( variables.systemSeedProtected.findNoCase( arguments.table ) ) {
+                // Never delete shipped seed rows. They're flagged
+                // is_system=1 in their respective seed migrations and
+                // the live app expects them to exist between requests.
+                query.where( function( q ) {
+                    q.whereNull( "is_system" ).orWhere( "is_system", "!=", 1 );
+                } );
+            }
+            query.delete();
         }
         catch ( any e ) {
             writeLog( file = "testbox", text = "deleteAboveBoundary " & arguments.table & " failed: " & e.message );

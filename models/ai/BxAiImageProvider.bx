@@ -33,16 +33,19 @@ class accessors="true" singleton {
 
     struct function generate(
         required string  prompt,
-                 string  styleHint = "",
-                 numeric variants  = 2
+                 string  styleHint    = "",
+                 numeric variants     = 2,
+                 string  systemPrompt = ""
     ) {
         var n = clamp( arguments.variants, 1, 8 );
         var styleSuffix = len( arguments.styleHint ) ? ( " Style: " & arguments.styleHint & "." ) : "";
         var userContent = arguments.prompt & styleSuffix;
 
-        var messages = [
-            { "role" : "user", "content" : userContent }
-        ];
+        var messages = [];
+        if ( len( trim( arguments.systemPrompt ) ) ) {
+            messages.append( { "role" : "system", "content" : arguments.systemPrompt } );
+        }
+        messages.append( { "role" : "user", "content" : userContent } );
 
         var params = {
             "max_tokens" : variables.defaultMaxTokens,
@@ -76,6 +79,22 @@ class accessors="true" singleton {
     }
 
     /**
+     * Return the providerUrl for a previewId without fetching bytes.
+     * Used by the editor wire to render `<img src=...>` without
+     * round-tripping the URL through the wire's serialized state —
+     * data: URLs from inline-image providers (Gemini Flash, OpenAI
+     * b64_json) are multi-MB and would blow past Undertow's POST body
+     * limit on the next wire action. Returns "" when the previewId
+     * isn't in the cache (expired / unknown / different process).
+     */
+    string function getPreviewUrl( required string previewId ) {
+        if ( !structKeyExists( variables.previewIndex, arguments.previewId ) ) return "";
+        var rec = variables.previewIndex[ arguments.previewId ];
+        if ( dateCompare( rec.expiresAt, now() ) != 1 ) return "";
+        return rec.providerUrl ?: "";
+    }
+
+    /**
      * Fetch the bytes for a previewId that a prior generate() emitted.
      * Returns null if the provider URL has expired or the previewId
      * never existed on this process.
@@ -86,6 +105,14 @@ class accessors="true" singleton {
         if ( dateCompare( rec.expiresAt, now() ) != 1 ) {
             structDelete( variables.previewIndex, arguments.previewId );
             return javaCast( "null", "" );
+        }
+
+        // Some providers (Gemini 2.5 Flash via OpenRouter, OpenAI gpt-image-1
+        // when b64_json is requested) return the bytes inline as a data URL
+        // instead of a fetchable https URL. cfhttp can't follow data: URIs,
+        // so decode the base64 payload directly when we see one.
+        if ( left( rec.providerUrl, 5 ) == "data:" ) {
+            return decodeDataUrl( rec );
         }
 
         try {
@@ -105,11 +132,47 @@ class accessors="true" singleton {
                     "expiresAt" : rec.expiresAt
                 };
             }
+            log.warn( "BxAiImageProvider.fetchPreview non-200 response for " & arguments.previewId &
+                     ": status=" & ( local.fetch.statusCode ?: "?" ) &
+                     ", binary=" & isBinary( local.fetch.fileContent ?: "" ) );
         }
         catch ( any e ) {
             log.error( "BxAiImageProvider.fetchPreview failed for " & arguments.previewId & ": " & e.message );
         }
         return javaCast( "null", "" );
+    }
+
+    /**
+     * Decode a `data:image/...;base64,...` URL into the same struct shape
+     * the cfhttp path returns. The mime type from the URL header wins
+     * over the cached default — providers occasionally return jpeg or
+     * webp for prompts they decide deserve it.
+     */
+    private any function decodeDataUrl( required struct rec ) {
+        try {
+            var headerEnd = find( ",", arguments.rec.providerUrl );
+            if ( !headerEnd ) {
+                log.error( "BxAiImageProvider.fetchPreview malformed data URL (no comma)" );
+                return javaCast( "null", "" );
+            }
+            var header = mid( arguments.rec.providerUrl, 6, headerEnd - 6 );   // strip leading "data:"
+            var b64    = mid( arguments.rec.providerUrl, headerEnd + 1, len( arguments.rec.providerUrl ) - headerEnd );
+            // header is e.g. "image/png;base64" — pull the mime off the front.
+            var mime = listFirst( header, ";" );
+            if ( !len( mime ) ) mime = arguments.rec.mime ?: "image/png";
+            var bytes = binaryDecode( trim( b64 ), "base64" );
+            return {
+                "bytes"     : bytes,
+                "mime"      : mime,
+                "width"     : arguments.rec.width  ?: 0,
+                "height"    : arguments.rec.height ?: 0,
+                "expiresAt" : arguments.rec.expiresAt
+            };
+        }
+        catch ( any e ) {
+            log.error( "BxAiImageProvider.fetchPreview data-URL decode failed: " & e.message );
+            return javaCast( "null", "" );
+        }
     }
 
     // --------------------------------------------------------------------

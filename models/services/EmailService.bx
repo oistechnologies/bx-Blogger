@@ -15,9 +15,12 @@
  */
 class accessors="true" singleton {
 
-    property name="mailService" inject="MailService@cbmailservices";
-    property name="wirebox"     inject="wirebox";
-    property name="log"         inject="logbox:logger:{this}";
+    property name="mailService"    inject="MailService@cbmailservices";
+    property name="settingService" inject="SettingService";
+    property name="wirebox"        inject="wirebox";
+    property name="log"            inject="logbox:logger:{this}";
+
+    variables.bxBloggerRepoUrl = "https://github.com/oistechnologies/bx-Blogger";
 
     /**
      * Send an email using a template pair from resources/emails/.
@@ -37,6 +40,14 @@ class accessors="true" singleton {
     ) {
         var htmlBody = renderTemplate( arguments.template & ".bxm", arguments.data );
         var textBody = tryRenderTemplate( arguments.template & ".text.bxm", arguments.data );
+
+        // Branding wrappers — every email picks up the bx-Blogger
+        // logo header + footer with site link + GitHub attribution
+        // here, so individual templates never have to worry about it.
+        htmlBody = wrapWithBranding( htmlBody );
+        if ( len( textBody ) ) {
+            textBody = wrapTextWithBranding( textBody );
+        }
 
         var mail = variables.mailService.newMail(
             to      = isArray( arguments.to ) ? arguments.to.toList() : arguments.to,
@@ -112,6 +123,141 @@ class accessors="true" singleton {
         var fullPath = expandPath( "/resources/emails/" & arguments.filename );
         if ( !fileExists( fullPath ) ) return "";
         return renderTemplate( arguments.filename, arguments.data );
+    }
+
+    /**
+     * Wrap the HTML body with the bx-Blogger branded header + footer.
+     *
+     * Strategy: detect whether the template returned a full HTML
+     * document (has a <body> tag) or a fragment.
+     *   - Full doc → inject the header right after the opening <body>
+     *     and the footer right before </body>. Preserves the
+     *     template's own head, doctype, body inline styles.
+     *   - Fragment → wrap the whole thing in a minimal HTML doc with
+     *     header, body, footer all stacked.
+     *
+     * Header: full bx-Blogger logo, links to the site root.
+     * Footer: small mark icon + "Sent by {site} · Powered by bx-Blogger
+     *         (link to GitHub repo)". Image src + site link both use
+     *         APP_URL so the email renders correctly when delivered to
+     *         clients that strip relative paths.
+     */
+    private string function wrapWithBranding( required string htmlBody ) {
+        var ctx       = brandingContext();
+        var header    = brandedHeaderHtml( ctx );
+        var footer    = brandedFooterHtml( ctx );
+
+        // Case 1: full document — inject inside the existing <body>.
+        if ( reFindNoCase( "<body[^>]*>", arguments.htmlBody ) ) {
+            var withHeader = reReplaceNoCase(
+                arguments.htmlBody,
+                "(<body[^>]*>)",
+                "\1" & header,
+                "one"
+            );
+            return reReplaceNoCase(
+                withHeader,
+                "</body>",
+                footer & "</body>",
+                "one"
+            );
+        }
+
+        // Case 2: fragment — wrap in a minimal document of our own.
+        return "<!doctype html><html lang=""en""><head><meta charset=""utf-8""></head><body style=""margin:0;padding:0;background:##f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:##222;"">"
+            & header
+            & "<div style=""max-width:560px;margin:0 auto;padding:1rem;background:##ffffff;"">"
+            & arguments.htmlBody
+            & "</div>"
+            & footer
+            & "</body></html>";
+    }
+
+    /**
+     * Plain-text variant: prepend a one-line site banner and append a
+     * footer with the site URL + bx-Blogger repo URL. No images, no
+     * markup — just clean ASCII.
+     */
+    private string function wrapTextWithBranding( required string textBody ) {
+        var ctx = brandingContext();
+        var nl  = char( 10 );
+        var rule = repeatString( "-", 60 );
+
+        var header = ctx.siteName & nl & rule & nl & nl;
+        var footer = nl & nl & rule & nl
+                   & "Sent by " & ctx.siteName & " (" & ctx.siteUrl & ")" & nl
+                   & "Powered by bx-Blogger (" & variables.bxBloggerRepoUrl & ")" & nl;
+
+        return header & arguments.textBody & footer;
+    }
+
+    /**
+     * Resolve the site URL + display name once per send so the header
+     * and footer both reference the same values. APP_URL is the
+     * canonical site root; site.name is an admin-editable string from
+     * SettingService with a sensible fallback.
+     *
+     * `logoSrc` / `markSrc` are absolute https URLs to the public
+     * branding assets. Recipients will see a "Display images" /
+     * "Show external content" prompt the first time their client
+     * loads our domain. Inline-attachment via `cid:` was tried and
+     * abandoned — bx-mail 1.4.9 silently drops the `contentID`
+     * argument on `cfmailparam`, so the resulting MIME part has no
+     * `Content-ID:` header and `cid:` refs fail to resolve.
+     */
+    private struct function brandingContext() {
+        var siteUrl = trim( getSystemSetting( "APP_URL", "" ) );
+        if ( !len( siteUrl ) ) siteUrl = "http://localhost:8080";
+        // Strip trailing slash so we can append paths cleanly.
+        siteUrl = reReplace( siteUrl, "/+$", "", "all" );
+
+        var siteName = "";
+        try { siteName = settingService.get( "site.name", "" ); }
+        catch ( any e ) { /* SettingService may be unavailable in early-boot edge cases */ }
+        if ( !len( trim( siteName ) ) ) siteName = "Your bx-Blogger site";
+
+        return {
+            "siteUrl"  : siteUrl,
+            "siteName" : siteName,
+            "logoSrc"  : siteUrl & "/includes/public/branding/logo-light.png",
+            "markSrc"  : siteUrl & "/includes/public/branding/logo-mark-light.png"
+        };
+    }
+
+    /**
+     * Brand gradients used on the thin accent bars below the header
+     * and above the footer. Mirrors the admin top-bar gradient (and
+     * its reverse, used on sidebar hover) so emails feel like part
+     * of the same product.
+     *
+     * Solid `background-color` on each gradient cell is the Outlook
+     * fallback — the Word rendering engine ignores `linear-gradient`
+     * entirely, so without the solid color it would render as the
+     * cell's parent background (white) and the bar would disappear.
+     * `font-size:0;line-height:Xpx` plus `&nbsp;` keeps the cell at
+     * its declared height across clients (some collapse empty cells).
+     */
+    private string function brandedHeaderHtml( required struct ctx ) {
+        return "<table role=""presentation"" width=""100%"" border=""0"" cellpadding=""0"" cellspacing=""0"" style=""background:##ffffff;"">"
+            & "<tr><td align=""center"" style=""padding:24px 16px;background:##ffffff;"">"
+            & "<a href=""" & encodeForHTMLAttribute( arguments.ctx.siteUrl ) & """ style=""text-decoration:none;border:0;display:inline-block;"">"
+            & "<img src=""" & encodeForHTMLAttribute( arguments.ctx.logoSrc ) & """ alt=""" & encodeForHTMLAttribute( arguments.ctx.siteName ) & """ height=""48"" style=""display:block;border:0;outline:none;text-decoration:none;height:48px;width:auto;"" />"
+            & "</a>"
+            & "</td></tr>"
+            & "<tr><td height=""8"" style=""height:8px;line-height:8px;font-size:0;background-color:##4a3a9a;background-image:linear-gradient(90deg,##0d2b60 0%,##7f47d4 100%);"">&nbsp;</td></tr>"
+            & "</table>";
+    }
+
+    private string function brandedFooterHtml( required struct ctx ) {
+        return "<table role=""presentation"" width=""100%"" border=""0"" cellpadding=""0"" cellspacing=""0"" style=""background:##ffffff;color:##6b7280;font-size:12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;"">"
+            & "<tr><td height=""6"" style=""height:6px;line-height:6px;font-size:0;background-color:##4a3a9a;background-image:linear-gradient(90deg,##7f47d4 0%,##0d2b60 100%);"">&nbsp;</td></tr>"
+            & "<tr><td align=""center"" style=""padding:20px 16px;line-height:1.5;background:##ffffff;"">"
+            & "<img src=""" & encodeForHTMLAttribute( arguments.ctx.markSrc ) & """ alt="""" width=""20"" height=""20"" style=""display:inline-block;vertical-align:middle;border:0;outline:none;margin-right:6px;"" />"
+            & "<span style=""vertical-align:middle;"">"
+            & "Sent by <a href=""" & encodeForHTMLAttribute( arguments.ctx.siteUrl ) & """ style=""color:##6b7280;text-decoration:underline;"">" & encodeForHTML( arguments.ctx.siteName ) & "</a>"
+            & " &middot; Powered by <a href=""" & variables.bxBloggerRepoUrl & """ style=""color:##6b7280;text-decoration:underline;"">bx-Blogger</a>"
+            & "</span>"
+            & "</td></tr></table>";
     }
 
 }

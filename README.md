@@ -1,8 +1,40 @@
 # bx-Blogger
 
-A self-hosted content management system for pages and a blog. Built on [BoxLang](https://boxlang.io) + [ColdBox 8](https://www.coldbox.org), runs in Docker, talks to MySQL, stores media on any S3-compatible backend (or a local disk), and ships as a single tagged container image.
+### *Write → Share → Inspire*
 
-bx-Blogger is for single-site operators — bloggers, small teams, publishers — who want full control over their stack without running a multi-tenant SaaS.
+A self-hosted blog and CMS built for developers. From `git clone` to your first
+published post in under fifteen minutes. Bring a Docker host, MySQL, and
+S3-compatible storage, and you're publishing.
+
+You write in **Markdown** because it's the format developers already use every
+day for READMEs, docs, and PR descriptions. Drafting a post in bx-Blogger feels
+like editing any other file in your editor: same fenced code blocks, same link
+and image syntax, same syntax highlighting on the rendered output. No WYSIWYG
+mouse work, no proprietary block model, no formatting toolbar to fight with.
+
+When **AI features are enabled**, the editor leverages BoxLang's `bx-ai`
+module to add three optional accelerators for moving ideas to the page faster:
+
+- **Draft from an idea:** type a one-line concept and get a starting draft you
+  can edit, restructure, or scrap. Useful for breaking through a blank page.
+- **Review and suggest:** runs your draft past a model that returns structured
+  suggestions for clarity, grammar, style, and structure. Each suggestion is
+  one click to accept or dismiss in-line.
+- **Excerpt and image generation:** auto-summarize the body into a
+  publish-ready excerpt, or generate editorial images for the featured slot
+  from a text prompt without leaving the editor.
+
+System prompts for every AI feature are admin-editable from the database, so
+the model's behavior fits your voice, not the other way around. Provider,
+model, and per-feature budgets are configured via env vars. bx-Blogger is
+provider-agnostic (OpenRouter, OpenAI, Anthropic, local Ollama, or anything
+with a chat-completion API).
+
+bx-Blogger is for developers who want their own blog or run a small team's
+engineering blog. You get full ownership of content, stack, and costs, without
+a SaaS account or vendor in the loop.
+
+> **bx-Blogger** → Write → Share → Inspire
 
 ---
 

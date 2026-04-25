@@ -1,0 +1,107 @@
+/**
+ * B2ProviderSpec
+ *
+ * Pins the contract that the cbfs S3 disk we point at Backblaze B2
+ * (or any other path-style non-AWS endpoint) MUST satisfy:
+ *
+ *   1. URLEndpointHostname equals awsDomain — no region prefix glued
+ *      onto a domain that already includes the region. (s3sdk's stock
+ *      buildUrlEndpoint produces e.g. `us-west-004.s3.us-west-004.
+ *      backblazeb2.com` for B2 and gets a 403 "AccessDenied" on every
+ *      request; the patch this spec defends needs that hostname to
+ *      stay equal to awsDomain.)
+ *
+ *   2. The hostname STAYS correct after an external
+ *      buildUrlEndpoint(bucketName) call — proves any future internal
+ *      caller (putObject, getObject) won't undo the fix.
+ *
+ *   3. A small file round-trips through the disk: write → exists →
+ *      read → delete. Catches any signing / endpoint regression that
+ *      passes the URL-shape assertions but still fails at the wire.
+ *
+ * The spec is provider-agnostic: it asks the cbfs `media` disk for
+ * its underlying s3 client and checks the contract. Whether the disk
+ * is backed by stock cbfs.S3Provider (current state, with the docker-
+ * entrypoint patch in play) or by our future models.cbfs.B2Provider
+ * subclass, the same assertions hold. That's the point — the spec is
+ * what gives us confidence to swap providers without regressing any
+ * code path that touches the disk.
+ *
+ * AWS itself is intentionally skipped via an `awsDomain contains
+ * "amazonaws.com"` short-circuit because the region prepend IS
+ * correct there.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.cbfsService = getInstance( "DiskService@cbfs" );
+        variables.disk        = variables.cbfsService.get( "media" );
+    }
+
+    function run() {
+        describe( "cbfs S3 disk on non-AWS endpoint (B2 / DO Spaces / MinIO / Wasabi)", function() {
+
+            it( "is configured against an S3-style provider (sanity)", function() {
+                expect( structKeyExists( variables.disk, "getS3" ) )
+                    .toBeTrue( "media disk should be S3-backed for this spec to mean anything" );
+            } );
+
+            it( "URLEndpointHostname equals awsDomain (no double region prepend)", function() {
+                var s3        = variables.disk.getS3();
+                var awsDomain = s3.getAwsDomain();
+                var hostname  = s3.getURLEndpointHostname();
+
+                if ( awsDomain contains "amazonaws.com" ) {
+                    // Region prepend IS correct on real AWS — spec doesn't apply.
+                    return;
+                }
+
+                expect( hostname ).toBe(
+                    awsDomain,
+                    "non-AWS endpoint hostname should equal awsDomain. Got hostname=[" &
+                    hostname & "] for awsDomain=[" & awsDomain &
+                    "]. If you see the region prefixed twice, the s3sdk patch did not apply."
+                );
+            } );
+
+            it( "stays corrected after an external buildUrlEndpoint(bucketName) call", function() {
+                var s3        = variables.disk.getS3();
+                var awsDomain = s3.getAwsDomain();
+                if ( awsDomain contains "amazonaws.com" ) return;
+
+                // Internal s3sdk callers (putObject, getObject, head)
+                // re-invoke buildUrlEndpoint as a side effect. Simulate
+                // one such call and confirm the hostname doesn't drift
+                // back to the broken `<region>.<awsDomain>` shape.
+                s3.buildUrlEndpoint( "any-bucket-name" );
+
+                expect( s3.getURLEndpointHostname() ).toBe(
+                    awsDomain,
+                    "buildUrlEndpoint() must not introduce a region prefix on non-AWS endpoints"
+                );
+            } );
+
+            it( "round-trips a small file: write -> exists -> read -> delete", function() {
+                var key     = "specs/b2-provider/" & lCase( hash( createUUID(), "SHA-256" ) ).left( 16 ) & ".txt";
+                var payload = "hello-from-b2-provider-spec-" & dateTimeFormat( now(), "yyyymmddHHnnss" );
+
+                try {
+                    variables.disk.create( path = arguments.key ?: key, contents = payload, overwrite = true );
+                    expect( variables.disk.exists( key ) ).toBeTrue( "file should exist after create" );
+
+                    var fetched = variables.disk.get( key );
+                    var asString = isBinary( fetched ) ? toString( fetched ) : fetched;
+                    expect( asString ).toBe( payload, "round-tripped content matches what we wrote" );
+                }
+                finally {
+                    try { variables.disk.delete( key ); } catch ( any e ) {}
+                }
+
+                expect( variables.disk.exists( key ) ).toBeFalse( "file should be gone after delete" );
+            } );
+
+        } );
+    }
+
+}

@@ -208,6 +208,14 @@
 				padding-left: calc( .75rem - 3px );
 			}
 
+			/* Hide sub-menu items entirely in rail at rest — the
+			   collapsed rail should be a clean column of top-level
+			   icons only. Hovering expands the rail and re-exposes
+			   every sub item with its label and indent. */
+			html.admin-rail .admin-sidebar-inner:not(:hover) .nav-sub {
+				display: none;
+			}
+
 			/* Hide the toggle's label in rail mode; swap the chevron. */
 			html.admin-rail .admin-sidebar-toggle { justify-content: center; }
 			html.admin-rail .admin-sidebar-inner:not(:hover) .admin-sidebar-toggle .nav-label {
@@ -216,18 +224,41 @@
 			html.admin-rail .admin-sidebar-toggle [data-toggle-icon-full] { display: none; }
 			html.admin-rail .admin-sidebar-toggle [data-toggle-icon-rail] { display: inline-block; }
 
-			/* Main content widens to take the space the rail freed up,
-			   and pads its left edge so the absolutely-positioned rail
-			   doesn't visually overlap the first column of content.
-			   Padding = rail width (56px) + a gutter so content doesn't
-			   butt up against the rail. On hover the rail expands over
-			   the padding area by design — no reflow. */
-			html.admin-rail main.col-md-9,
-			html.admin-rail main.col-lg-10 {
-				flex: 1 1 auto;
-				max-width: none;
-				width: auto;
-				padding-left: calc( 56px + 1rem );
+			/* Main content widens to take the space the rail freed up.
+			   The sidebar column reserves 64px of flex-row space
+			   (set on .admin-sidebar above), so main sits immediately
+			   to its right; padding-left keeps content off the rail's
+			   right edge.
+
+			   `flex: 1 1 0` + `min-width: 0` are load-bearing:
+			   without them, `.row`'s default `flex-wrap: wrap` plus
+			   wide content inside main (long tables, big cards,
+			   <pre> blocks) made main's intrinsic width exceed the
+			   available row space, bouncing main to a NEW flex line
+			   below the aside. That made content appear to start at
+			   the viewport's left edge — visually nicer in isolation,
+			   but a layout bug that broke the side-by-side aside +
+			   main grid. Pinning basis to 0 + zeroing min-width
+			   forces main to fit beside the rail and shrink to fit
+			   no matter what's inside.
+
+			   `!important` on padding-left because Bootstrap's
+			   `.row > *` lands at the same specificity and the
+			   cascade race wasn't going our way on every page. The
+			   `> .row { margin-left: 0 }` companion stops a
+			   `<div class="row">` direct child from pulling its
+			   contents back under the rail via Bootstrap's negative
+			   gutter. */
+			html.admin-rail main {
+				flex: 1 1 0 !important;
+				min-width: 0 !important;
+				max-width: none !important;
+				width: auto !important;
+				padding-left: 1.25rem !important;
+			}
+			html.admin-rail main > .row {
+				margin-left: 0 !important;
+				margin-right: 0 !important;
 			}
 		}
 
@@ -339,21 +370,23 @@
 				// has NO rights to any child; show only the children the
 				// user is entitled to when at least one permission matches.
 				u = cbauth.isLoggedIn() ? cbauth.getUser() : "";
-				canSysUsers    = cbauth.isLoggedIn() && u.hasPermission( "users.manage" );
-				canSysSettings = cbauth.isLoggedIn() && u.hasPermission( "settings.manage" );
-				canSysThemes   = cbauth.isLoggedIn() && u.hasPermission( "themes.manage" );
-				canSysMenus    = cbauth.isLoggedIn() && u.hasPermission( "menus.manage" );
-				canSysRedir    = cbauth.isLoggedIn() && u.hasPermission( "redirects.manage" );
-				canSys404      = cbauth.isLoggedIn() && u.hasPermission( "broken_links.view" );
-				canSysAudit    = cbauth.isLoggedIn() && u.hasPermission( "audit.view" );
-				canSysPrivacy  = cbauth.isLoggedIn() && u.hasPermission( "users.export_data" );
-				hasSysAccess   = canSysUsers || canSysSettings || canSysThemes || canSysMenus
-				               || canSysRedir || canSys404 || canSysAudit || canSysPrivacy;
+				canSysUsers     = cbauth.isLoggedIn() && u.hasPermission( "users.manage" );
+				canSysSettings  = cbauth.isLoggedIn() && u.hasPermission( "settings.manage" );
+				canSysThemes    = cbauth.isLoggedIn() && u.hasPermission( "themes.manage" );
+				canSysMenus     = cbauth.isLoggedIn() && u.hasPermission( "menus.manage" );
+				canSysRedir     = cbauth.isLoggedIn() && u.hasPermission( "redirects.manage" );
+				canSys404       = cbauth.isLoggedIn() && u.hasPermission( "broken_links.view" );
+				canSysAudit     = cbauth.isLoggedIn() && u.hasPermission( "audit.view" );
+				canSysPrivacy   = cbauth.isLoggedIn() && u.hasPermission( "users.export_data" );
+				canSysAiPrompts = cbauth.isLoggedIn() && u.hasPermission( "ai.prompts.manage" );
+				hasSysAccess    = canSysUsers || canSysSettings || canSysThemes || canSysMenus
+				                || canSysRedir || canSys404 || canSysAudit || canSysPrivacy
+				                || canSysAiPrompts;
 
 				// Auto-expand System Settings when the active page is one
 				// of its children, otherwise it starts collapsed.
 				isInSystemSettings = !!reFindNoCase(
-					"^admin:(Users|Settings|Themes|Menus|Redirects|BrokenLinks|AuditLog|Privacy)\.",
+					"^admin:(Users|Settings|Themes|Menus|Redirects|BrokenLinks|AuditLog|Privacy|AiPrompts)\.",
 					currentEvent
 				);
 			</bx:script>
@@ -423,6 +456,13 @@
 									<i class="bi bi-search nav-icon"></i><span class="nav-label">SEO Settings</span>
 								</a>
 							</bx:if>
+							<bx:if canSysAiPrompts>
+								<a class="nav-link nav-sub #( currentEvent.startsWith( 'admin:AiPrompts.' ) ? 'active' : '' )#"
+								   href="/admin/ai-prompts"
+								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="AI Prompts">
+									<i class="bi bi-chat-square-text nav-icon"></i><span class="nav-label">AI Prompts</span>
+								</a>
+							</bx:if>
 							<bx:if canSysThemes>
 								<a class="nav-link nav-sub #( currentEvent.startsWith( 'admin:Themes.' ) ? 'active' : '' )#"
 								   href="#event.buildLink( 'admin:Themes.index' )#"
@@ -474,6 +514,11 @@
 					      ("work stuff" vs "your account"). --->
 					<bx:if cbauth.isLoggedIn()>
 						<hr class="my-2 nav-separator">
+						<a class="nav-link #( currentEvent.startsWith( 'admin:Notifications.' ) ? 'active' : '' )#"
+						   href="#event.buildLink( 'admin:Notifications.index' )#"
+						   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Notifications">
+							<i class="bi bi-bell nav-icon"></i><span class="nav-label">Notifications</span>
+						</a>
 						<a class="nav-link #( currentEvent.startsWith( 'admin:Account.' ) ? 'active' : '' )#"
 						   href="#event.buildLink( 'admin:Account.show' )#"
 						   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="My account">

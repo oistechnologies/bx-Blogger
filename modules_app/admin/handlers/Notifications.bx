@@ -1,0 +1,30 @@
+/**
+ * bx-Blogger — admin:Notifications
+ *
+ * Per-user notifications inbox. Every signed-in admin user gets the
+ * page; there's no "manage anyone's notifications" surface — the
+ * wire scopes every query and write through the service to the
+ * caller's own user_id.
+ *
+ * cbsecurity's firewall already gates `/admin/*` for authentication.
+ * The preHandler here is only insurance against a route that ever
+ * slips that net.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    this.layouts = { "Main.bxm" : "*" };
+
+    function preHandler( event, rc, prc, action, eventArguments ) {
+        var auth = getInstance( "AuthenticationService@cbauth" );
+        if ( !auth.isLoggedIn() ) {
+            relocate( url = "/security/login" );
+            return;
+        }
+    }
+
+    function index( event, rc, prc ) {
+        prc.pageTitle = "Notifications";
+        event.setView( view = "notifications/index" );
+    }
+
+}

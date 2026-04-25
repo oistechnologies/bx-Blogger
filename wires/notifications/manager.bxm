@@ -1,0 +1,454 @@
+<bx:script>
+// @startWire
+/**
+ * notifications.manager — full notifications inbox for the signed-in
+ * user. Search by title/body, filter by read state + severity, sort,
+ * paginate. Per-row mark-read and delete; bulk select with bulk
+ * mark-read, bulk delete; and a wholesale "delete all". Every delete
+ * action wraps wire:confirm so a stray click can't blow rows away.
+ *
+ * Lives in app-root /wires/ alongside notifications/bell.bxm per the
+ * documented CBWIRE module-wires bug. Mounted by
+ * modules_app/admin/views/notifications/index.bxm.
+ */
+
+property name="notificationService" inject="NotificationService";
+property name="cbauth"              inject="AuthenticationService@cbauth";
+
+data = {
+    // Filters
+    "search"         : "",
+    "filterStatus"   : "all",       // all | unread | read
+    "filterSeverity" : "all",       // all | info | warning | danger | <whatever rows have>
+    "sortBy"         : "newest",    // newest | oldest | unread_first
+    "perPage"        : 25,
+    "page"           : 1,
+
+    // Selection — array of numeric ids the user has ticked.
+    // Persisted across pagination so a user can multi-select across
+    // pages then bulk-act once.
+    "selectedIds"    : [],
+
+    // Flash messages
+    "flashOk"        : "",
+    "flashError"     : ""
+};
+
+function onMount( event, rc, prc, params ) {
+    // No-op — every render queries fresh via the service.
+}
+
+// --------------------------------------------------------------------
+// Filter / pagination actions (most fire automatically via wire:model.live)
+// --------------------------------------------------------------------
+
+function applyFilters() {
+    // Any filter change snaps back to page 1 so the user doesn't
+    // land on an empty page that no longer exists in the new result
+    // set.
+    data.page = 1;
+}
+
+function goToPage( required numeric page ) {
+    var info = listing();   // need totalPages bound to current filters
+    var p = max( 1, min( arguments.page, info.totalPages ) );
+    data.page = p;
+}
+
+function nextPage() { goToPage( ( data.page ?: 1 ) + 1 ); }
+function prevPage() { goToPage( ( data.page ?: 1 ) - 1 ); }
+
+// --------------------------------------------------------------------
+// Selection (bulk)
+// --------------------------------------------------------------------
+
+/**
+ * Toggle a single row in/out of the selection. Reassigns the array
+ * (not in-place mutation) so CBWIRE's snapshot diff catches the
+ * change — same lesson learned from the AI Prompts toggle bug.
+ */
+function toggleSelect( required numeric id ) {
+    var picked = data.selectedIds ?: [];
+    var next   = [];
+    var found  = false;
+    for ( var existing in picked ) {
+        if ( val( existing ) == val( arguments.id ) ) {
+            found = true;
+            continue;
+        }
+        next.append( existing );
+    }
+    if ( !found ) next.append( val( arguments.id ) );
+    data.selectedIds = next;
+}
+
+/**
+ * Select / deselect every row currently visible on the page. Doesn't
+ * touch rows on other pages — keeps the user in control.
+ */
+function toggleSelectAllOnPage() {
+    var info = listing();
+    var visibleIds = [];
+    for ( var r in info.rows ) visibleIds.append( val( r.id ) );
+
+    // If every visible row is already selected, deselect them all.
+    // Otherwise select every visible row (additive — keeps off-page
+    // selections intact).
+    var picked = data.selectedIds ?: [];
+    var allVisibleSelected = visibleIds.len() > 0;
+    for ( var id in visibleIds ) {
+        if ( !picked.findNoCase( id ) && !picked.find( id ) ) {
+            allVisibleSelected = false;
+            break;
+        }
+    }
+
+    var next = duplicate( picked );
+    if ( allVisibleSelected ) {
+        // Drop visible ids from the selection
+        next = next.filter( function( id ) { return !visibleIds.find( val( id ) ); } );
+    }
+    else {
+        // Add any missing visible ids to the selection
+        for ( var id in visibleIds ) {
+            if ( !next.find( id ) ) next.append( id );
+        }
+    }
+    data.selectedIds = next;
+}
+
+function clearSelection() {
+    data.selectedIds = [];
+}
+
+// --------------------------------------------------------------------
+// Mark-read actions
+// --------------------------------------------------------------------
+
+function markRead( required numeric id ) {
+    notificationService.markRead( arguments.id, cbauth.getUser().getId() );
+    data.flashOk = "Notification marked as read.";
+}
+
+function markAllRead() {
+    notificationService.markAllReadFor( cbauth.getUser().getId() );
+    data.flashOk = "All notifications marked as read.";
+}
+
+function markSelectedRead() {
+    var picked = data.selectedIds ?: [];
+    if ( !picked.len() ) {
+        data.flashError = "Select at least one notification first.";
+        return;
+    }
+    notificationService.markMultipleReadFor( cbauth.getUser().getId(), picked );
+    data.flashOk = picked.len() & " notification(s) marked as read.";
+    data.selectedIds = [];
+}
+
+// --------------------------------------------------------------------
+// Delete actions (every one wraps wire:confirm in the template)
+// --------------------------------------------------------------------
+
+function deleteOne( required numeric id ) {
+    notificationService.deleteFor( arguments.id, cbauth.getUser().getId() );
+    data.flashOk = "Notification deleted.";
+    // Drop from selection if it was ticked.
+    data.selectedIds = ( data.selectedIds ?: [] ).filter( function( i ) { return val( i ) != val( id ); } );
+}
+
+function deleteSelected() {
+    var picked = data.selectedIds ?: [];
+    if ( !picked.len() ) {
+        data.flashError = "Select at least one notification first.";
+        return;
+    }
+    notificationService.deleteMultipleFor( cbauth.getUser().getId(), picked );
+    data.flashOk = picked.len() & " notification(s) deleted.";
+    data.selectedIds = [];
+    // After a bulk delete the current page may no longer exist.
+    var info = listing();
+    if ( data.page > info.totalPages ) data.page = info.totalPages;
+}
+
+function deleteAll() {
+    notificationService.deleteAllFor( cbauth.getUser().getId() );
+    data.flashOk = "All notifications deleted.";
+    data.selectedIds = [];
+    data.page = 1;
+}
+
+// --------------------------------------------------------------------
+// View helpers (called from the template)
+// --------------------------------------------------------------------
+
+/**
+ * Returns the current page result + paging metadata. Called from the
+ * template once per render; results are NOT cached so filter/sort/
+ * search changes flow through immediately.
+ */
+struct function listing() {
+    var userId = cbauth.getUser().getId();
+    return notificationService.searchFor(
+        userId   = userId,
+        search   = data.search       ?: "",
+        status   = data.filterStatus ?: "all",
+        severity = data.filterSeverity ?: "all",
+        sortBy   = data.sortBy       ?: "newest",
+        page     = val( data.page    ?: 1 ),
+        perPage  = val( data.perPage ?: 25 )
+    );
+}
+
+/**
+ * Distinct severity values present in this user's notifications.
+ * Powers the severity filter dropdown — only show values the user
+ * actually has rows for.
+ */
+array function severitiesForFilter() {
+    var rows = getInstance( "QueryBuilder@qb" ).newQuery()
+        .from( "notifications" )
+        .where( "user_id", cbauth.getUser().getId() )
+        .select( "severity" )
+        .distinct()
+        .orderBy( "severity", "asc" )
+        .get();
+    var out = [];
+    for ( var r in rows ) {
+        if ( len( r.severity ?: "" ) ) out.append( r.severity );
+    }
+    return out;
+}
+
+boolean function isSelected( required numeric id ) {
+    var picked = data.selectedIds ?: [];
+    return picked.find( val( arguments.id ) ) > 0;
+}
+
+string function badgeClassFor( required string severity ) {
+    switch ( arguments.severity ) {
+        case "danger":  return "bg-danger";
+        case "warning": return "bg-warning text-dark";
+        case "success": return "bg-success";
+        case "info":    return "bg-info text-dark";
+        default:        return "bg-secondary";
+    }
+}
+
+string function rowClassFor( any read_at ) {
+    return ( !isNull( arguments.read_at ) && len( arguments.read_at ?: "" ) )
+        ? "table-light text-muted"
+        : "";   // unread = full strength
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:script>
+    info = listing();
+    selCount = ( args.selectedIds ?: [] ).len();
+</bx:script>
+
+<div>
+    <bx:if len( args.flashOk )>
+        <div class="alert alert-success alert-dismissible">
+            #encodeForHTML( args.flashOk )#
+            <button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+        </div>
+    </bx:if>
+    <bx:if len( args.flashError )>
+        <div class="alert alert-danger alert-dismissible">
+            #encodeForHTML( args.flashError )#
+            <button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+        </div>
+    </bx:if>
+
+    <!--- Filters bar --->
+    <div class="card mb-3">
+        <div class="card-body">
+            <div class="row g-2 align-items-end">
+                <div class="col-md-4">
+                    <label class="form-label small text-muted mb-1" for="notif-search">Search</label>
+                    <input type="text"
+                           id="notif-search"
+                           class="form-control form-control-sm"
+                           wire:model.live.debounce.350ms="search"
+                           wire:keydown.enter="applyFilters"
+                           placeholder="Title or body..." />
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small text-muted mb-1" for="notif-status">Status</label>
+                    <select id="notif-status" class="form-select form-select-sm"
+                            wire:model.live="filterStatus"
+                            wire:change="applyFilters">
+                        <option value="all">All</option>
+                        <option value="unread">Unread only</option>
+                        <option value="read">Read only</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small text-muted mb-1" for="notif-severity">Severity</label>
+                    <select id="notif-severity" class="form-select form-select-sm"
+                            wire:model.live="filterSeverity"
+                            wire:change="applyFilters">
+                        <option value="all">All</option>
+                        <bx:loop array="#severitiesForFilter()#" item="sev">
+                            <option value="#encodeForHTMLAttribute( sev )#">#encodeForHTML( sev )#</option>
+                        </bx:loop>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small text-muted mb-1" for="notif-sort">Sort</label>
+                    <select id="notif-sort" class="form-select form-select-sm"
+                            wire:model.live="sortBy"
+                            wire:change="applyFilters">
+                        <option value="newest">Newest first</option>
+                        <option value="oldest">Oldest first</option>
+                        <option value="unread_first">Unread first</option>
+                    </select>
+                </div>
+                <div class="col-md-2">
+                    <label class="form-label small text-muted mb-1" for="notif-perpage">Per page</label>
+                    <select id="notif-perpage" class="form-select form-select-sm"
+                            wire:model.live="perPage"
+                            wire:change="applyFilters">
+                        <option value="10">10</option>
+                        <option value="25">25</option>
+                        <option value="50">50</option>
+                        <option value="100">100</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!--- Bulk action bar --->
+    <div class="d-flex flex-wrap gap-2 mb-3 align-items-center">
+        <span class="small text-muted">
+            <bx:if info.total == 0>
+                No notifications.
+            <bx:else>
+                Showing #min( ( ( args.page - 1 ) * args.perPage ) + 1, info.total )#&ndash;#min( args.page * args.perPage, info.total )# of #numberFormat( info.total )#.
+            </bx:if>
+        </span>
+        <bx:if selCount gt 0>
+            <span class="badge bg-primary ms-2">#selCount# selected</span>
+            <button type="button" class="btn btn-sm btn-outline-secondary"
+                    wire:click="markSelectedRead">Mark selected read</button>
+            <button type="button" class="btn btn-sm btn-outline-danger"
+                    wire:click="deleteSelected"
+                    wire:confirm="Delete the #selCount# selected notification(s)? This cannot be undone.">Delete selected</button>
+            <button type="button" class="btn btn-sm btn-link"
+                    wire:click="clearSelection">Clear selection</button>
+        </bx:if>
+        <div class="ms-auto d-flex gap-2">
+            <bx:if info.total gt 0>
+                <button type="button" class="btn btn-sm btn-outline-secondary"
+                        wire:click="markAllRead">Mark all read</button>
+                <button type="button" class="btn btn-sm btn-outline-danger"
+                        wire:click="deleteAll"
+                        wire:confirm="Delete EVERY notification in your inbox? This cannot be undone.">Delete all</button>
+            </bx:if>
+        </div>
+    </div>
+
+    <!--- Listing table --->
+    <div class="card">
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width: 40px;">
+                            <input type="checkbox" class="form-check-input"
+                                   wire:click="toggleSelectAllOnPage"
+                                   aria-label="Select all on this page" />
+                        </th>
+                        <th style="width: 90px;">Severity</th>
+                        <th>Notification</th>
+                        <th style="width: 160px;">Received</th>
+                        <th style="width: 160px;" class="text-end">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <bx:if info.rows.len() == 0>
+                        <tr><td colspan="5" class="text-center text-muted small py-4">
+                            <bx:if len( trim( args.search ?: "" ) ) || args.filterStatus != "all" || args.filterSeverity != "all">
+                                No notifications match the current filters.
+                            <bx:else>
+                                Your inbox is empty.
+                            </bx:if>
+                        </td></tr>
+                    <bx:else>
+                        <bx:loop array="#info.rows#" item="n">
+                            <bx:script>
+                                isRead = !isNull( n.read_at ) && len( n.read_at ?: "" );
+                            </bx:script>
+                            <tr class="#rowClassFor( n.read_at )#">
+                                <td>
+                                    <input type="checkbox" class="form-check-input"
+                                           wire:click="toggleSelect(#val( n.id )#)"
+                                           #( isSelected( n.id ) ? 'checked' : '' )#
+                                           aria-label="Select notification #val( n.id )#" />
+                                </td>
+                                <td>
+                                    <span class="badge #badgeClassFor( n.severity )#">#encodeForHTML( n.severity )#</span>
+                                </td>
+                                <td>
+                                    <div class="fw-#( isRead ? 'normal' : 'semibold' )#">
+                                        <bx:if len( n.link ?: "" )>
+                                            <a href="#encodeForHTMLAttribute( n.link )#" class="text-decoration-none">#encodeForHTML( n.title )#</a>
+                                        <bx:else>
+                                            #encodeForHTML( n.title )#
+                                        </bx:if>
+                                    </div>
+                                    <bx:if len( n.body ?: "" )>
+                                        <div class="small text-muted">#encodeForHTML( n.body )#</div>
+                                    </bx:if>
+                                </td>
+                                <td class="small text-muted">
+                                    #dateTimeFormat( n.created_at, "yyyy-mm-dd HH:nn" )#
+                                    <bx:if isRead>
+                                        <div class="text-success" style="font-size: 0.75em;">read</div>
+                                    </bx:if>
+                                </td>
+                                <td class="text-end">
+                                    <div class="btn-group btn-group-sm" role="group">
+                                        <bx:if !isRead>
+                                            <button type="button" class="btn btn-outline-secondary"
+                                                    wire:click="markRead(#val( n.id )#)"
+                                                    title="Mark as read">
+                                                <i class="bi bi-check2"></i>
+                                            </button>
+                                        </bx:if>
+                                        <button type="button" class="btn btn-outline-danger"
+                                                wire:click="deleteOne(#val( n.id )#)"
+                                                wire:confirm="Delete this notification? This cannot be undone."
+                                                title="Delete">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        </bx:loop>
+                    </bx:if>
+                </tbody>
+            </table>
+        </div>
+
+        <!--- Pagination footer --->
+        <bx:if info.totalPages gt 1>
+            <div class="card-footer d-flex justify-content-between align-items-center">
+                <span class="small text-muted">Page #info.page# of #info.totalPages#</span>
+                <div class="btn-group btn-group-sm">
+                    <button type="button" class="btn btn-outline-secondary"
+                            wire:click="prevPage"
+                            #( info.page lte 1 ? 'disabled' : '' )#>&laquo; Prev</button>
+                    <button type="button" class="btn btn-outline-secondary"
+                            wire:click="nextPage"
+                            #( info.page gte info.totalPages ? 'disabled' : '' )#>Next &raquo;</button>
+                </div>
+            </div>
+        </bx:if>
+    </div>
+</div>
+</bx:output>

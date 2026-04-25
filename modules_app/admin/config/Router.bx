@@ -28,6 +28,14 @@ class {
         // `:handler/:action` catch-all.
         route( "posts/:id/revisions" ).to( "Posts.revisions" );
 
+        // Friendly hyphenated alias. The conventional `:handler/:action?`
+        // resolver only matches handler names case-insensitively without
+        // honoring hyphens, so /admin/ai-prompts wouldn't reach AiPrompts
+        // without an explicit route. /admin/aiprompts also works via the
+        // conventional resolver, but the hyphenated URL is what the
+        // sidebar links to and what we want operators to bookmark.
+        route( "ai-prompts" ).to( "AiPrompts.index" );
+
         // Phase UX — self-service account lives inside the admin shell
         // (previously /account at the app root). Specific sub-routes
         // first so the base /admin/account GET/POST pair doesn't

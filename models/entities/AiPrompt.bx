@@ -1,0 +1,39 @@
+/**
+ * bx-Blogger — AiPrompt entity (Quick)
+ *
+ * Admin-editable system prompt stored in `ai_prompts`. Three rows are
+ * seeded on first migrate-up (draft_from_idea, review_post,
+ * image_generation); admins edit them through /admin/ai-prompts.
+ *
+ * `default_text` is set once by the seed migration and never touched
+ * by the admin UI — the "Reset to default" action copies it back into
+ * `prompt_text`.
+ */
+class extends="quick.models.BaseEntity" accessors="true" table="ai_prompts" {
+
+    property name="id"           column="id"           insert=false update=false;
+    property name="slug"         column="slug";
+    property name="name"         column="name";
+    property name="description"  column="description";
+    property name="promptText"   column="prompt_text";
+    property name="defaultText"  column="default_text";
+    property name="isActive"     column="is_active";
+    property name="isSystem"     column="is_system";
+    property name="updatedBy"    column="updated_by";
+    property name="updatedAt"    column="updated_at";
+    property name="createdAt"    column="created_at";
+
+    function editor() {
+        return belongsTo( relationName = "User", foreignKey = "updated_by" );
+    }
+
+    this.memento = {
+        defaultIncludes: [
+            "id", "slug", "name", "description",
+            "promptText", "defaultText",
+            "isActive", "isSystem",
+            "updatedBy", "updatedAt", "createdAt"
+        ]
+    };
+
+}

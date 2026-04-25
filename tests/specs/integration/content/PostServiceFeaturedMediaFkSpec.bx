@@ -1,0 +1,110 @@
+/**
+ * Regression: PostService must NOT pass a stale featuredMediaId
+ * through to MySQL where it trips fk_posts_featured_media_id.
+ * The editor wire can hold a media id that was never persisted (a
+ * failed AI image-save) or has since been deleted; both create()
+ * and update() should silently drop the value before the FK fires.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc  = getInstance( "PostService" );
+        variables.user = createTestUser( roleSlug = "author" );
+    }
+
+    function run() {
+        describe( "PostService featured-media FK guard", function() {
+
+            it( "create() with featuredMediaId=0 inserts a row (column defaults to NULL)", function() {
+                // The wire sends 0 as the "no featured image" sentinel
+                // for every save, including the first one for a brand-
+                // new post. Quick.create({featured_media_id:0}) used
+                // to fail because there is no media row with id=0.
+                var post = svc.create( {
+                    "title"           : "Zero featuredMediaId " & createUUID(),
+                    "bodyMarkdown"    : "body",
+                    "authorId"        : variables.user.getId(),
+                    "featuredMediaId" : 0
+                } );
+                expect( post.getId() ).toBeGT( 0 );
+                expect( isNull( post.getFeaturedMediaId() ) || val( post.getFeaturedMediaId() ?: 0 ) == 0 )
+                    .toBeTrue( "FK column should be NULL after dropping the zero sentinel" );
+            } );
+
+            it( "create() drops a featuredMediaId pointing at a non-existent media row", function() {
+                var post = svc.create( {
+                    "title"           : "Stale FK create " & createUUID(),
+                    "bodyMarkdown"    : "body",
+                    "authorId"        : variables.user.getId(),
+                    "featuredMediaId" : 99999999
+                } );
+                expect( post.getId() ).toBeGT( 0 );
+                expect( isNull( post.getFeaturedMediaId() ) || val( post.getFeaturedMediaId() ?: 0 ) == 0 )
+                    .toBeTrue( "FK column should be NULL after dropping the stale reference" );
+            } );
+
+            it( "update() drops a featuredMediaId pointing at a non-existent media row", function() {
+                var post = svc.create( {
+                    "title"        : "Stale FK update " & createUUID(),
+                    "bodyMarkdown" : "body",
+                    "authorId"     : variables.user.getId()
+                } );
+                svc.update(
+                    post     = post,
+                    attrs    = { "featuredMediaId" : 99999999 },
+                    editorId = variables.user.getId()
+                );
+                var reloaded = getInstance( "Post" ).find( post.getId() );
+                expect( isNull( reloaded.getFeaturedMediaId() ) || val( reloaded.getFeaturedMediaId() ?: 0 ) == 0 )
+                    .toBeTrue( "FK column should remain NULL after a stale-id update" );
+            } );
+
+            it( "publish() succeeds after a stale-FK save path", function() {
+                var post = svc.create( {
+                    "title"        : "Publish stale FK " & createUUID(),
+                    "bodyMarkdown" : "body",
+                    "authorId"     : variables.user.getId()
+                } );
+                svc.update(
+                    post     = post,
+                    attrs    = { "featuredMediaId" : 99999999 },
+                    editorId = variables.user.getId()
+                );
+                var fresh = getInstance( "Post" ).find( post.getId() );
+                svc.publish( post = fresh, actorId = variables.user.getId() );
+                expect( fresh.getStatus() ).toBe( "published" );
+            } );
+
+            it( "drops the stale id even when soft-deleted media exists for it", function() {
+                // Create a media row, soft-delete it, then try to set
+                // it as featured. Should be dropped exactly like a
+                // never-existed id.
+                var media = getInstance( "Media" ).create( {
+                    "originalFilename" : "softdeleted.png",
+                    "filename"         : "softdeleted-" & createUUID() & ".png",
+                    "disk"             : "media",
+                    "path"             : "tmp/softdeleted.png",
+                    "mimeType"         : "image/png",
+                    "sizeBytes"        : 1,
+                    "hash"             : lCase( hash( createUUID(), "SHA-256" ) ),
+                    "altText"          : "soft deleted",
+                    "uploaderId"       : variables.user.getId()
+                } );
+                media.setDeletedAt( now() );
+                media.save();
+
+                var post = svc.create( {
+                    "title"           : "Soft-deleted FK " & createUUID(),
+                    "bodyMarkdown"    : "body",
+                    "authorId"        : variables.user.getId(),
+                    "featuredMediaId" : media.getId()
+                } );
+                expect( isNull( post.getFeaturedMediaId() ) || val( post.getFeaturedMediaId() ?: 0 ) == 0 )
+                    .toBeTrue( "soft-deleted media should be treated as missing" );
+            } );
+
+        } );
+    }
+
+}

@@ -19,17 +19,23 @@
  */
 class accessors="true" singleton {
 
-    property name="simulateFailure" default="";
+    property name="simulateFailure"  default="";
+    property name="lastSystemPrompt" default="";
 
-    variables.simulateFailure = "";
+    variables.simulateFailure  = "";
+    variables.lastSystemPrompt = "";
     // in-memory cache: previewId → { bytes, mime, width, height, expiresAt }
     variables.previewCache = {};
 
     struct function generate(
         required string  prompt,
-                 string  styleHint = "",
-                 numeric variants  = 2
+                 string  styleHint    = "",
+                 numeric variants     = 2,
+                 string  systemPrompt = ""
     ) {
+        // Capture the system prompt so specs can verify the DB-driven
+        // override actually reached the provider layer.
+        variables.lastSystemPrompt = arguments.systemPrompt;
         maybeFail();
 
         var n = clamp( arguments.variants, 1, 8 );
@@ -66,6 +72,18 @@ class accessors="true" singleton {
             "totalTokens"      : tokens + n * 50,
             "costUsdMicro"     : n * 40000      // ~$0.04 per image — OpenRouter-ballpark
         };
+    }
+
+    /**
+     * Mock parallel to BxAiImageProvider.getPreviewUrl — returns a
+     * data: URL synthesized from the cached bytes so the editor wire
+     * can render the preview without round-tripping the URL through
+     * its serialized state. Empty when the previewId is unknown.
+     */
+    string function getPreviewUrl( required string previewId ) {
+        if ( !structKeyExists( variables.previewCache, arguments.previewId ) ) return "";
+        var rec = variables.previewCache[ arguments.previewId ];
+        return "data:" & ( rec.mime ?: "image/png" ) & ";base64," & toBase64( rec.bytes );
     }
 
     /**

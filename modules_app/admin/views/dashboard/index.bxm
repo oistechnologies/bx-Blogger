@@ -18,6 +18,20 @@
             default:               return "secondary";  // draft + anything else
         }
     };
+    aiActionLabel = ( a ) => {
+        switch ( a ) {
+            case "draft_from_idea":   return "Drafts from idea";
+            case "review_post":       return "Reviews & suggestions";
+            case "excerpt_from_body": return "Excerpts";
+            case "generate_image":    return "Image generations";
+            default:                  return a;
+        }
+    };
+    aiBudgetClass = ( pct ) => {
+        if ( pct >= 90 ) return "bg-danger";
+        if ( pct >= 75 ) return "bg-warning";
+        return "bg-info";
+    };
 </bx:script>
 
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -108,6 +122,118 @@
             </div>
         </div>
     </div>
+
+    <!--- AI usage row (gated on AI_ENABLED) -------------------------- --->
+    <bx:if prc.aiEnabled>
+        <bx:script>
+            // 6-col split when admin sees both cards; full 12-col when
+            // only the per-user card renders.
+            myAiCols = prc.canViewAllAiStats ? "col-md-12 col-lg-6" : "col-12";
+        </bx:script>
+
+        <!--- My AI usage --->
+        <div class="#myAiCols#">
+            <div class="card h-100 stat-card stat-card-info">
+                <div class="card-header card-header-soft card-header-soft-info d-flex justify-content-between align-items-baseline">
+                    <span class="h6 mb-0">My AI usage this month</span>
+                    <span class="small text-muted">#prc.aiUserStats.yearMonth#</span>
+                </div>
+                <div class="card-body">
+                    <div class="d-flex gap-4 align-items-end mb-3">
+                        <div>
+                            <div class="display-6 fw-semibold lh-1">#numberFormat( prc.aiUserStats.totalTokens )#</div>
+                            <div class="small text-muted">tokens</div>
+                        </div>
+                        <div>
+                            <div class="display-6 fw-semibold lh-1">#numberFormat( prc.aiUserStats.totalRequests )#</div>
+                            <div class="small text-muted">requests</div>
+                        </div>
+                    </div>
+
+                    <bx:if prc.aiUserStats.budget gt 0>
+                        <div class="d-flex justify-content-between small text-muted mb-1">
+                            <span>Monthly budget</span>
+                            <span>#numberFormat( prc.aiUserStats.totalTokens )# / #numberFormat( prc.aiUserStats.budget )# tokens (#prc.aiUserStats.pctUsed#%)</span>
+                        </div>
+                        <div class="progress mb-3" style="height: 6px;">
+                            <div class="progress-bar #aiBudgetClass( prc.aiUserStats.pctUsed )#"
+                                 role="progressbar"
+                                 style="width: #prc.aiUserStats.pctUsed#%"
+                                 aria-valuenow="#prc.aiUserStats.pctUsed#"
+                                 aria-valuemin="0"
+                                 aria-valuemax="100"></div>
+                        </div>
+                    <bx:else>
+                        <div class="small text-muted mb-3">Unlimited monthly budget</div>
+                    </bx:if>
+
+                    <bx:if structIsEmpty( prc.aiUserStats.byAction )>
+                        <p class="small text-muted mb-0">No AI requests yet this month.</p>
+                    <bx:else>
+                        <ul class="small list-unstyled mb-0">
+                            <bx:loop collection="#prc.aiUserStats.byAction#" item="action">
+                                <bx:script>info = prc.aiUserStats.byAction[ action ];</bx:script>
+                                <li class="d-flex justify-content-between border-top py-1">
+                                    <span>#encodeForHTML( aiActionLabel( action ) )#</span>
+                                    <span class="text-muted">
+                                        #numberFormat( info.tokens )# tokens
+                                        &middot;
+                                        #info.requests# request<bx:if info.requests neq 1>s</bx:if>
+                                    </span>
+                                </li>
+                            </bx:loop>
+                        </ul>
+                    </bx:if>
+                </div>
+            </div>
+        </div>
+
+        <!--- Site-wide AI usage (admin only) --->
+        <bx:if prc.canViewAllAiStats>
+            <div class="col-md-12 col-lg-6">
+                <div class="card h-100 stat-card stat-card-warning">
+                    <div class="card-header card-header-soft card-header-soft-warning d-flex justify-content-between align-items-baseline">
+                        <span class="h6 mb-0">Site-wide AI usage this month</span>
+                        <span class="small text-muted">all users</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="d-flex gap-4 align-items-end mb-3">
+                            <div>
+                                <div class="display-6 fw-semibold lh-1">#numberFormat( prc.aiSiteStats.totalTokens )#</div>
+                                <div class="small text-muted">tokens</div>
+                            </div>
+                            <div>
+                                <div class="display-6 fw-semibold lh-1">#numberFormat( prc.aiSiteStats.totalRequests )#</div>
+                                <div class="small text-muted">requests</div>
+                            </div>
+                            <div>
+                                <div class="display-6 fw-semibold lh-1">#numberFormat( prc.aiSiteStats.uniqueUsers )#</div>
+                                <div class="small text-muted">users</div>
+                            </div>
+                        </div>
+
+                        <bx:if structIsEmpty( prc.aiSiteStats.byAction )>
+                            <p class="small text-muted mb-0">No AI requests yet this month.</p>
+                        <bx:else>
+                            <ul class="small list-unstyled mb-0">
+                                <bx:loop collection="#prc.aiSiteStats.byAction#" item="action">
+                                    <bx:script>info = prc.aiSiteStats.byAction[ action ];</bx:script>
+                                    <li class="d-flex justify-content-between border-top py-1">
+                                        <span>#encodeForHTML( aiActionLabel( action ) )#</span>
+                                        <span class="text-muted">
+                                            #numberFormat( info.tokens )# tokens
+                                            &middot;
+                                            #info.requests# request<bx:if info.requests neq 1>s</bx:if>
+                                        </span>
+                                    </li>
+                                </bx:loop>
+                            </ul>
+                        </bx:if>
+                    </div>
+                </div>
+            </div>
+        </bx:if>
+    </bx:if>
 
     <!--- Top 5 posts by views ---------------------------------------- --->
     <div class="col-md-6 col-lg-6">

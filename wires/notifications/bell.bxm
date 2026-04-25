@@ -99,6 +99,10 @@ function markAllRead() {
                 </a>
             </bx:loop>
         </bx:if>
+        <a class="dropdown-item small text-center py-2 text-primary"
+           href="#event.buildLink( 'admin:Notifications.index' )#">
+            View all notifications &rarr;
+        </a>
     </div>
 </li>
 </bx:output>

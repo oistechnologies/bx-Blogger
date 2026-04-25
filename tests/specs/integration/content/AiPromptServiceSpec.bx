@@ -1,0 +1,206 @@
+/**
+ * bx-Blogger — AiPromptServiceSpec
+ *
+ * Covers the database-backed AI prompt store. Reads, writes, caching,
+ * and the active/inactive fallback behavior that AiAssistantService +
+ * AiImageService rely on.
+ *
+ * Spec uses `tests.*` slugs created via seedIfMissing so the seeded
+ * production rows (draft_from_idea / review_post / image_generation)
+ * are never mutated. The boundary cleanup in BaseIntegrationSpec
+ * sweeps any rows above the seeded id watermark on teardown.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc = getInstance( "AiPromptService" );
+    }
+
+    function afterAll() {
+        try {
+            getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "ai_prompts" )
+                .where( "slug", "like", "tests.%" )
+                .delete();
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "AiPromptServiceSpec cleanup failed: " & e.message );
+        }
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "AiPromptService", function() {
+
+            beforeEach( function() {
+                // Drop any tests.* rows from previous tests + bust their
+                // cache entries.
+                var qb = getInstance( "QueryBuilder@qb" );
+                var existing = qb.newQuery()
+                    .from( "ai_prompts" )
+                    .where( "slug", "like", "tests.%" )
+                    .get();
+                for ( var row in existing ) {
+                    svc.invalidate( row.slug );
+                }
+                qb.newQuery().from( "ai_prompts" )
+                    .where( "slug", "like", "tests.%" )
+                    .delete();
+            } );
+
+            describe( "seedIfMissing()", function() {
+                it( "writes a row when the slug doesn't exist", function() {
+                    var wrote = svc.seedIfMissing(
+                        slug        = "tests.first",
+                        name        = "First Test Prompt",
+                        defaultText = "You are a helpful test assistant.",
+                        description = "Spec fixture"
+                    );
+                    expect( wrote ).toBeTrue();
+                    var row = svc.getBySlug( "tests.first" );
+                    expect( row ).notToBeNull();
+                    expect( row.prompt_text ).toBe( "You are a helpful test assistant." );
+                    expect( row.default_text ).toBe( "You are a helpful test assistant." );
+                    expect( val( row.is_active ) ).toBe( 1 );
+                } );
+
+                it( "no-ops when the slug already exists", function() {
+                    svc.seedIfMissing( slug = "tests.dupe", name = "Dupe", defaultText = "first" );
+                    var wrote = svc.seedIfMissing( slug = "tests.dupe", name = "Dupe", defaultText = "second" );
+                    expect( wrote ).toBeFalse();
+                    var row = svc.getBySlug( "tests.dupe" );
+                    expect( row.prompt_text ).toBe( "first", "second seedIfMissing must not overwrite" );
+                } );
+            } );
+
+            describe( "getActiveBody()", function() {
+                it( "returns the body when the row is active", function() {
+                    svc.seedIfMissing( slug = "tests.active", name = "Active", defaultText = "live body" );
+                    expect( svc.getActiveBody( "tests.active", "fallback" ) ).toBe( "live body" );
+                } );
+
+                it( "returns the fallback when the slug doesn't exist", function() {
+                    expect( svc.getActiveBody( "tests.never_seeded", "fallback" ) ).toBe( "fallback" );
+                } );
+
+                it( "returns the fallback when is_active is 0", function() {
+                    svc.seedIfMissing( slug = "tests.inactive", name = "Inactive", defaultText = "live body" );
+                    svc.update( "tests.inactive", { "is_active" : false } );
+                    expect( svc.getActiveBody( "tests.inactive", "fallback" ) ).toBe( "fallback" );
+                } );
+
+                it( "returns the fallback when prompt_text is empty/whitespace", function() {
+                    svc.seedIfMissing( slug = "tests.blank", name = "Blank", defaultText = "live body" );
+                    svc.update( "tests.blank", { "prompt_text" : "   " } );
+                    expect( svc.getActiveBody( "tests.blank", "fallback" ) ).toBe( "fallback" );
+                } );
+            } );
+
+            describe( "update()", function() {
+                it( "writes prompt_text and surfaces the new value via getActiveBody", function() {
+                    svc.seedIfMissing( slug = "tests.upd", name = "Upd", defaultText = "v1" );
+                    svc.update( "tests.upd", { "prompt_text" : "v2" } );
+                    expect( svc.getActiveBody( "tests.upd", "fallback" ) ).toBe( "v2" );
+                } );
+
+                it( "stamps updated_by when an editor user id is passed", function() {
+                    var user = createTestUser();
+                    svc.seedIfMissing( slug = "tests.editor_stamp", name = "Stamp", defaultText = "x" );
+                    svc.update( "tests.editor_stamp", { "prompt_text" : "y" }, user.getId() );
+                    var row = svc.getBySlug( "tests.editor_stamp" );
+                    expect( val( row.updated_by ) ).toBe( user.getId() );
+                } );
+
+                it( "ignores unknown attribute keys", function() {
+                    svc.seedIfMissing( slug = "tests.ignored", name = "Ig", defaultText = "x" );
+                    // slug + default_text + is_system are deliberately not editable
+                    svc.update( "tests.ignored", {
+                        "prompt_text"  : "new",
+                        "slug"         : "tests.hijacked",
+                        "default_text" : "hijacked default",
+                        "is_system"    : 0
+                    } );
+                    var row = svc.getBySlug( "tests.ignored" );
+                    expect( row.slug ).toBe( "tests.ignored" );
+                    expect( row.default_text ).toBe( "x" );
+                    expect( val( row.is_system ) ).toBe( 1 );
+                    expect( row.prompt_text ).toBe( "new" );
+                } );
+
+                it( "throws NotFound for an unknown slug", function() {
+                    var threw = false;
+                    try { svc.update( "tests.does_not_exist", { "prompt_text" : "x" } ); }
+                    catch ( bxBlogger.AiPromptService.NotFound e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+            } );
+
+            describe( "resetToDefault()", function() {
+                it( "restores prompt_text from default_text and re-activates the row", function() {
+                    svc.seedIfMissing( slug = "tests.reset", name = "R", defaultText = "original body" );
+                    svc.update( "tests.reset", { "prompt_text" : "tweaked", "is_active" : false } );
+                    expect( svc.getActiveBody( "tests.reset", "fallback" ) ).toBe( "fallback", "should be inactive" );
+
+                    svc.resetToDefault( "tests.reset" );
+                    expect( svc.getActiveBody( "tests.reset", "fallback" ) ).toBe( "original body" );
+                    var row = svc.getBySlug( "tests.reset" );
+                    expect( val( row.is_active ) ).toBe( 1 );
+                } );
+
+                it( "throws NotFound for an unknown slug", function() {
+                    var threw = false;
+                    try { svc.resetToDefault( "tests.no_such_slug" ); }
+                    catch ( bxBlogger.AiPromptService.NotFound e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+            } );
+
+            describe( "caching", function() {
+                it( "invalidates the cache on update()", function() {
+                    svc.seedIfMissing( slug = "tests.cache", name = "C", defaultText = "v1" );
+                    expect( svc.getActiveBody( "tests.cache", "fallback" ) ).toBe( "v1" );  // primes cache
+                    svc.update( "tests.cache", { "prompt_text" : "v2" } );
+                    expect( svc.getActiveBody( "tests.cache", "fallback" ) ).toBe( "v2", "cache must reflect the update" );
+                } );
+
+                it( "caches a known-missing slug as a sentinel", function() {
+                    // First call → DB miss + sentinel write
+                    expect( svc.getActiveBody( "tests.absent", "fb" ) ).toBe( "fb" );
+                    // Second call → sentinel hit, still falls back
+                    expect( svc.getActiveBody( "tests.absent", "fb" ) ).toBe( "fb" );
+                } );
+            } );
+
+            describe( "listAll()", function() {
+                it( "returns at least the three seeded rows", function() {
+                    var rows = svc.listAll();
+                    var slugs = rows.map( function( r ) { return r.slug; } );
+                    expect( slugs ).toInclude( "draft_from_idea" );
+                    expect( slugs ).toInclude( "review_post" );
+                    expect( slugs ).toInclude( "image_generation" );
+                    expect( slugs ).toInclude( "excerpt_from_body" );
+                    expect( slugs ).toInclude( "system_directives" );
+                } );
+            } );
+
+            describe( "seeded production rows are intact", function() {
+                it( "draft_from_idea has identical prompt_text and default_text on first read", function() {
+                    var row = svc.getBySlug( "draft_from_idea" );
+                    expect( row ).notToBeNull();
+                    expect( row.prompt_text ).toBe( row.default_text );
+                    expect( val( row.is_active ) ).toBe( 1 );
+                    expect( val( row.is_system ) ).toBe( 1 );
+                } );
+
+                it( "image_generation has a non-empty seeded body", function() {
+                    var row = svc.getBySlug( "image_generation" );
+                    expect( row ).notToBeNull();
+                    expect( len( trim( row.prompt_text ) ) ).toBeGT( 0 );
+                } );
+            } );
+
+        } );
+    }
+
+}

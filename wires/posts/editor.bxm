@@ -441,6 +441,9 @@ function aiGenerateDraft() {
             }
         }
         data.flashOk = "AI draft dropped into the editor. Edit or discard freely.";
+        // Push the new body into EasyMDE — the textarea is wire:ignore'd
+        // so a bare data.bodyMarkdown mutation is invisible until save.
+        dispatch( "bx-blogger:body-replaced", { "value" : data.bodyMarkdown } );
         closeAiModal();
     }
     catch ( bxBlogger.AiBudgetExceeded e ) { data.aiError = e.message; }
@@ -453,21 +456,29 @@ function aiGenerateDraft() {
 
 function aiRequestReview() {
     if ( !aiEnabled() ) { data.aiError = "AI authoring is disabled on this site."; return; }
+    // Open the modal IMMEDIATELY so the user sees something happen.
+    // Empty-body / provider-error states render their messages inside.
+    data.aiError       = "";
+    data.aiSuggestions = [];
+    data.showAiReview  = true;
+
     if ( !len( trim( data.bodyMarkdown ?: "" ) ) ) {
         data.aiError = "Write some content first — nothing to review yet.";
         return;
     }
-    data.aiError = "";
-    data.aiBusy  = true;
+    data.aiBusy = true;
     try {
         var result = aiService.reviewPost(
             postBody = data.bodyMarkdown,
             userId   = cbauth.getUser().getId()
         );
         data.aiSuggestions = result.suggestions;
-        data.showAiReview  = true;
     }
-    catch ( any e ) { data.aiError = e.message; }
+    catch ( bxBlogger.AiBudgetExceeded e ) { data.aiError = e.message; }
+    catch ( bxBlogger.AiInvalidInput e )   { data.aiError = e.message; }
+    catch ( bxBlogger.AiProviderError e )  { data.aiError = "The AI provider failed: " & e.message; }
+    catch ( bxBlogger.AiDisabled e )       { data.aiError = e.message; }
+    catch ( any e )                         { data.aiError = "Unexpected failure: " & e.message; }
     finally { data.aiBusy = false; }
 }
 
@@ -475,25 +486,64 @@ function closeAiReview() { data.showAiReview = false; data.aiSuggestions = []; }
 
 function acceptSuggestion( required id ) {
     var remaining = [];
+    var didChange = false;
     for ( var s in data.aiSuggestions ) {
-        if ( s.id == arguments.id ) {
+        if ( ( s.id ?: "" ) == arguments.id ) {
             // Apply before→after to the body buffer if `before` is present + found
             if ( len( s.before ?: "" ) && findNoCase( s.before, data.bodyMarkdown ) ) {
                 data.bodyMarkdown = replaceNoCase( data.bodyMarkdown, s.before, s.after ?: "", "one" );
+                didChange = true;
             }
             continue;   // drop this suggestion from the pending list
         }
         remaining.append( s );
     }
     data.aiSuggestions = remaining;
+    // EasyMDE owns the textarea DOM (wire:ignore), so a server-side
+    // mutation to data.bodyMarkdown isn't visible until we tell the
+    // editor instance directly. The browser listener in the init
+    // script calls easymde.value(...) on this event.
+    if ( didChange ) dispatch( "bx-blogger:body-replaced", { "value" : data.bodyMarkdown } );
 }
 
 function dismissSuggestion( required id ) {
     var remaining = [];
     for ( var s in data.aiSuggestions ) {
-        if ( s.id != arguments.id ) remaining.append( s );
+        if ( ( s.id ?: "" ) != arguments.id ) remaining.append( s );
     }
     data.aiSuggestions = remaining;
+}
+
+/**
+ * One-shot excerpt generator. Reads data.bodyMarkdown, asks the
+ * model for a 1-2 sentence synopsis, drops the result into
+ * data.excerpt. No modal — the user clicks the button next to the
+ * Excerpt label and sees the value appear directly in the textarea.
+ *
+ * Errors land in data.aiError so the existing AI alert above the
+ * editor surfaces them; we don't have a dedicated "excerpt error"
+ * field because there's no excerpt-specific UI to render it into.
+ */
+function aiGenerateExcerpt() {
+    if ( !aiEnabled() ) { data.aiError = "AI authoring is disabled on this site."; return; }
+    if ( !len( trim( data.bodyMarkdown ?: "" ) ) ) {
+        data.aiError = "Write some content first - nothing to summarize yet.";
+        return;
+    }
+    data.aiError = "";
+    try {
+        var result = aiService.excerptFromBody(
+            postBody = data.bodyMarkdown,
+            userId   = cbauth.getUser().getId()
+        );
+        data.excerpt = result.text;
+        data.flashOk = "AI excerpt generated.";
+    }
+    catch ( bxBlogger.AiBudgetExceeded e ) { data.aiError = e.message; }
+    catch ( bxBlogger.AiInvalidInput e )   { data.aiError = e.message; }
+    catch ( bxBlogger.AiProviderError e )  { data.aiError = "The AI provider failed: " & e.message; }
+    catch ( bxBlogger.AiDisabled e )       { data.aiError = e.message; }
+    catch ( any e )                         { data.aiError = "Unexpected failure: " & e.message; }
 }
 
 // --------------------------------------------------------------------
@@ -503,6 +553,16 @@ function dismissSuggestion( required id ) {
 function aiImageEnabled() {
     var user = cbauth.getUser();
     return aiImageService.isEnabled() && user.hasPermission( "posts.ai.image_generate" );
+}
+
+/**
+ * Render-time helper for the preview <img src="...">. Looks the URL up
+ * from the provider's in-memory cache so the wire never serializes
+ * the raw URL into its data snapshot — see generateImagePreviews
+ * for the why (multi-MB data: URLs would 400 the next click).
+ */
+string function previewSrc( required string previewId ) {
+    return aiImageService.getPreviewUrl( arguments.previewId );
 }
 
 /**
@@ -540,7 +600,25 @@ function generateImagePreviews() {
             userId    = cbauth.getUser().getId(),
             context   = data.imageTarget
         );
-        data.imagePreviews = result.previews;
+        // Strip provider URLs from the serialized wire data — Gemini
+        // Flash and similar inline-image providers return data: URLs
+        // that can be multi-MB each. CBWIRE round-trips the entire
+        // wire `data` struct on every action; with a couple of
+        // previews the snapshot easily exceeds Undertow's max POST
+        // body and the next click returns 400. The provider keeps
+        // the URL in its in-memory cache and the template helper
+        // `previewSrc(previewId)` looks it up on render.
+        var lightweight = [];
+        for ( var p in result.previews ) {
+            lightweight.append( {
+                "previewId" : p.previewId,
+                "expiresAt" : p.expiresAt,
+                "width"     : p.width  ?: 0,
+                "height"    : p.height ?: 0,
+                "mime"      : p.mime   ?: "image/png"
+            } );
+        }
+        data.imagePreviews = lightweight;
     }
     catch ( bxBlogger.AiImageRateLimited e )    { data.imageError = e.message; }
     catch ( bxBlogger.AiImageBudgetExceeded e ) { data.imageError = e.message; }
@@ -865,7 +943,22 @@ private string function ogGeneratedAtFor( required any post ) {
 						<small class="text-muted">Public URL: <code>/#args.slug#</code></small>
 					</div>
 					<div class="mb-3">
-						<label for="postExcerpt" class="form-label">Excerpt</label>
+						<label for="postExcerpt" class="form-label d-flex justify-content-between align-items-center">
+							<span>Excerpt</span>
+							<bx:if aiEnabled()>
+								<button type="button" class="btn btn-sm btn-outline-secondary"
+								        wire:click="aiGenerateExcerpt"
+								        wire:loading.attr="disabled"
+								        wire:target="aiGenerateExcerpt"
+								        data-bs-toggle="tooltip" title="Generate excerpt from body with AI"
+								        aria-label="Generate excerpt from body with AI">
+									<i class="bi bi-magic" aria-hidden="true"
+									   wire:loading.remove wire:target="aiGenerateExcerpt"></i>
+									<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"
+									      wire:loading wire:target="aiGenerateExcerpt"></span>
+								</button>
+							</bx:if>
+						</label>
 						<textarea id="postExcerpt"
 						          class="form-control"
 						          rows="2"
@@ -880,24 +973,38 @@ private string function ogGeneratedAtFor( required any post ) {
 								<bx:if aiEnabled()>
 									<button type="button" class="btn btn-outline-secondary"
 									        wire:click="openAiModal"
+									        wire:loading.attr="disabled"
+									        wire:target="openAiModal,aiGenerateDraft,aiRequestReview"
 									        data-bs-toggle="tooltip" title="Create from idea"
 									        aria-label="Create body from an idea with AI">
-										<i class="bi bi-stars" aria-hidden="true"></i>
+										<i class="bi bi-stars" aria-hidden="true"
+										   wire:loading.remove wire:target="openAiModal,aiGenerateDraft"></i>
+										<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"
+										      wire:loading wire:target="openAiModal,aiGenerateDraft"></span>
 									</button>
 									<button type="button" class="btn btn-outline-secondary"
 									        wire:click="aiRequestReview"
 									        wire:loading.attr="disabled"
+									        wire:target="aiRequestReview,aiGenerateDraft"
 									        data-bs-toggle="tooltip" title="Review & suggest edits"
 									        aria-label="Ask AI to review the body and suggest edits">
-										<i class="bi bi-chat-square-text" aria-hidden="true"></i>
+										<i class="bi bi-chat-square-text" aria-hidden="true"
+										   wire:loading.remove wire:target="aiRequestReview"></i>
+										<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"
+										      wire:loading wire:target="aiRequestReview"></span>
 									</button>
 								</bx:if>
 								<bx:if aiImageEnabled()>
 									<button type="button" class="btn btn-outline-secondary"
 									        wire:click="openImageModal('inline')"
+									        wire:loading.attr="disabled"
+									        wire:target="openImageModal,generateImagePreviews"
 									        data-bs-toggle="tooltip" title="Generate image"
 									        aria-label="Generate an image with AI and insert inline">
-										<i class="bi bi-image" aria-hidden="true"></i>
+										<i class="bi bi-image" aria-hidden="true"
+										   wire:loading.remove wire:target="openImageModal,generateImagePreviews"></i>
+										<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"
+										      wire:loading wire:target="openImageModal,generateImagePreviews"></span>
 									</button>
 								</bx:if>
 								<bx:if args.showPreview>
@@ -1461,25 +1568,41 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 				<div class="modal-content">
 					<div class="modal-header">
 						<h5 class="modal-title">Create from idea</h5>
-						<button type="button" class="btn-close" wire:click="closeAiModal"></button>
+						<button type="button" class="btn-close" wire:click="closeAiModal"
+						        wire:loading.attr="disabled" wire:target="aiGenerateDraft"></button>
 					</div>
 					<div class="modal-body">
+						<bx:if len( args.aiError )>
+							<div class="alert alert-warning small mb-3">
+								<i class="bi bi-exclamation-triangle me-1"></i>#encodeForHTML( args.aiError )#
+							</div>
+						</bx:if>
 						<label class="form-label small">Your idea (up to 1000 characters)</label>
 						<textarea class="form-control" rows="5" maxlength="1000"
 						          wire:model="aiIdea"
+						          wire:loading.attr="disabled" wire:target="aiGenerateDraft"
 						          placeholder="e.g. How to adopt BoxLang incrementally in a team that already ships ColdFusion."></textarea>
 						<small class="text-muted d-block mt-2">
 							Your idea is sent to the configured AI provider. See your privacy policy for details.
 						</small>
+						<div wire:loading wire:target="aiGenerateDraft" class="mt-3 text-muted">
+							<span class="spinner-border spinner-border-sm me-2 align-middle" role="status" aria-hidden="true"></span>
+							<span class="small align-middle">Generating draft &mdash; this can take 5&ndash;30 seconds depending on the model.</span>
+						</div>
 					</div>
 					<div class="modal-footer">
-						<button type="button" class="btn btn-outline-secondary" wire:click="closeAiModal">Cancel</button>
+						<button type="button" class="btn btn-outline-secondary"
+						        wire:click="closeAiModal"
+						        wire:loading.attr="disabled" wire:target="aiGenerateDraft">Cancel</button>
 						<button type="button" class="btn btn-primary"
 						        wire:click="aiGenerateDraft"
 						        wire:loading.attr="disabled"
 						        wire:loading.class="disabled">
 							<span wire:loading.remove wire:target="aiGenerateDraft">Generate draft</span>
-							<span wire:loading wire:target="aiGenerateDraft">Generating…</span>
+							<span wire:loading wire:target="aiGenerateDraft">
+								<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+								Generating&hellip;
+							</span>
 						</button>
 					</div>
 				</div>
@@ -1493,13 +1616,32 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 			<div class="modal-dialog modal-lg modal-dialog-scrollable">
 				<div class="modal-content">
 					<div class="modal-header">
-						<h5 class="modal-title">Review suggestions (#args.aiSuggestions.len()#)</h5>
-						<button type="button" class="btn-close" wire:click="closeAiReview"></button>
+						<h5 class="modal-title">
+							<bx:if args.aiBusy>
+								Reviewing your post&hellip;
+							<bx:else>
+								Review suggestions (#args.aiSuggestions.len()#)
+							</bx:if>
+						</h5>
+						<button type="button" class="btn-close" wire:click="closeAiReview"
+						        wire:loading.attr="disabled" wire:target="aiRequestReview"></button>
 					</div>
 					<div class="modal-body">
-						<bx:if args.aiSuggestions.len() == 0>
-							<p class="text-muted">No suggestions — either the post looks clean, or you've handled them all.</p>
-						<bx:else>
+						<bx:if len( args.aiError )>
+							<div class="alert alert-warning small">
+								<i class="bi bi-exclamation-triangle me-1"></i>#encodeForHTML( args.aiError )#
+							</div>
+						</bx:if>
+
+						<div wire:loading wire:target="aiRequestReview" class="text-muted py-4">
+							<span class="spinner-border spinner-border-sm me-2 align-middle" role="status" aria-hidden="true"></span>
+							<span class="small align-middle">Asking the model to review your post &mdash; this can take 5&ndash;30 seconds.</span>
+						</div>
+
+						<div wire:loading.remove wire:target="aiRequestReview">
+							<bx:if !len( args.aiError ) && args.aiSuggestions.len() == 0>
+								<p class="text-muted small mb-0">No suggestions &mdash; either the post looks clean, or you&rsquo;ve handled them all.</p>
+							</bx:if>
 							<bx:loop array="#args.aiSuggestions#" item="s">
 								<div class="card mb-2">
 									<div class="card-body p-3">
@@ -1519,15 +1661,15 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 										<div class="d-flex gap-2 mt-2">
 											<bx:if len( s.before ?: "" )>
 												<button class="btn btn-sm btn-primary"
-												        wire:click="acceptSuggestion('#encodeForHTMLAttribute( s.id )#')">Accept</button>
+												        wire:click="acceptSuggestion('#encodeForHTMLAttribute( s.id ?: "" )#')">Accept</button>
 											</bx:if>
 											<button class="btn btn-sm btn-outline-secondary"
-											        wire:click="dismissSuggestion('#encodeForHTMLAttribute( s.id )#')">Dismiss</button>
+											        wire:click="dismissSuggestion('#encodeForHTMLAttribute( s.id ?: "" )#')">Dismiss</button>
 										</div>
 									</div>
 								</div>
 							</bx:loop>
-						</bx:if>
+						</div>
 					</div>
 					<div class="modal-footer">
 						<small class="text-muted me-auto">
@@ -1553,14 +1695,18 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 					</div>
 					<div class="modal-body">
 						<bx:if len( args.imageError )>
-							<div class="alert alert-warning">#encodeForHTML( args.imageError )#</div>
+							<div class="alert alert-warning small">
+								<i class="bi bi-exclamation-triangle me-1"></i>#encodeForHTML( args.imageError )#
+							</div>
 						</bx:if>
 						<label class="form-label small">Describe the image (up to 500 characters)</label>
 						<textarea class="form-control" rows="3" maxlength="500"
 						          wire:model="imagePrompt"
+						          wire:loading.attr="disabled" wire:target="generateImagePreviews"
 						          placeholder="e.g. A quiet coastal town at dusk, soft rain, warm streetlamps reflected on wet cobblestone."></textarea>
 						<label class="form-label small mt-3">Style (optional)</label>
-						<select class="form-select form-select-sm" wire:model="imageStyle">
+						<select class="form-select form-select-sm" wire:model="imageStyle"
+						        wire:loading.attr="disabled" wire:target="generateImagePreviews">
 							<option value="">None — let the model decide</option>
 							<option value="Realistic">Realistic</option>
 							<option value="Illustration">Illustration</option>
@@ -1572,23 +1718,35 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 							Generated images are stored in your media library with the original prompt recorded.
 						</small>
 
+						<div wire:loading wire:target="generateImagePreviews" class="mt-3 text-muted">
+							<span class="spinner-border spinner-border-sm me-2 align-middle" role="status" aria-hidden="true"></span>
+							<span class="small align-middle">Generating image previews &mdash; image models can take 10&ndash;60 seconds.</span>
+						</div>
+
 						<bx:if args.imagePreviews.len() gt 0>
 							<hr>
-							<p class="small text-muted mb-2">Pick one to save + attach:</p>
-							<div class="row row-cols-2 row-cols-md-4 g-2">
+							<p class="small text-muted mb-2">
+								Click an image to save it to your media library and
+								<bx:if args.imageTarget == "featured">set it as featured.<bx:else>insert it into the post body.</bx:if>
+							</p>
+							<div class="row row-cols-2 row-cols-md-4 g-2 position-relative">
 								<bx:loop array="#args.imagePreviews#" item="p">
 									<div class="col">
 										<button type="button"
-										        class="btn p-0 border w-100"
+										        class="btn p-0 border w-100 position-relative"
 										        wire:click="useImagePreview('#encodeForHTMLAttribute( p.previewId )#')"
 										        wire:loading.attr="disabled">
-											<img src="#encodeForHTMLAttribute( p.providerUrl )#"
+											<img src="#encodeForHTMLAttribute( previewSrc( p.previewId ) )#"
 											     class="img-fluid rounded"
 											     style="object-fit: cover; aspect-ratio: 1/1;"
 											     alt="preview">
 										</button>
 									</div>
 								</bx:loop>
+							</div>
+							<div wire:loading wire:target="useImagePreview" class="mt-2 text-muted">
+								<span class="spinner-border spinner-border-sm me-2 align-middle" role="status" aria-hidden="true"></span>
+								<span class="small align-middle">Saving to media library&hellip;</span>
 							</div>
 						</bx:if>
 					</div>
@@ -1760,8 +1918,26 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
                 }, 300 );
             } );
 
+            // Wire → editor sync, fired by acceptSuggestion + aiGenerateDraft
+            // (and any future server-side body mutation). The textarea is
+            // wire:ignore'd, so a re-render never reaches it; we have to
+            // push into the EasyMDE instance directly.
+            var bodyReplacedHandler = function( e ) {
+                var detail = ( e && e.detail ) || {};
+                var payload = Array.isArray( detail ) ? detail[ 0 ] : detail;
+                var newValue = payload && typeof payload.value === "string" ? payload.value : null;
+                if ( newValue === null ) return;
+                // Cursor preservation is best-effort — accept-suggestion
+                // and AI-draft both reset focus to the start. Users
+                // expect the editor to surface the new content; clicking
+                // back into the body restores the cursor.
+                easymde.value( newValue );
+            };
+            window.addEventListener( "bx-blogger:body-replaced", bodyReplacedHandler );
+
             cleanup( function() {
                 try { easymde.toTextArea(); } catch ( e ) {}
+                window.removeEventListener( "bx-blogger:body-replaced", bodyReplacedHandler );
                 delete window._postEditor;
                 delete window._postEditorInstance;
             } );

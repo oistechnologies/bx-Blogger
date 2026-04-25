@@ -15,8 +15,9 @@
  */
 class extends="coldbox.system.EventHandler" {
 
-    property name="cbauth" inject="AuthenticationService@cbauth";
-    property name="qb"     inject="QueryBuilder@qb";
+    property name="cbauth"    inject="AuthenticationService@cbauth";
+    property name="qb"        inject="QueryBuilder@qb";
+    property name="aiService" inject="AiAssistantService";
 
     this.layouts = {
         "Main.bxm" : "*"   // module-local layout (see modules_app/admin/layouts/Main.bxm)
@@ -33,6 +34,15 @@ class extends="coldbox.system.EventHandler" {
 
         prc.canViewLogins = prc.user.hasPermission( "system.health" );
         prc.recentLogins  = prc.canViewLogins ? recentLogins( limit = 5 ) : [];
+
+        // AI usage row — only when AI is globally enabled. Per-user
+        // stats always render for the signed-in user; site-wide stats
+        // gate on ai.prompts.manage (the same permission that controls
+        // /admin/ai-prompts, granted to super_admin + admin).
+        prc.aiEnabled         = aiService.isEnabled();
+        prc.aiUserStats       = prc.aiEnabled ? aiService.usageStatsForUser( prc.user.getId() ) : {};
+        prc.canViewAllAiStats = prc.aiEnabled && prc.user.hasPermission( "ai.prompts.manage" );
+        prc.aiSiteStats       = prc.canViewAllAiStats ? aiService.usageStatsSiteWide() : {};
 
         event.setView( view = "dashboard/index" );
     }

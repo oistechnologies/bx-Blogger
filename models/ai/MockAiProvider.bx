@@ -22,10 +22,12 @@
  */
 class accessors="true" singleton {
 
-    property name="simulateFailure" default="";
+    property name="simulateFailure"  default="";
     property name="fixedTokens";
+    property name="lastSystemPrompt" default="";
 
-    variables.simulateFailure = "";
+    variables.simulateFailure  = "";
+    variables.lastSystemPrompt = "";
 
     /**
      * Canned draft — echoes the idea back wrapped in a realistic
@@ -34,6 +36,7 @@ class accessors="true" singleton {
      * thumb for English prose).
      */
     struct function draft( required string systemPrompt, required string userIdea ) {
+        variables.lastSystemPrompt = arguments.systemPrompt;
         maybeFail();
         var tokens = estimateTokens( arguments.systemPrompt & arguments.userIdea );
         // Note: literal '#' chars in a .bx string literal must be
@@ -58,7 +61,28 @@ class accessors="true" singleton {
      * suggestion objects. Real provider would return more diverse,
      * content-aware suggestions.
      */
+    /**
+     * Canned excerpt — deterministic 1-sentence synopsis that mirrors
+     * what a real model would return. Mock never produces variation
+     * so specs can assert the wire's "drop into data.excerpt" path
+     * without depending on token weather.
+     */
+    struct function excerpt( required string systemPrompt, required string postBody ) {
+        variables.lastSystemPrompt = arguments.systemPrompt;
+        maybeFail();
+        var tokens = estimateTokens( arguments.systemPrompt & arguments.postBody );
+        var text   = "Mock synopsis: " & summarize( arguments.postBody ) & ".";
+        return {
+            "text"             : text,
+            "promptTokens"     : tokens,
+            "completionTokens" : 30,
+            "totalTokens"      : tokens + 30,
+            "costUsdMicro"     : ( tokens + 30 ) * 10
+        };
+    }
+
     struct function review( required string systemPrompt, required string postBody ) {
+        variables.lastSystemPrompt = arguments.systemPrompt;
         maybeFail();
         var tokens = estimateTokens( arguments.systemPrompt & arguments.postBody );
         var suggestions = [

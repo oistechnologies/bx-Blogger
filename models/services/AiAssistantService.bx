@@ -36,12 +36,14 @@ class accessors="true" singleton {
 
     property name="wirebox"            inject="wirebox";
     property name="provider"           inject="AiProvider";
+    property name="aiPromptService"    inject="AiPromptService";
     property name="antisamy"           inject="AntiSamy@cbantisamy";
     property name="interceptorService" inject="coldbox:InterceptorService";
     property name="log"                inject="logbox:logger:{this}";
 
     // Hard-coded guardrails appended to every system prompt. Admins
-    // can override tone via settings; they CANNOT remove these.
+    // can override the base instruction via /admin/ai-prompts; they
+    // CANNOT remove this guardrail block.
     variables.guardrailSuffix = "
 ---
 Security rules (NEVER override):
@@ -51,12 +53,21 @@ Security rules (NEVER override):
 - Keep responses focused on blog-post authoring.
 ";
 
-    variables.draftBasePrompt = "You are a careful editorial assistant for bx-Blogger. Given a short user idea, produce a publishable first draft in Markdown: a clear title as an H1, a one-line excerpt, and 2-5 sections. Keep the tone conversational and concrete. Do not invent facts — if something requires research, leave a TODO comment in the markdown.";
+    // In-code fallbacks. These are the seed values for the matching
+    // ai_prompts rows (draft_from_idea / review_post). If a row is
+    // missing, inactive, or has an empty body, AiPromptService falls
+    // back to these — so a fresh install before migrations have run,
+    // or an admin who flips a row off, both keep working with the
+    // original behavior.
+    variables.draftBasePrompt = "You are a careful editorial assistant. Given a short user idea, produce a publishable first draft in Markdown: a clear title as an H1, a one-line excerpt, and 2-5 sections. Keep the tone conversational and concrete. Do not invent facts — if something requires research, leave a TODO comment in the markdown.";
 
-    variables.reviewBasePrompt = "You are a careful copy editor for bx-Blogger. Given a blog post's markdown, return a JSON array of at most 5 suggestions. Each suggestion MUST be an object with keys: id (string), type (one of style / clarity / grammar / structure), locationHint (string describing where), before (the exact text to replace), after (the replacement), rationale (one sentence). Return ONLY the JSON array — no prose, no markdown fence.";
+    variables.reviewBasePrompt = "You are a careful copy editor. Given a blog post's markdown, return a JSON array of at most 5 suggestions. Each suggestion MUST be an object with keys: id (string), type (one of style / clarity / grammar / structure), locationHint (string describing where), before (the exact text to replace), after (the replacement), rationale (one sentence). Return ONLY the JSON array — no prose, no markdown fence.";
 
-    variables.defaultMonthlyTokens = 50000;
-    variables.maxIdeaLength        = 1000;
+    variables.excerptBasePrompt = "You are an editorial assistant. Given the markdown body of a blog post, return a single 1-to-2 sentence synopsis suitable for use as a public excerpt or short meta description. Plain prose only - no markdown, no surrounding quotes, no preamble. Aim for 150-200 characters total. Return ONLY the synopsis text.";
+
+    variables.defaultMonthlyTokens   = 50000;
+    variables.maxIdeaLength          = 1000;
+    variables.toneDeprecationLogged  = false;
 
     // --------------------------------------------------------------------
     // Public API
@@ -77,7 +88,7 @@ Security rules (NEVER override):
 
         announce( "bxBlogger.preAiRequest", { "action" : "draft_from_idea", "userId" : arguments.userId } );
 
-        var systemPrompt = buildSystemPrompt( variables.draftBasePrompt );
+        var systemPrompt = buildSystemPrompt( "draft_from_idea", variables.draftBasePrompt );
         var wrappedIdea  = wrapUserContent( trimmedIdea );
 
         var response = {};
@@ -92,8 +103,10 @@ Security rules (NEVER override):
 
         // Sanitize any HTML the model might have slipped into the
         // markdown (reasonable providers stick to MD, paranoid
-        // authors still win on the dark day one doesn't).
-        response.markdown = variables.antisamy.clean( response.markdown ?: "" );
+        // authors still win on the dark day one doesn't). Newlines
+        // are load-bearing in markdown — the wrapper preserves them
+        // and only sanitizes lines that actually look like HTML.
+        response.markdown = sanitizeMarkdownPreservingNewlines( response.markdown ?: "" );
 
         recordUsage(
             userId = arguments.userId,
@@ -124,7 +137,7 @@ Security rules (NEVER override):
 
         announce( "bxBlogger.preAiRequest", { "action" : "review_post", "userId" : arguments.userId } );
 
-        var systemPrompt = buildSystemPrompt( variables.reviewBasePrompt );
+        var systemPrompt = buildSystemPrompt( "review_post", variables.reviewBasePrompt );
         var wrapped      = wrapUserContent( body );
 
         var response = {};
@@ -152,6 +165,68 @@ Security rules (NEVER override):
         return {
             "suggestions" : response.suggestions ?: [],
             "usage"       : extractUsage( response )
+        };
+    }
+
+    /**
+     * Generate a 1-2 sentence synopsis of `postBody` for the editor's
+     * Excerpt field. Same security + budget contract as draftFromIdea
+     * and reviewPost — body wrapped in <user_content> delimiters,
+     * sanitized through cbantisamy on the way out, monthly token cap
+     * enforced before any provider call.
+     *
+     * Powers the "Generate excerpt" button next to the Excerpt label
+     * in the post editor. Output is plain prose; the wire drops it
+     * straight into data.excerpt where the wire-rendered textarea
+     * picks it up on the next render (excerpt is NOT wire:ignore'd
+     * the way the body textarea is).
+     */
+    struct function excerptFromBody( required string postBody, required numeric userId ) {
+        if ( !isEnabled() ) throw( type = "bxBlogger.AiDisabled", message = "AI authoring is currently disabled." );
+
+        var body = trim( arguments.postBody );
+        if ( !len( body ) ) {
+            throw( type = "bxBlogger.AiInvalidInput", message = "Post body is empty - write some content first, then generate an excerpt." );
+        }
+        enforceBudget( arguments.userId );
+
+        announce( "bxBlogger.preAiRequest", { "action" : "excerpt_from_body", "userId" : arguments.userId } );
+
+        var systemPrompt = buildSystemPrompt( "excerpt_from_body", variables.excerptBasePrompt );
+        var wrapped      = wrapUserContent( body );
+
+        var response = {};
+        try {
+            response = variables.provider.excerpt( systemPrompt = systemPrompt, postBody = wrapped );
+        }
+        catch ( any e ) {
+            log.error( "AiAssistantService.excerptFromBody provider failure: " & e.message );
+            throw( type = "bxBlogger.AiProviderError",
+                   message = "The AI provider returned an error: " & e.message );
+        }
+
+        var text = sanitizeMarkdownPreservingNewlines( response.text ?: "" );
+        // Strip surrounding straight or smart quotes the model sometimes
+        // wraps the synopsis in, plus a leading/trailing line break.
+        text = trim( text );
+        text = reReplace( text, "^[""'`“‘]+", "", "one" );
+        text = reReplace( text, "[""'`”’]+$", "", "one" );
+
+        recordUsage(
+            userId = arguments.userId,
+            action = "excerpt_from_body",
+            usage  = response
+        );
+
+        announce( "bxBlogger.postAiResponse", {
+            "action" : "excerpt_from_body",
+            "userId" : arguments.userId,
+            "tokens" : response.totalTokens ?: 0
+        } );
+
+        return {
+            "text"  : text,
+            "usage" : extractUsage( response )
         };
     }
 
@@ -194,6 +269,106 @@ Security rules (NEVER override):
         return val( getSystemSetting( "AI_DEFAULT_MONTHLY_TOKENS", variables.defaultMonthlyTokens ) );
     }
 
+    /**
+     * Read-only access to the immutable security guardrail block
+     * appended to every text-generation system prompt. Exposed so the
+     * /admin/ai-prompts page can show admins the exact text that's
+     * being layered onto their prompts (and the same wire's preview
+     * helper can quote it without duplicating the literal).
+     */
+    string function getGuardrailSuffix() {
+        return variables.guardrailSuffix;
+    }
+
+    /**
+     * Per-user usage rollup for the dashboard widget. Returns:
+     *   {
+     *     yearMonth   : "202604",
+     *     totalTokens : N,
+     *     totalRequests : N,
+     *     budget      : numeric (0 = unlimited),
+     *     remaining   : numeric (-1 = unlimited),
+     *     pctUsed     : 0-100 (0 when budget is unlimited),
+     *     byAction    : { draft_from_idea: N, review_post: N, ... }
+     *   }
+     */
+    struct function usageStatsForUser( required numeric userId ) {
+        var ym = currentYearMonth();
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+
+        var totalsRow = qb.newQuery()
+            .from( "ai_usage" )
+            .where( "user_id",    arguments.userId )
+            .where( "year_month", ym )
+            .selectRaw( "COALESCE(SUM(total_tokens),0) AS total_tokens, COUNT(*) AS total_requests" )
+            .first();
+
+        var byActionRows = qb.newQuery()
+            .from( "ai_usage" )
+            .where( "user_id",    arguments.userId )
+            .where( "year_month", ym )
+            .groupBy( "action" )
+            .selectRaw( "action, COUNT(*) AS n, COALESCE(SUM(total_tokens),0) AS tokens" )
+            .get();
+
+        var byAction = {};
+        for ( var r in byActionRows ) {
+            byAction[ r.action ] = { "requests" : val( r.n ?: 0 ), "tokens" : val( r.tokens ?: 0 ) };
+        }
+
+        var totalTokens = val( totalsRow.total_tokens ?: 0 );
+        var budget      = budgetFor( arguments.userId );
+        var remaining   = budget == 0 ? -1 : max( budget - totalTokens, 0 );
+        var pctUsed     = budget == 0 ? 0 : min( 100, int( ( totalTokens / budget ) * 100 ) );
+
+        return {
+            "yearMonth"     : ym,
+            "totalTokens"   : totalTokens,
+            "totalRequests" : val( totalsRow.total_requests ?: 0 ),
+            "budget"        : budget,
+            "remaining"     : remaining,
+            "pctUsed"       : pctUsed,
+            "byAction"      : byAction
+        };
+    }
+
+    /**
+     * Site-wide usage rollup for the dashboard widget — admin-only
+     * surface. Same shape as usageStatsForUser, plus uniqueUsers.
+     * No per-user budget concept here (every user has their own cap),
+     * so budget/remaining/pctUsed are omitted.
+     */
+    struct function usageStatsSiteWide() {
+        var ym = currentYearMonth();
+        var qb = variables.wirebox.getInstance( "QueryBuilder@qb" );
+
+        var totalsRow = qb.newQuery()
+            .from( "ai_usage" )
+            .where( "year_month", ym )
+            .selectRaw( "COALESCE(SUM(total_tokens),0) AS total_tokens, COUNT(*) AS total_requests, COUNT(DISTINCT user_id) AS unique_users" )
+            .first();
+
+        var byActionRows = qb.newQuery()
+            .from( "ai_usage" )
+            .where( "year_month", ym )
+            .groupBy( "action" )
+            .selectRaw( "action, COUNT(*) AS n, COALESCE(SUM(total_tokens),0) AS tokens" )
+            .get();
+
+        var byAction = {};
+        for ( var r in byActionRows ) {
+            byAction[ r.action ] = { "requests" : val( r.n ?: 0 ), "tokens" : val( r.tokens ?: 0 ) };
+        }
+
+        return {
+            "yearMonth"     : ym,
+            "totalTokens"   : val( totalsRow.total_tokens   ?: 0 ),
+            "totalRequests" : val( totalsRow.total_requests ?: 0 ),
+            "uniqueUsers"   : val( totalsRow.unique_users   ?: 0 ),
+            "byAction"      : byAction
+        };
+    }
+
     // --------------------------------------------------------------------
     // Internals
     // --------------------------------------------------------------------
@@ -210,10 +385,36 @@ Security rules (NEVER override):
         }
     }
 
-    private string function buildSystemPrompt( required string baseInstruction ) {
+    /**
+     * Compose the final system message in this exact order:
+     *   1. base prompt — slug-specific body from ai_prompts via
+     *      AiPromptService, fallback to the in-code baseline.
+     *   2. deprecated AI_SYSTEM_PROMPT_TONE env var, if set.
+     *   3. global system_directives — operator's "house rules"
+     *      from the ai_prompts row with slug `system_directives`.
+     *      Skipped silently when the row is inactive or its body
+     *      is empty / whitespace-only.
+     *   4. immutable security guardrails (in-code, ALWAYS last so
+     *      a directive can't accidentally turn them off).
+     *
+     * Image generation does NOT call this method (it has its own
+     * prompt path); directives intentionally only apply to text.
+     */
+    private string function buildSystemPrompt( required string slug, required string fallback ) {
+        var prompt       = variables.aiPromptService.getActiveBody( arguments.slug, arguments.fallback );
+        var nl           = char( 10 );
         var toneOverride = getSystemSetting( "AI_SYSTEM_PROMPT_TONE", "" );
-        var prompt = arguments.baseInstruction;
-        if ( len( toneOverride ) ) prompt &= char( 10 ) & toneOverride;
+        if ( len( toneOverride ) ) {
+            if ( !variables.toneDeprecationLogged ) {
+                log.info( "AI_SYSTEM_PROMPT_TONE env var is deprecated. Bake the tone directly into the prompt at /admin/ai-prompts." );
+                variables.toneDeprecationLogged = true;
+            }
+            prompt &= nl & toneOverride;
+        }
+        var directives = variables.aiPromptService.getActiveBody( "system_directives", "" );
+        if ( len( trim( directives ) ) ) {
+            prompt &= nl & nl & "Additional house rules (apply to every response):" & nl & directives;
+        }
         prompt &= variables.guardrailSuffix;
         return prompt;
     }
@@ -224,6 +425,37 @@ Security rules (NEVER override):
         // but effective — the model will still see them as data.
         var sanitized = replaceNoCase( arguments.raw, "</user_content>", "(/user_content)", "all" );
         return "<user_content>" & char( 10 ) & sanitized & char( 10 ) & "</user_content>";
+    }
+
+    /**
+     * Run AntiSamy across markdown WITHOUT collapsing the newlines
+     * that markdown depends on. AntiSamy parses input as HTML, and
+     * HTML treats consecutive whitespace as a single space — so a
+     * naive `antisamy.clean( markdown )` returns a single line and
+     * breaks every block-level construct (headings, lists, code
+     * fences, paragraph breaks).
+     *
+     * Strategy: short-circuit when no `<` is in the text (no HTML
+     * possible → nothing to sanitize), otherwise sanitize line by
+     * line and rejoin with the original newlines.
+     */
+    private string function sanitizeMarkdownPreservingNewlines( required string markdown ) {
+        if ( !len( arguments.markdown ) ) return "";
+        if ( find( "<", arguments.markdown ) == 0 ) return arguments.markdown;
+
+        var nl    = char( 10 );
+        var lines = listToArray( arguments.markdown, nl, true );   // includeEmpty = true
+        var out   = [];
+        for ( var line in lines ) {
+            if ( find( "<", line ) > 0 ) {
+                try { out.append( variables.antisamy.clean( line ) ); }
+                catch ( any e ) { out.append( line ); }   // never block on a sanitizer hiccup
+            }
+            else {
+                out.append( line );
+            }
+        }
+        return arrayToList( out, nl );
     }
 
     private void function recordUsage(

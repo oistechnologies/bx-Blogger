@@ -1,0 +1,50 @@
+/**
+ * bx-Blogger — AiPromptsHandlerSpec
+ *
+ * Smoke checks for the admin:AiPrompts handler. Mirrors AdminModuleSpec
+ * — the live HTTP round-trip is validated by hand during the
+ * verification pass; this spec just proves the handler file compiles,
+ * resolves through the module's @admin namespace, and the wire
+ * template + view file are present where the layout expects them.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function run() {
+        describe( "admin:AiPrompts", function() {
+
+            it( "handler file is present in the admin module", function() {
+                var modulePath = getController().getSetting( "modules" ).admin.path;
+                expect( fileExists( modulePath & "/handlers/AiPrompts.bx" ) ).toBeTrue();
+            } );
+
+            it( "view file is present", function() {
+                var modulePath = getController().getSetting( "modules" ).admin.path;
+                expect( fileExists( modulePath & "/views/ai_prompts/index.bxm" ) ).toBeTrue();
+            } );
+
+            it( "single-file wire template exists at the app-root path the wire() helper resolves", function() {
+                var wirePath = expandPath( "/wires/ai_prompts/manager.bxm" );
+                expect( fileExists( wirePath ) ).toBeTrue();
+            } );
+
+            it( "ai.prompts.manage permission is seeded and granted to admin + super_admin", function() {
+                var qb = getInstance( "QueryBuilder@qb" );
+                var perm = qb.newQuery().from( "permissions" ).where( "slug", "ai.prompts.manage" ).first();
+                expect( perm ).notToBeNull();
+
+                var grants = qb.newQuery()
+                    .from( "role_permissions" )
+                    .join( "permissions", "role_permissions.permission_id", "permissions.id" )
+                    .join( "roles",       "role_permissions.role_id",       "roles.id" )
+                    .where( "permissions.slug", "ai.prompts.manage" )
+                    .select( "roles.slug AS role_slug" )
+                    .get();
+                var roleSlugs = grants.map( function( r ) { return r.role_slug; } );
+                expect( roleSlugs ).toInclude( "super_admin" );
+                expect( roleSlugs ).toInclude( "admin" );
+            } );
+
+        } );
+    }
+
+}

@@ -176,6 +176,118 @@ class extends="tests.support.BaseIntegrationSpec" {
                 } );
             } );
 
+            describe( "searchFor() — admin manager queries", function() {
+                it( "paginates results and reports totals", function() {
+                    var user = createTestUser();
+                    for ( var i = 1; i lte 7; i++ ) {
+                        svc.notify( userId = user.getId(), type = "test.page", title = "Item " & i );
+                    }
+                    var p1 = svc.searchFor( userId = user.getId(), perPage = 3, page = 1 );
+                    expect( p1.total ).toBe( 7 );
+                    expect( p1.totalPages ).toBe( 3 );
+                    expect( p1.rows.len() ).toBe( 3 );
+                    expect( p1.page ).toBe( 1 );
+
+                    var p3 = svc.searchFor( userId = user.getId(), perPage = 3, page = 3 );
+                    expect( p3.rows.len() ).toBe( 1 );
+                } );
+
+                it( "filters by status (read vs unread)", function() {
+                    var user = createTestUser();
+                    var a = svc.notify( userId = user.getId(), type = "test.f", title = "alpha" );
+                    var b = svc.notify( userId = user.getId(), type = "test.f", title = "beta" );
+                    svc.markRead( notificationId = a, userId = user.getId() );
+
+                    var unreadOnly = svc.searchFor( userId = user.getId(), status = "unread" );
+                    expect( unreadOnly.total ).toBe( 1 );
+                    expect( unreadOnly.rows[ 1 ].title ).toBe( "beta" );
+
+                    var readOnly = svc.searchFor( userId = user.getId(), status = "read" );
+                    expect( readOnly.total ).toBe( 1 );
+                    expect( readOnly.rows[ 1 ].title ).toBe( "alpha" );
+                } );
+
+                it( "filters by severity + searches title/body substring", function() {
+                    var user = createTestUser();
+                    svc.notify( userId = user.getId(), type = "test.s", title = "Login warning",
+                                body = "an unknown device", severity = "warning" );
+                    svc.notify( userId = user.getId(), type = "test.s", title = "Routine info",
+                                body = "nothing to see here", severity = "info" );
+
+                    var warns = svc.searchFor( userId = user.getId(), severity = "warning" );
+                    expect( warns.total ).toBe( 1 );
+                    expect( warns.rows[ 1 ].title ).toBe( "Login warning" );
+
+                    var bySearch = svc.searchFor( userId = user.getId(), search = "unknown device" );
+                    expect( bySearch.total ).toBe( 1 );
+                    expect( bySearch.rows[ 1 ].title ).toBe( "Login warning" );
+                } );
+
+                it( "respects sort order (oldest / newest / unread_first)", function() {
+                    var user = createTestUser();
+                    var a = svc.notify( userId = user.getId(), type = "test.o", title = "first" );
+                    var b = svc.notify( userId = user.getId(), type = "test.o", title = "second" );
+                    var c = svc.notify( userId = user.getId(), type = "test.o", title = "third" );
+                    svc.markRead( notificationId = a, userId = user.getId() );
+
+                    var oldest = svc.searchFor( userId = user.getId(), sortBy = "oldest" );
+                    expect( oldest.rows[ 1 ].title ).toBe( "first" );
+
+                    var newest = svc.searchFor( userId = user.getId(), sortBy = "newest" );
+                    expect( newest.rows[ 1 ].title ).toBe( "third" );
+
+                    var unreadFirst = svc.searchFor( userId = user.getId(), sortBy = "unread_first" );
+                    // The two unread (third, second) must come before the read one (first).
+                    expect( unreadFirst.rows[ 1 ].title ).toBe( "third" );
+                    expect( unreadFirst.rows[ 2 ].title ).toBe( "second" );
+                    expect( unreadFirst.rows[ 3 ].title ).toBe( "first" );
+                } );
+            } );
+
+            describe( "bulk operations", function() {
+                it( "markMultipleReadFor marks only listed ids and only for the owner", function() {
+                    var owner    = createTestUser();
+                    var intruder = createTestUser();
+                    var a = svc.notify( userId = owner.getId(),    type = "test.b", title = "a" );
+                    var b = svc.notify( userId = owner.getId(),    type = "test.b", title = "b" );
+                    var c = svc.notify( userId = owner.getId(),    type = "test.b", title = "c" );
+                    var x = svc.notify( userId = intruder.getId(), type = "test.b", title = "x" );
+
+                    // Try to mark the intruder's row alongside the owner's:
+                    // the user_id filter inside the service should drop x silently.
+                    svc.markMultipleReadFor( owner.getId(), [ a, b, x ] );
+                    expect( svc.unreadCountFor( owner.getId() ) ).toBe( 1, "c stays unread" );
+                    expect( svc.unreadCountFor( intruder.getId() ) ).toBe( 1, "x untouched" );
+                } );
+
+                it( "deleteMultipleFor wipes only listed ids for the owner", function() {
+                    var owner    = createTestUser();
+                    var intruder = createTestUser();
+                    var a = svc.notify( userId = owner.getId(),    type = "test.d", title = "a" );
+                    var b = svc.notify( userId = owner.getId(),    type = "test.d", title = "b" );
+                    var x = svc.notify( userId = intruder.getId(), type = "test.d", title = "x" );
+
+                    svc.deleteMultipleFor( owner.getId(), [ a, x ] );
+                    var ownerAfter = svc.searchFor( userId = owner.getId() );
+                    expect( ownerAfter.total ).toBe( 1, "only b remains for owner" );
+                    expect( ownerAfter.rows[ 1 ].title ).toBe( "b" );
+                    var intruderAfter = svc.searchFor( userId = intruder.getId() );
+                    expect( intruderAfter.total ).toBe( 1, "intruder's x untouched" );
+                } );
+
+                it( "deleteAllFor empties only the caller's inbox", function() {
+                    var owner    = createTestUser();
+                    var intruder = createTestUser();
+                    svc.notify( userId = owner.getId(),    type = "test.da", title = "o1" );
+                    svc.notify( userId = owner.getId(),    type = "test.da", title = "o2" );
+                    svc.notify( userId = intruder.getId(), type = "test.da", title = "i1" );
+
+                    svc.deleteAllFor( owner.getId() );
+                    expect( svc.searchFor( userId = owner.getId() ).total ).toBe( 0 );
+                    expect( svc.searchFor( userId = intruder.getId() ).total ).toBe( 1 );
+                } );
+            } );
+
         } );
     }
 

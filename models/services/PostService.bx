@@ -139,19 +139,17 @@ class accessors="true" singleton {
         }
 
         // Featured-image "Remove" signal — the wire sends
-        // featuredMediaId=0 as sentinel for "clear the FK". We have
-        // to strip it from `data` BEFORE applyAttrsToEntity, because
-        // setFeaturedMediaId(0) would try to persist 0 via Quick,
-        // which fails the FK constraint (no media row has id=0).
-        // After save() we null the column via a raw qb UPDATE — Quick
-        // can't null an FK cleanly (setXxx(javaCast("null","")) silently
-        // drops the column from the generated UPDATE per the
-        // CLAUDE.md gotcha).
-        var shouldClearFeaturedMedia = false;
-        if ( structKeyExists( data, "featuredMediaId" ) && val( data.featuredMediaId ) == 0 ) {
-            shouldClearFeaturedMedia = true;
-            structDelete( data, "featuredMediaId" );
-        }
+        // featuredMediaId=0 as sentinel for "clear the FK". Capture
+        // BEFORE normalizeIncoming, which now strips the key entirely
+        // (so create() doesn't try to INSERT featured_media_id=0 and
+        // trip the FK constraint). For update() we still need the raw
+        // UPDATE NULL below — Quick can't null an FK cleanly
+        // (setXxx(javaCast("null","")) silently drops the column from
+        // the generated UPDATE per the CLAUDE.md gotcha).
+        var shouldClearFeaturedMedia = (
+            structKeyExists( arguments.attrs, "featuredMediaId" )
+            && val( arguments.attrs.featuredMediaId ?: -1 ) == 0
+        );
 
         applyAttrsToEntity( arguments.post, data );
         arguments.post.save();
@@ -529,6 +527,44 @@ class accessors="true" singleton {
             out.slug = slugify( out.title ?: "untitled" );
         } else {
             out.slug = slugify( out.slug );   // normalize user-typed slugs too
+        }
+
+        // Defensive FK handling. featured_media_id is a real foreign
+        // key into `media.id`, so any value that isn't a live row id
+        // will trip MySQL's constraint and take the whole save down
+        // with an opaque error. Three cases the wire produces:
+        //
+        //   featuredMediaId is missing → no-op (Quick won't touch the column)
+        //   featuredMediaId == 0       → "no featured image" sentinel from
+        //                                 the wire's data init or its
+        //                                 Remove button. Drop the key so
+        //                                 create() inserts NULL; update()
+        //                                 captured the explicit-clear
+        //                                 signal before this normalize
+        //                                 ran and still triggers a raw
+        //                                 UPDATE NULL on the column.
+        //   featuredMediaId > 0        → must reference a live (not
+        //                                 soft-deleted) media row. Drop
+        //                                 the key when it doesn't —
+        //                                 create() inserts NULL,
+        //                                 update() leaves the existing
+        //                                 value alone.
+        if ( structKeyExists( out, "featuredMediaId" ) ) {
+            var fmid = val( out.featuredMediaId ?: 0 );
+            if ( fmid == 0 ) {
+                structDelete( out, "featuredMediaId" );
+            }
+            else {
+                var exists = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "media" )
+                    .where( "id", fmid )
+                    .whereNull( "deleted_at" )
+                    .count();
+                if ( !exists ) {
+                    log.warn( "PostService.normalizeIncoming: dropping stale featuredMediaId=" & fmid & " (no live media row); preventing FK violation." );
+                    structDelete( out, "featuredMediaId" );
+                }
+            }
         }
         return out;
     }

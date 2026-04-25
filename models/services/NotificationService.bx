@@ -243,6 +243,130 @@ class accessors="true" singleton {
         variables.cache.clear( unreadCacheKey( arguments.userId ) );
     }
 
+    /**
+     * Paginated + filtered list for the admin notifications page.
+     * Returns { rows, total, page, perPage, totalPages }.
+     *
+     * @userId    Owner of the notifications.
+     * @search    Substring matched against title + body (case-insensitive).
+     * @status    "all" (default), "unread", or "read".
+     * @severity  "all" (default), or one of the severity strings ("info", "warning", "danger", etc.).
+     * @sortBy    "newest" (default), "oldest", or "unread_first" (unread newest first, then read newest first).
+     * @page      1-based page number.
+     * @perPage   rows per page, default 25, clamped to [1, 100].
+     */
+    struct function searchFor(
+        required numeric userId,
+                 string  search       = "",
+                 string  status       = "all",
+                 string  severity     = "all",
+                 string  sortBy       = "newest",
+                 numeric page         = 1,
+                 numeric perPage      = 25
+    ) {
+        var per     = max( 1, min( 100, val( arguments.perPage ) ) );
+        var pg      = max( 1, val( arguments.page ) );
+        var trimmed = trim( arguments.search );
+        // Pull arguments into locals up front. The query-builder
+        // closure below cannot reach the outer function's `arguments`
+        // scope (BoxLang closures get their own arguments struct),
+        // so we have to lift everything we want to filter on into
+        // simple variables that ARE captured by the closure.
+        var ownerId  = arguments.userId;
+        var statusF  = arguments.status;
+        var severityF = arguments.severity;
+
+        // Build the base query once; call it twice (count + listing)
+        // so the limit/offset don't bleed into the totals query.
+        var baseQuery = function() {
+            var q = freshQb().from( "notifications" )
+                .where( "user_id", ownerId );
+            if ( len( trimmed ) ) {
+                var like = "%" & trimmed & "%";
+                q.where( function( inner ) {
+                    inner.where( "title", "like", like ).orWhere( "body", "like", like );
+                } );
+            }
+            if ( statusF == "unread" )      q.whereNull( "read_at" );
+            else if ( statusF == "read" )   q.whereNotNull( "read_at" );
+            if ( severityF != "all" && len( severityF ) ) {
+                q.where( "severity", severityF );
+            }
+            return q;
+        };
+
+        var total = baseQuery().count();
+        var totalPages = total == 0 ? 1 : ceiling( total / per );
+        if ( pg > totalPages ) pg = totalPages;
+
+        var listing = baseQuery();
+        switch ( arguments.sortBy ) {
+            case "oldest":
+                listing.orderBy( "id", "asc" );
+                break;
+            case "unread_first":
+                // MySQL: NULL sorts FIRST in ASC; we want unread (NULL read_at) first.
+                listing.orderByRaw( "read_at IS NULL DESC, id DESC" );
+                break;
+            default:   // newest
+                listing.orderBy( "id", "desc" );
+        }
+        var rows = listing
+            .limit( per )
+            .offset( ( pg - 1 ) * per )
+            .get();
+
+        return {
+            "rows"       : rows,
+            "total"      : total,
+            "page"       : pg,
+            "perPage"    : per,
+            "totalPages" : totalPages
+        };
+    }
+
+    /**
+     * Mark a list of notification ids as read for a single owner.
+     * No-op when ids is empty. The user_id filter prevents cross-
+     * tenant marking even if the wire passes ids that don't belong
+     * to the caller.
+     */
+    function markMultipleReadFor( required numeric userId, required array ids ) {
+        if ( !arguments.ids.len() ) return;
+        freshQb().from( "notifications" )
+            .where( "user_id", arguments.userId )
+            .whereIn( "id", arguments.ids )
+            .whereNull( "read_at" )
+            .update( { "read_at" : nowForDb() } );
+        invalidateFor( arguments.userId );
+    }
+
+    /**
+     * Delete a list of notifications for one owner. user_id filter
+     * scopes the destruction; an attacker passing someone else's ids
+     * doesn't get to delete their rows.
+     */
+    function deleteMultipleFor( required numeric userId, required array ids ) {
+        if ( !arguments.ids.len() ) return;
+        freshQb().from( "notifications" )
+            .where( "user_id", arguments.userId )
+            .whereIn( "id", arguments.ids )
+            .delete();
+        invalidateFor( arguments.userId );
+    }
+
+    /**
+     * Wipe every notification for a single owner. The "Delete all"
+     * button in the admin manager calls this; the wire wraps it in
+     * wire:confirm so the click can't fire by accident.
+     */
+    function deleteAllFor( required numeric userId ) {
+        freshQb().from( "notifications" )
+            .where( "user_id", arguments.userId )
+            .delete();
+        invalidateFor( arguments.userId );
+    }
+
     // --------------------------------------------------------------------
     // Private
     // --------------------------------------------------------------------

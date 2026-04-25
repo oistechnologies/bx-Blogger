@@ -55,6 +55,20 @@ class accessors="true" singleton {
         };
     }
 
+    struct function excerpt( required string systemPrompt, required string postBody ) {
+        var result = chat(
+            systemPrompt = arguments.systemPrompt,
+            userContent  = arguments.postBody
+        );
+        return {
+            "text"             : result.markdown,
+            "promptTokens"     : result.promptTokens,
+            "completionTokens" : result.completionTokens,
+            "totalTokens"      : result.totalTokens,
+            "costUsdMicro"     : result.costUsdMicro
+        };
+    }
+
     // --------------------------------------------------------------------
 
     private struct function chat( required string systemPrompt, required string userContent ) {
@@ -142,8 +156,13 @@ class accessors="true" singleton {
     /**
      * Parse a review response into an array of suggestion structs.
      * Expected shape: JSON array of `{ id, type, locationHint, before, after, rationale }`.
-     * If the model returns prose instead of JSON we synthesize a
-     * single suggestion so the panel isn't empty.
+     *
+     * Smaller / cheaper models routinely ignore the JSON schema we
+     * gave them and emit alternative keys ({ suggestion, location },
+     * { issue, fix }, etc.) or omit fields entirely. Normalize every
+     * row to the shape the editor template expects so a single
+     * sloppy completion can't crash the wire's render with
+     * "key [id] was not found in the struct".
      */
     private array function tryParseSuggestions( required string text ) {
         var t = trim( arguments.text );
@@ -153,8 +172,10 @@ class accessors="true" singleton {
         t = reReplace( t, "```\s*$",        "", "one" );
         try {
             var parsed = jsonDeserialize( t );
-            if ( isArray( parsed ) ) return parsed;
-            if ( isStruct( parsed ) && structKeyExists( parsed, "suggestions" ) ) return parsed.suggestions;
+            if ( isArray( parsed ) ) return normalizeSuggestions( parsed );
+            if ( isStruct( parsed ) && structKeyExists( parsed, "suggestions" ) ) {
+                return normalizeSuggestions( parsed.suggestions );
+            }
         }
         catch ( any e ) { /* fall through */ }
 
@@ -166,6 +187,52 @@ class accessors="true" singleton {
             "after"        : "",
             "rationale"    : arguments.text
         } ];
+    }
+
+    /**
+     * Map common LLM key variants to the editor's contract. Missing
+     * fields are filled with safe defaults; arrays/structs in
+     * unexpected positions are collapsed to strings. Always returns
+     * an array of structs with every expected key present, in order
+     * so `loop array=#suggestions# index=i` can stamp a stable id.
+     */
+    private array function normalizeSuggestions( required any rows ) {
+        if ( !isArray( arguments.rows ) ) return [];
+        var out = [];
+        var i   = 0;
+        for ( var raw in arguments.rows ) {
+            i++;
+            if ( !isStruct( raw ) ) continue;
+            var rationale = pickKey( raw, [ "rationale", "suggestion", "reason", "explanation", "comment", "note" ] );
+            var location  = pickKey( raw, [ "locationHint", "location", "where", "section", "anchor" ] );
+            var before    = pickKey( raw, [ "before", "original", "current", "from", "old" ] );
+            var after     = pickKey( raw, [ "after",  "replacement", "suggested", "to",   "new" ] );
+            var type      = pickKey( raw, [ "type", "category", "kind" ] );
+            var id        = pickKey( raw, [ "id", "key" ] );
+            if ( !len( id ) ) id = "s-" & i;
+            if ( !len( type ) ) type = "general";
+            out.append( {
+                "id"           : id,
+                "type"         : type,
+                "locationHint" : location,
+                "before"       : before,
+                "after"        : after,
+                "rationale"    : rationale
+            } );
+        }
+        return out;
+    }
+
+    private string function pickKey( required struct row, required array keys ) {
+        for ( var k in arguments.keys ) {
+            if ( structKeyExists( arguments.row, k ) ) {
+                var v = arguments.row[ k ];
+                if ( isSimpleValue( v ) ) return toString( v );
+                try { return jsonSerialize( v ); }
+                catch ( any e ) { return ""; }
+            }
+        }
+        return "";
     }
 
 }

@@ -1,0 +1,33 @@
+/**
+ * bx-Blogger — admin:AiPrompts
+ *
+ * Landing for the AI Prompts admin page. Lets a user with
+ * `ai.prompts.manage` edit the system prompts that bx-Blogger sends
+ * to the LLM for draft / review / image generation.
+ *
+ * Handler is intentionally thin — all CRUD lives in the
+ * `ai_prompts.manager` wire. The handler's job is to gate access and
+ * select the layout/view.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    this.layouts = { "Main.bxm" : "*" };
+
+    function preHandler( event, rc, prc, action, eventArguments ) {
+        var auth = getInstance( "AuthenticationService@cbauth" );
+        if ( !auth.isLoggedIn() ) {
+            relocate( url = "/security/login" );
+            return;
+        }
+        if ( !auth.getUser().hasPermission( "ai.prompts.manage" ) ) {
+            relocate( event = "admin:Dashboard.index" );
+            return;
+        }
+    }
+
+    function index( event, rc, prc ) {
+        prc.pageTitle = "AI Prompts";
+        event.setView( view = "ai_prompts/index" );
+    }
+
+}

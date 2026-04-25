@@ -473,7 +473,41 @@ class extends="coldbox.system.EventHandler" {
 	}
 
 	function onRequestStart( event, rc, prc ) {
-		// Phase 0: no-op.
+		// Defensive cbauth session validation. If the session cookie
+		// holds a user_id whose row no longer exists in `users` (admin
+		// deleted, test cleanup wiped the table, hard-purged via GDPR
+		// flow), cbauth.getUser() blows up with
+		//   "The requested key [userBean] was not located in any scope"
+		// because retrieveUserById returns null and AuthenticationService
+		// tries to set null into request storage. Worse, the error fires
+		// on every page including /security/login, locking the user out
+		// without a way to clear the bad cookie from the UI. Detect the
+		// mismatch here and force-clear the session so the next render
+		// proceeds anonymously and the firewall can redirect to login.
+		try {
+			var auth = getInstance( "AuthenticationService@cbauth" );
+			if ( auth.isLoggedIn() ) {
+				var sessionUserId = auth.getUserId() ?: 0;
+				if ( val( sessionUserId ) > 0 ) {
+					var stillExists = getInstance( "UserService" ).retrieveUserById( sessionUserId );
+					if ( isNull( stillExists ) ) {
+						auth.logout();
+						writeLog(
+							file = "bxblogger",
+							type = "warning",
+							text = "Main.onRequestStart: session pointed at user_id=" & sessionUserId & " which no longer exists; logged out + cleared session."
+						);
+					}
+				}
+			}
+		}
+		catch ( any e ) {
+			writeLog(
+				file = "bxblogger",
+				type = "warning",
+				text = "Main.onRequestStart session check failed: " & e.message
+			);
+		}
 	}
 
 	function onRequestEnd( event, rc, prc ) {

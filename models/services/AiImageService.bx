@@ -37,6 +37,7 @@ class accessors="true" singleton {
 
     property name="wirebox"            inject="wirebox";
     property name="provider"           inject="AiImageProvider";
+    property name="aiPromptService"    inject="AiPromptService";
     property name="mediaService"       inject="MediaService";
     property name="rateLimitService"   inject="RateLimitService";
     property name="interceptorService" inject="coldbox:InterceptorService";
@@ -92,12 +93,18 @@ class accessors="true" singleton {
             "variants" : variants
         } );
 
+        // Optional admin-editable system message prepended to every
+        // image-gen request. Empty / inactive in ai_prompts → no
+        // system message added (matches pre-2026-04 behavior exactly).
+        var systemPrompt = variables.aiPromptService.getActiveBody( "image_generation", "" );
+
         var result = {};
         try {
             result = variables.provider.generate(
-                prompt    = p,
-                styleHint = arguments.styleHint,
-                variants  = variants
+                prompt       = p,
+                styleHint    = arguments.styleHint,
+                variants     = variants,
+                systemPrompt = systemPrompt
             );
         }
         catch ( any e ) {
@@ -201,6 +208,30 @@ class accessors="true" singleton {
             "role"    : arguments.role
         } );
         return media;
+    }
+
+    /**
+     * Render-time lookup: ask the provider for the providerUrl bound
+     * to a previewId. The editor wire calls this from its template so
+     * `<img src=...>` works without storing the (potentially multi-MB
+     * data:) URL inside the wire's serialized data — round-tripping
+     * those URLs on every wire action otherwise blows past Undertow's
+     * POST body limit and the browser sees a 400 on the next click.
+     *
+     * Wrapped in try/catch instead of a structKeyExists guard because
+     * `structKeyExists( componentInstance, "methodName" )` checks the
+     * `this` scope, and methods declared with `function foo() {}` go
+     * into `variables` — so the guard returns false even when the
+     * method exists, silently breaking the preview render.
+     */
+    string function getPreviewUrl( required string previewId ) {
+        try {
+            return variables.provider.getPreviewUrl( arguments.previewId );
+        }
+        catch ( any e ) {
+            log.warn( "AiImageService.getPreviewUrl failed for " & arguments.previewId & ": " & e.message );
+            return "";
+        }
     }
 
     /**

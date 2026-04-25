@@ -1,0 +1,340 @@
+<bx:script>
+// @startWire
+/**
+ * ai_prompts.manager — admin form for editing the LLM system prompts.
+ *
+ * Loads every row from `ai_prompts` and renders a card per prompt
+ * with: name, slug, description, an editable body (textarea), an
+ * is_active toggle, "Save" + "Reset to default", and a collapsible
+ * "Show final system message" preview that reveals what the service
+ * will actually concatenate (admin body + deprecated tone env var +
+ * immutable security guardrails).
+ *
+ * Lives in the app-root /wires/ folder until the CBWIRE module-wires
+ * bug is patched (see CLAUDE.md). Two-file module-wires don't resolve
+ * via the @admin suffix yet.
+ */
+
+property name="aiPromptService"    inject="AiPromptService";
+property name="aiAssistantService" inject="AiAssistantService";
+property name="cbauth"             inject="AuthenticationService@cbauth";
+
+data = {
+    // map: slug → { name, description, prompt_text, is_active, default_text, ... }
+    "rows"           : {},
+    // Single-string state for the "Show final system message" toggle.
+    // Earlier impl used a struct keyed by slug, but CBWIRE's snapshot
+    // diff only catches top-level data property assignments — nested
+    // mutations like `data.expandedSlugs[ slug ] = true` slipped past
+    // it and the preview block never re-rendered. A scalar field wins
+    // the diff every time. Empty string = no preview open; otherwise
+    // the slug currently expanded (one at a time).
+    "expandedSlug"   : "",
+    "flashOk"        : "",
+    "flashError"     : ""
+};
+
+function onMount( event, rc, prc, params ) {
+    loadRows();
+}
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function save( required string slug ) {
+    clearFlashes();
+    if ( !requirePerm() ) return;
+
+    var row = data.rows[ arguments.slug ] ?: javaCast( "null", "" );
+    if ( isNull( row ) ) {
+        data.flashError = "Unknown prompt: " & arguments.slug;
+        return;
+    }
+
+    try {
+        aiPromptService.update(
+            slug          = arguments.slug,
+            attrs         = {
+                "prompt_text" : row.prompt_text ?: "",
+                "is_active"   : !!val( row.is_active ?: 0 )
+            },
+            editorUserId  = cbauth.getUser().getId()
+        );
+        loadRows();
+        data.flashOk = "Saved [" & ( row.name ?: arguments.slug ) & "]. Future AI calls will use the new body.";
+    }
+    catch ( bxBlogger.AiPromptService.NotFound e ) {
+        data.flashError = "Prompt [" & arguments.slug & "] no longer exists. Reload the page.";
+    }
+    catch ( any e ) {
+        data.flashError = "Save failed: " & e.message;
+    }
+}
+
+function resetToDefault( required string slug ) {
+    clearFlashes();
+    if ( !requirePerm() ) return;
+
+    try {
+        aiPromptService.resetToDefault(
+            slug         = arguments.slug,
+            editorUserId = cbauth.getUser().getId()
+        );
+        loadRows();
+        var row = data.rows[ arguments.slug ] ?: { "name" : arguments.slug };
+        data.flashOk = "Reset [" & ( row.name ?: arguments.slug ) & "] to its shipped default.";
+    }
+    catch ( bxBlogger.AiPromptService.NotFound e ) {
+        data.flashError = "Prompt [" & arguments.slug & "] no longer exists. Reload the page.";
+    }
+}
+
+function togglePreview( required string slug ) {
+    // Click on the open card collapses it; click on a different card
+    // opens that one (and implicitly closes the previous). One open
+    // at a time keeps the page tidy on a 5-card grid.
+    if ( ( data.expandedSlug ?: "" ) == arguments.slug ) {
+        data.expandedSlug = "";
+    }
+    else {
+        data.expandedSlug = arguments.slug;
+    }
+}
+
+// --------------------------------------------------------------------
+// View helpers
+// --------------------------------------------------------------------
+
+/**
+ * Build the final system message exactly as AiAssistantService
+ * would assemble it: the admin's body + the deprecated tone env var
+ * (if set) + the immutable guardrail block. Lets admins see what
+ * actually reaches the LLM, including the parts they cannot edit.
+ *
+ * Image-gen has no guardrail block (different flow), so the slug
+ * `image_generation` returns just the body.
+ */
+string function previewFinalMessage( required string slug ) {
+    var row = data.rows[ arguments.slug ] ?: javaCast( "null", "" );
+    if ( isNull( row ) ) return "";
+    var body = row.prompt_text ?: "";
+    if ( !val( row.is_active ?: 0 ) || !len( trim( body ) ) ) {
+        body = row.default_text ?: "";   // show what would actually fire (the fallback)
+    }
+    // Image generation: just the body. system_directives: just the
+    // body too — directives are inserted INTO other prompts, not
+    // wrapped with their own.
+    if ( arguments.slug == "image_generation" ) return body;
+    if ( arguments.slug == "system_directives" ) return body;
+
+    var tone = getSystemSetting( "AI_SYSTEM_PROMPT_TONE", "" );
+    var nl   = char( 10 );
+    var out  = body;
+    if ( len( tone ) ) out &= nl & tone;
+
+    // Mirror AiAssistantService.buildSystemPrompt: append the global
+    // system_directives row (when active + non-empty) between tone
+    // and the security guardrails.
+    var directivesRow = data.rows[ "system_directives" ] ?: javaCast( "null", "" );
+    if ( !isNull( directivesRow ) ) {
+        var dActive = val( directivesRow.is_active ?: 0 ) > 0;
+        var dBody   = trim( directivesRow.prompt_text ?: "" );
+        if ( dActive && len( dBody ) ) {
+            out &= nl & nl & "Additional house rules (apply to every response):" & nl & dBody;
+        }
+    }
+
+    // Single source of truth — the same string AiAssistantService
+    // appends in production, fetched via the public getter so this
+    // preview can never drift from reality.
+    out &= aiAssistantService.getGuardrailSuffix();
+    return out;
+}
+
+/**
+ * Helper for the read-only "What gets appended to every text prompt"
+ * card at the top of the page. Exposes the in-code guardrail block
+ * so admins can see what the security layer actually contains
+ * without needing to read the AiAssistantService source.
+ */
+string function guardrailBlock() {
+    return aiAssistantService.getGuardrailSuffix();
+}
+
+string function effectiveStatusLabel( required string slug ) {
+    var row = data.rows[ arguments.slug ] ?: javaCast( "null", "" );
+    if ( isNull( row ) ) return "missing";
+    if ( !val( row.is_active ?: 0 ) ) return "inactive — using shipped default";
+    if ( !len( trim( row.prompt_text ?: "" ) ) ) return "empty body — using shipped default";
+    return "active";
+}
+
+string function statusBadgeClass( required string slug ) {
+    var row = data.rows[ arguments.slug ] ?: javaCast( "null", "" );
+    if ( isNull( row ) ) return "bg-secondary";
+    if ( !val( row.is_active ?: 0 ) ) return "bg-warning text-dark";
+    if ( !len( trim( row.prompt_text ?: "" ) ) ) return "bg-warning text-dark";
+    return "bg-success";
+}
+
+array function orderedSlugs() {
+    // system_directives sits first because it's a cross-cutting rule
+    // appended to every text-generation prompt — admins should see
+    // their global house rules before the per-feature bodies that
+    // implicitly inherit them. The rest reads "most-used first".
+    return [ "system_directives", "draft_from_idea", "excerpt_from_body", "review_post", "image_generation" ];
+}
+
+boolean function isPreviewOpen( required string slug ) {
+    return ( data.expandedSlug ?: "" ) == arguments.slug;
+}
+
+// --------------------------------------------------------------------
+// Private
+// --------------------------------------------------------------------
+
+private void function loadRows() {
+    var rows = aiPromptService.listAll();
+    var bySlug = {};
+    for ( var r in rows ) {
+        bySlug[ r.slug ] = {
+            "id"           : r.id,
+            "slug"         : r.slug,
+            "name"         : r.name,
+            "description"  : r.description ?: "",
+            "prompt_text"  : r.prompt_text ?: "",
+            "default_text" : r.default_text ?: "",
+            "is_active"    : val( r.is_active ?: 0 )
+        };
+    }
+    data.rows = bySlug;
+}
+
+private void function clearFlashes() {
+    data.flashOk    = "";
+    data.flashError = "";
+}
+
+private boolean function requirePerm() {
+    if ( !cbauth.isLoggedIn() ) {
+        data.flashError = "You must be signed in.";
+        return false;
+    }
+    if ( cbauth.getUser().hasPermission( "ai.prompts.manage" ) ) return true;
+    data.flashError = "You don't have permission to edit AI prompts.";
+    return false;
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<div>
+    <bx:if len( args.flashOk )>
+        <div class="alert alert-success alert-dismissible">
+            #encodeForHTML( args.flashOk )#
+            <button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+        </div>
+    </bx:if>
+    <bx:if len( args.flashError )>
+        <div class="alert alert-danger alert-dismissible">
+            #encodeForHTML( args.flashError )#
+            <button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+        </div>
+    </bx:if>
+
+    <p class="text-muted small mb-3">
+        These are the system messages bx-Blogger sends to the LLM. The
+        <strong>security guardrail block</strong> below is appended to every
+        text prompt automatically and cannot be edited from this page &mdash;
+        it sits in code so an account compromise can&rsquo;t turn off
+        jailbreak protection. Use <em>Show final system message</em> on any
+        editable prompt below to see exactly what reaches the model.
+    </p>
+
+    <!--- Read-only display of the immutable security guardrails --->
+    <div class="card stat-card stat-card-secondary mb-4">
+        <div class="card-header card-header-soft card-header-soft-secondary d-flex align-items-center">
+            <i class="bi bi-shield-lock me-2"></i>
+            <span class="h6 mb-0 me-auto">Security guardrails (read-only)</span>
+            <span class="badge bg-secondary">always appended</span>
+        </div>
+        <div class="card-body">
+            <p class="small text-muted mb-2">
+                Defined in <code>models/services/AiAssistantService.bx</code>; appended after every editable
+                prompt body and after any system directives. Image generation has its own flow and is not affected.
+            </p>
+            <pre class="p-3 rounded bg-body-secondary small mb-0" style="white-space: pre-wrap;">#encodeForHTML( guardrailBlock() )#</pre>
+        </div>
+    </div>
+
+    <bx:loop array="#orderedSlugs()#" index="slug">
+        <bx:if structKeyExists( args.rows, slug )>
+            <bx:script>
+                row = args.rows[ slug ];
+            </bx:script>
+            <div class="card stat-card stat-card-info mb-4">
+                <div class="card-header card-header-soft card-header-soft-info d-flex align-items-center">
+                    <span class="h6 mb-0 me-2">#encodeForHTML( row.name )#</span>
+                    <code class="small text-muted me-auto">#encodeForHTML( row.slug )#</code>
+                    <span class="badge #statusBadgeClass( slug )#">#encodeForHTML( effectiveStatusLabel( slug ) )#</span>
+                </div>
+                <div class="card-body">
+                    <bx:if len( row.description )>
+                        <p class="text-muted small mb-3">#encodeForHTML( row.description )#</p>
+                    </bx:if>
+
+                    <form wire:submit.prevent="save('#encodeForHTML( slug )#')">
+                        <div class="mb-3">
+                            <label for="body-#encodeForHTML( slug )#" class="form-label">Prompt body</label>
+                            <textarea id="body-#encodeForHTML( slug )#"
+                                      class="form-control font-monospace"
+                                      rows="10"
+                                      wire:model.blur="rows.#encodeForHTML( slug )#.prompt_text"
+                                      spellcheck="true"></textarea>
+                        </div>
+
+                        <div class="form-check form-switch mb-3">
+                            <input type="checkbox"
+                                   class="form-check-input"
+                                   id="active-#encodeForHTML( slug )#"
+                                   wire:model.live="rows.#encodeForHTML( slug )#.is_active"
+                                   value="1"
+                                   #( val( row.is_active ) ? 'checked' : '' )#>
+                            <label class="form-check-label" for="active-#encodeForHTML( slug )#">
+                                Active &mdash; when off, bx-Blogger uses the shipped default body
+                            </label>
+                        </div>
+
+                        <div class="d-flex flex-wrap gap-2">
+                            <button type="submit" class="btn btn-primary">Save</button>
+                            <button type="button"
+                                    class="btn btn-outline-danger"
+                                    wire:click="resetToDefault('#encodeForHTML( slug )#')"
+                                    wire:confirm="Replace the current body with the shipped default and re-activate?">
+                                Reset to default
+                            </button>
+                            <button type="button"
+                                    class="btn btn-outline-secondary ms-auto"
+                                    wire:click="togglePreview('#encodeForHTML( slug )#')">
+                                <bx:if isPreviewOpen( slug )>
+                                    Hide final system message
+                                <bx:else>
+                                    Show final system message
+                                </bx:if>
+                            </button>
+                        </div>
+                    </form>
+
+                    <bx:if isPreviewOpen( slug )>
+                        <div class="mt-3">
+                            <div class="small text-muted mb-1">Exactly what the service sends to the LLM right now:</div>
+                            <pre class="p-3 rounded bg-body-secondary small mb-0" style="white-space: pre-wrap;">#encodeForHTML( previewFinalMessage( slug ) )#</pre>
+                        </div>
+                    </bx:if>
+                </div>
+            </div>
+        </bx:if>
+    </bx:loop>
+</div>
+</bx:output>
