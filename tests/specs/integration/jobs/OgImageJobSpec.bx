@@ -125,13 +125,39 @@ class extends="tests.support.BaseIntegrationSpec" {
             "slug"         : "ogjob-" & lCase( replace( createUUID(), "-", "", "all" ) ),
             "bodyMarkdown" : "Body."
         } );
-        // Reset og_version to a known starting value so the spec
-        // doesn't depend on whatever PostService.create dispatched
-        // in the background (cbq workers run async; the entity may
-        // or may not have been bumped to 1 by the time we get here).
+
+        // PostService.create() dispatches an OgImageJob to the default
+        // (async) cbq queue. Drain it before we snapshot og_version,
+        // otherwise the async bump can land BETWEEN our reset and the
+        // spec's own sync dispatch — pushing og_version from 0 → 1 → 2
+        // and tripping the "Expected 1, received 2" assertion. Cheap
+        // poll on cbq_jobs is fine here (test-only path, low volume).
+        drainCbqJobs();
+
+        // Now reset og_version + re-fetch so the returned entity
+        // reflects what's actually in the DB.
         post.setOgVersion( 0 );
         post.save();
-        return post;
+        return getInstance( "Post" ).findOrFail( post.getId() );
+    }
+
+    /**
+     * Wait for the cbq queue to drain (no pending or in-flight jobs).
+     * Returns when the queue is empty, or after 5s — whichever comes
+     * first. The 5s ceiling guards against a wedged worker hanging
+     * the spec; in practice a single OgImageJob completes in <500ms.
+     */
+    private void function drainCbqJobs() {
+        var qb       = getInstance( "QueryBuilder@qb" );
+        var deadline = getTickCount() + 5000;
+        while ( getTickCount() < deadline ) {
+            var pending = qb.newQuery().from( "cbq_jobs" )
+                .whereNull( "completedDate" )
+                .whereNull( "failedDate" )
+                .count();
+            if ( pending == 0 ) return;
+            sleep( 50 );
+        }
     }
 
     private void function trackPath( required string path ) {
