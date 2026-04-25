@@ -55,9 +55,9 @@
         "cbq":"modules/cbq/"
     },
     "scripts":{
-        "format":"cfformat run config/,handlers/,interceptors/,models/,modules_app/,tests/specs/,*.bx ./.cfformat.json --overwrite",
-        "format:check":"cfformat check config/,handlers/,interceptors/,models/,modules_app/,tests/specs/,*.bx ./.cfformat.json",
-        "format:watch":"cfformat watch path='config/,handlers/,interceptors/,models/,modules_app/,tests/specs/,*.bx' settingsPath='.cfformat.json'",
+        "format":"cfformat run config/,handlers/,interceptors/,models/ai/,models/entities/,models/jobs/,models/services/,models/theming/,modules_app/,tests/specs/,*.bx ./.cfformat.json --overwrite",
+        "format:check":"cfformat check config/,handlers/,interceptors/,models/ai/,models/entities/,models/jobs/,models/services/,models/theming/,modules_app/,tests/specs/,*.bx ./.cfformat.json",
+        "format:watch":"cfformat watch path='config/,handlers/,interceptors/,models/ai/,models/entities/,models/jobs/,models/services/,models/theming/,modules_app/,tests/specs/,*.bx' settingsPath='.cfformat.json'",
         "docker:build":"!docker compose build",
         "docker:up":"!docker compose up -d",
         "docker:down":"!docker compose down",
