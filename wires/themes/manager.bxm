@@ -42,7 +42,7 @@ function scanFolder() {
     if ( summary.added.len() )   parts.append( summary.added.len()   & " new" );
     if ( summary.updated.len() ) parts.append( summary.updated.len() & " refreshed" );
     if ( summary.missing.len() ) parts.append( summary.missing.len() & " missing" );
-    data.flashOk = "Folder scan complete" & ( parts.len() ? ": " & parts.toList( ", " ) : "" ) & ".";
+    data.flashOk = "Reload complete" & ( parts.len() ? ": " & parts.toList( ", " ) : "" ) & ".";
 }
 
 function activate( required string slug ) {
@@ -153,12 +153,14 @@ private boolean function requirePerm( required string perm ) {
             <div class="me-auto">
                 <span class="h6 mb-0 d-block">Installed themes</span>
                 <small class="text-muted fw-normal">
-                    Drop a theme folder under <code>themes/</code>, then scan to register it.
+                    Reload from disk to register a newly-dropped theme folder OR
+                    pick up changes to an existing theme's <code>theme.json</code>
+                    (e.g. new options after a project upgrade).
                 </small>
             </div>
             <button class="btn btn-outline-secondary btn-sm" wire:click="scanFolder" wire:loading.attr="disabled">
-                <span wire:loading.remove wire:target="scanFolder">Scan folder</span>
-                <span wire:loading wire:target="scanFolder">Scanning&hellip;</span>
+                <span wire:loading.remove wire:target="scanFolder"><i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>Reload from disk</span>
+                <span wire:loading wire:target="scanFolder">Reloading&hellip;</span>
             </button>
         </div>
 

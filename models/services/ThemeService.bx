@@ -241,6 +241,19 @@ class accessors="true" singleton {
             }
         }
 
+        // Invalidate the per-theme options cache for every theme we
+        // touched. Without this, ThemeOptionsService.getEffectiveOptions
+        // would keep serving the OLD manifest's options (cached for 60
+        // minutes) — meaning the admin form wouldn't surface any new
+        // options the operator added to theme.json until the cache TTL
+        // expired or fwreinit fired. invalidate() also flushes the
+        // page cache (theme options drive rendered HTML), so a public
+        // page refresh shows the new defaults immediately.
+        var optionsSvc = variables.wirebox.getInstance( "ThemeOptionsService" );
+        for ( var slug in diskSlugs ) {
+            optionsSvc.invalidate( slug );
+        }
+
         return summary;
     }
 
