@@ -1,0 +1,47 @@
+/**
+ * bx-Blogger — AdminAutoCleanOptOutInterceptor
+ *
+ * Disables cbantisamy's `AutoClean` rc-sweep for `/admin/*` requests.
+ *
+ * cbantisamy ships an `onRequestCapture` interceptor that runs every
+ * `rc` key through `AntiSamy.clean()` as defense-in-depth against
+ * rogue input. For admin routes that's overkill + actively harmful:
+ * markdown editors submit text that legitimately includes `<` and
+ * `>` (blockquote prefixes, HTML in code fences, raw HTML in posts.
+ * html.unsafe later) and AutoClean encodes those to `&lt;`/`&gt;` +
+ * collapses runs of whitespace, producing output the editor then
+ * round-trips into the DB and renders back to the user as literal
+ * `&gt;` text on next load.
+ *
+ * Admin routes are gated by cbsecurity's `^admin.*` firewall —
+ * the operator is authenticated + authorized — and rendered HTML
+ * for public output is sanitized at render time via
+ * PostService.compileBody (which calls AntiSamy explicitly on the
+ * markdown-to-HTML pipeline). That's the right layer; not the
+ * input-collection layer.
+ *
+ * Public routes (login, search, future comment forms, etc.) keep
+ * the auto-clean defense.
+ *
+ * Implementation note: must fire BEFORE cbantisamy's AutoClean on
+ * the same event. App-level interceptors registered in
+ * `variables.interceptors[]` (in config/Coldbox.bx) fire before
+ * module-loaded interceptors, so as long as this interceptor is in
+ * the list (in any order relative to other app interceptors), it
+ * wins the race against the cbantisamy module.
+ */
+class {
+
+    function configure() {}
+
+    function onRequestCapture( event, interceptData, buffer, rc, prc ) {
+        var path = arguments.event.getCurrentRoutedURL();
+        // `^admin` covers `admin`, `admin/`, `admin/account`, etc.
+        // The leading `/` is stripped by ColdBox before this hook
+        // fires, so we match without one.
+        if ( reFindNoCase( "^admin", path ) ) {
+            arguments.event.setPrivateValue( "antisamy-autoclean", false );
+        }
+    }
+
+}

@@ -399,12 +399,20 @@
         }
         ta.dataset.easymdeInit = "1";
 
-        new EasyMDE( {
+        var easymde = new EasyMDE( {
             element      : ta,
             spellChecker : false,
             minHeight    : "240px",
             status       : [ "lines", "words", "cursor" ],
             placeholder  : "Tell readers about yourself…",
+            // Push CodeMirror's plain-text value back to the
+            // underlying textarea on every change so a regular
+            // form POST always submits the latest content. Without
+            // this, EasyMDE's auto-sync isn't reliable across all
+            // toolbar actions (the blockquote button in particular
+            // was leaving stale `&gt;`-encoded markup on the
+            // textarea between syncs).
+            forceSync    : true,
             toolbar      : [
                 "bold", "italic", "strikethrough", "heading",
                 "|", "quote", "unordered-list", "ordered-list", "code",
@@ -413,6 +421,17 @@
                 "|", "guide"
             ]
         } );
+
+        // Belt-and-suspenders sync — listen for the form's submit
+        // event and write the editor value to the textarea right
+        // before the browser serializes it. Catches any toolbar
+        // action that bypasses forceSync.
+        var form = ta.form;
+        if ( form ) {
+            form.addEventListener( "submit", function () {
+                ta.value = easymde.value();
+            } );
+        }
     }
 
     if ( document.readyState === "loading" ) {

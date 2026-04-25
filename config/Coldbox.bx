@@ -235,6 +235,11 @@ class {
 		 * it up in Phase 7) and returns HTTP 429 to the caller.
 		 */
 		variables.interceptors = [
+			// Opts admin routes out of cbantisamy's rc-sweep on
+			// `onRequestCapture`. Has to fire BEFORE cbantisamy's
+			// AutoClean (module interceptors load after app
+			// interceptors, so registering here wins the race).
+			{ class : "interceptors.AdminAutoCleanOptOutInterceptor" },
 			// Patches the `backups` cbfs S3 disk endpoint at
 			// disk-start so Backblaze / DO Spaces / Wasabi-style
 			// endpoints (which already embed the region) don't get
