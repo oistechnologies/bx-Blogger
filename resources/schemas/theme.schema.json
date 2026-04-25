@@ -65,9 +65,27 @@
                 "required": [ "key", "type", "label" ],
                 "properties": {
                     "key":     { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
-                    "type":    { "enum": [ "color", "int", "bool", "string", "select", "textarea", "image" ] },
+                    "type":    { "enum": [ "color", "int", "bool", "string", "text", "select", "textarea", "image" ] },
                     "label":   { "type": "string" },
-                    "default": {}
+                    "default": {},
+                    "enum": {
+                        "type":        "array",
+                        "description": "Required when type=='select'. List of choices the operator can pick from. Each entry must be { value, label }; `value` is what gets stored, `label` is what the dropdown shows.",
+                        "items": {
+                            "type": "object",
+                            "required": [ "value", "label" ],
+                            "properties": {
+                                "value": { "type": "string" },
+                                "label": { "type": "string" }
+                            }
+                        }
+                    }
+                },
+                "if": {
+                    "properties": { "type": { "const": "select" } }
+                },
+                "then": {
+                    "required": [ "enum" ]
                 }
             }
         }

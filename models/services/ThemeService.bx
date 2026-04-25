@@ -392,6 +392,33 @@ class accessors="true" singleton {
             return svc.getOption( slug, key );
         } );
 
+        // Image-type options store the integer media ID; templates
+        // typically want the public URL. Bind a second closure that
+        // resolves ID → URL (or "" if the row is missing / unset).
+        var mediaSvc = variables.wirebox.getInstance( "MediaService" );
+        var mediaEnt = variables.wirebox.getInstance( "Media" );
+        theme.setImageUrlLookup( function( slug, key ) {
+            var id = svc.getOption( slug, key );
+            if ( !isNumeric( id ) || int( id ) <= 0 ) return "";
+            try {
+                var media = mediaEnt.find( int( id ) );
+                if ( isNull( media ) ) return "";
+                return mediaSvc.urlFor( media );
+            } catch ( any e ) {
+                return "";
+            }
+        } );
+
+        // Site-name fallback used by Theme.siteTitle(). Wrapped in a
+        // try/catch because SettingService can be unavailable in early-
+        // boot edge cases (theme is built before SettingService boots
+        // its cache during initial install).
+        var settingSvc = variables.wirebox.getInstance( "SettingService" );
+        theme.setSiteNameLookup( function() {
+            try { return settingSvc.get( "site.name", "" ); }
+            catch ( any e ) { return ""; }
+        } );
+
         // 4.E — same closure pattern for the nested-menu tree. Templates
         // call `prc.theme.menu("header")` and get an empty array when
         // the admin hasn't built one yet, so layouts can fall back

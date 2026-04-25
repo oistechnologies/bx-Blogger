@@ -192,6 +192,56 @@ class accessors="true" {
     }
 
     /**
+     * Resolve an image-type option to a public URL. The option stores
+     * the media row's integer ID (per ThemeOptionsService normalization);
+     * this helper resolves it to a URL string the template can drop
+     * straight into an `<img src>`. Returns `""` when the option is
+     * unset, the media row is missing, or no lookup was wired.
+     *
+     * Templates: `prc.theme.imageUrl( "hero_image" )`. To branch on
+     * "did the user pick one?" callers can check `len()` on the
+     * returned URL.
+     */
+    string function imageUrl( required string key ) {
+        if ( !structKeyExists( variables, "imageUrlLookup" ) || isNull( variables.imageUrlLookup ) ) return "";
+        return variables.imageUrlLookup( variables.slug, arguments.key );
+    }
+
+    void function setImageUrlLookup( required any lookup ) {
+        variables.imageUrlLookup = arguments.lookup;
+    }
+
+    /**
+     * Resolve the displayable site title with a sensible fallback chain:
+     *
+     *   1. The theme-option `site_title` if the operator has set it
+     *      (per-theme override).
+     *   2. SettingService's `site.name` — site-wide name from System
+     *      Settings, the same string the admin SEO defaults pull from.
+     *   3. The literal "bx-Blogger" — last-resort hard fallback when
+     *      both above are empty (early-boot edge cases or a fresh
+     *      install where nothing has been configured yet).
+     *
+     * Templates: `prc.theme.siteTitle()`. Returns a trimmed, non-empty
+     * string ready to drop into the navbar.
+     */
+    string function siteTitle() {
+        var themeVal = trim( option( "site_title" ) );
+        if ( len( themeVal ) ) return themeVal;
+
+        if ( structKeyExists( variables, "siteNameLookup" ) && !isNull( variables.siteNameLookup ) ) {
+            var settingVal = trim( variables.siteNameLookup() );
+            if ( len( settingVal ) ) return settingVal;
+        }
+
+        return "bx-Blogger";
+    }
+
+    void function setSiteNameLookup( required any lookup ) {
+        variables.siteNameLookup = arguments.lookup;
+    }
+
+    /**
      * Return the nested menu tree an admin built for this theme +
      * `location` (e.g. "header", "footer"). Each node is a struct
      * with id / label / url / target / children (recursive). Empty

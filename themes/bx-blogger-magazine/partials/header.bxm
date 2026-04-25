@@ -1,9 +1,28 @@
 <bx:output>
+<bx:set logoUrl = prc.theme.imageUrl( "logo_image" )>
+<bx:set titleColorLight = prc.theme.option( "title_color_light" )>
+<bx:set titleColorDark  = prc.theme.option( "title_color_dark" )>
+<bx:if !len( titleColorLight )>
+    <bx:set titleColorLight = "##5c2e0c">
+</bx:if>
+<bx:if !len( titleColorDark )>
+    <bx:set titleColorDark = "##f5d99a">
+</bx:if>
+<style>
+    .site-header .navbar-brand.site-title { color: #titleColorLight#; }
+    [data-bs-theme="dark"] .site-header .navbar-brand.site-title { color: #titleColorDark#; }
+</style>
 <header class="border-bottom bg-body site-header">
     <nav class="container navbar navbar-expand-md py-3" aria-label="Site header">
-        <a class="navbar-brand fw-semibold" href="/">
+        <a class="navbar-brand site-title fw-semibold d-inline-flex align-items-center gap-2" href="/">
+            <bx:if len( logoUrl )>
+                <img src="#encodeForHTMLAttribute( logoUrl )#"
+                     alt=""
+                     class="site-logo"
+                     style="height: 36px; width: auto;">
+            </bx:if>
             <span class="letter-spaced text-uppercase small text-muted me-2 d-none d-sm-inline">The</span>
-            #encodeForHTML( getSetting( "AppName" ) )#
+            <span>#encodeForHTML( prc.theme.siteTitle() )#</span>
         </a>
         <button
             class="navbar-toggler"
@@ -48,8 +67,26 @@
                         </bx:if>
                     </bx:loop>
                 <bx:else>
+                    <bx:set showCats = !!prc.theme.option( "show_blog_categories_in_menu" )>
+                    <bx:set showTags = !!prc.theme.option( "show_blog_tags_in_menu" )>
                     <li class="nav-item"><a class="nav-link" href="/">Home</a></li>
-                    <li class="nav-item"><a class="nav-link" href="/blog">Stories</a></li>
+                    <bx:if showCats || showTags>
+                        <li class="nav-item dropdown">
+                            <a class="nav-link dropdown-toggle" href="/blog"
+                               role="button" data-bs-toggle="dropdown" aria-expanded="false">Stories</a>
+                            <ul class="dropdown-menu">
+                                <li><a class="dropdown-item" href="/blog">All Stories</a></li>
+                                <bx:if showCats>
+                                    <li><a class="dropdown-item" href="/categories">Categories</a></li>
+                                </bx:if>
+                                <bx:if showTags>
+                                    <li><a class="dropdown-item" href="/tags">Tags</a></li>
+                                </bx:if>
+                            </ul>
+                        </li>
+                    <bx:else>
+                        <li class="nav-item"><a class="nav-link" href="/blog">Stories</a></li>
+                    </bx:if>
                     <li class="nav-item"><a class="nav-link" href="/search">Search</a></li>
                 </bx:if>
                 <li class="nav-item">

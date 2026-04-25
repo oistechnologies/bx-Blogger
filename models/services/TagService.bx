@@ -99,6 +99,59 @@ class accessors="true" singleton {
         return inserted;
     }
 
+    /**
+     * Public-facing listing of tags with the count of currently
+     * publicly-visible posts in each. Backs the `/tags` page.
+     *
+     * Each entry: `{ id, name, slug, postCount }`. Tags are sorted by
+     * post count desc (most-tagged first), then name asc as a stable
+     * secondary key. Tags with zero public posts are filtered out —
+     * the `/tag/:slug` page they'd link to would render an empty list,
+     * so surfacing them in the cloud is a broken click-through.
+     */
+    array function listPublicWithCounts() {
+        var rows = variables.wirebox.getInstance( "Tag" )
+            .orderBy( "name", "asc" )
+            .get();
+        if ( !arrayLen( rows ) ) return [];
+
+        // Counts mirror PublicPostService.baseQuery's "publicly visible"
+        // predicate so the count and the actual /tag/:slug page agree.
+        var nowStr = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+        var counts = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "post_tags" )
+            .join( "posts", "post_tags.post_id", "=", "posts.id" )
+            .where( "posts.post_type", "post" )
+            .where( "posts.status", "published" )
+            .where( "posts.visibility", "public" )
+            .where( "posts.published_at", "<=", nowStr )
+            .whereNull( "posts.deleted_at" )
+            .selectRaw( "post_tags.tag_id AS tid, COUNT(*) AS n" )
+            .groupBy( "post_tags.tag_id" )
+            .get();
+
+        var counted = [:];
+        for ( var c in counts ) counted[ c.tid ] = val( c.n ?: 0 );
+
+        var out = [];
+        for ( var t in rows ) {
+            var n = val( counted[ t.getId() ] ?: 0 );
+            if ( n <= 0 ) continue;     // hide tags with no public posts
+            out.append( {
+                "id"        : t.getId(),
+                "name"      : t.getName(),
+                "slug"      : t.getSlug(),
+                "postCount" : n
+            } );
+        }
+        // Sort by postCount desc, then name asc — most-tagged first.
+        arraySort( out, function( a, b ) {
+            if ( a.postCount != b.postCount ) return b.postCount - a.postCount;
+            return compareNoCase( a.name, b.name );
+        } );
+        return out;
+    }
+
     // --------------------------------------------------------------------
     // Slug helpers
     // --------------------------------------------------------------------

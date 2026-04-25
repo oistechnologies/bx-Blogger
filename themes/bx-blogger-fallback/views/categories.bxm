@@ -1,0 +1,24 @@
+<bx:output>
+<header class="mb-4">
+    <p class="text-muted mb-1 text-uppercase small">Browse</p>
+    <h1 class="h3 mb-1">Categories</h1>
+</header>
+
+<bx:if ( prc.categories ?: [] ).len()>
+    <ul class="list-group">
+        <bx:loop array="#prc.categories#" item="cat">
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+                <a href="/category/#encodeForHTMLAttribute( cat.slug )#" class="text-decoration-none">
+                    <bx:if cat.depth gt 0>
+                        <span class="text-muted me-1">#repeatString( "&rsaquo; ", cat.depth )#</span>
+                    </bx:if>
+                    #encodeForHTML( cat.name )#
+                </a>
+                <span class="badge bg-secondary rounded-pill">#cat.postCount#</span>
+            </li>
+        </bx:loop>
+    </ul>
+<bx:else>
+    <p class="text-muted">No categories yet.</p>
+</bx:if>
+</bx:output>

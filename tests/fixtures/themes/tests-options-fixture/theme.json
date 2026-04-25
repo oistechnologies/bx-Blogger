@@ -11,6 +11,20 @@
     "options": [
         { "key": "primary_color",   "type": "color", "default": "#0d6efd", "label": "Primary Color" },
         { "key": "posts_per_page",  "type": "int",   "default": 10,        "label": "Posts Per Page" },
-        { "key": "show_author_box", "type": "bool",  "default": true,      "label": "Show Author Box" }
+        { "key": "show_author_box", "type": "bool",  "default": true,      "label": "Show Author Box" },
+        {
+            "key":     "header_layout",
+            "type":    "select",
+            "default": "centered",
+            "label":   "Header Layout",
+            "enum": [
+                { "value": "centered", "label": "Centered" },
+                { "value": "left",     "label": "Left-aligned" },
+                { "value": "split",    "label": "Split (logo + nav)" }
+            ]
+        },
+        { "key": "tagline",       "type": "text",   "default": "Just another bx-Blogger site", "label": "Tagline (text canonical)" },
+        { "key": "footer_credit", "type": "string", "default": "© bx-Blogger",                 "label": "Footer Credit (string alias)" },
+        { "key": "hero_image",    "type": "image",  "default": 0,                              "label": "Hero Image" }
     ]
 }

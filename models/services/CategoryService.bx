@@ -184,6 +184,62 @@ class accessors="true" singleton {
             .get();
     }
 
+    /**
+     * Public-facing listing of categories with the count of currently
+     * publicly-visible posts in each. Backs the `/categories` page.
+     *
+     * Each entry: `{ id, parentId, name, slug, path, depth, postCount }`.
+     * `depth` = number of slashes in `path` (zero for root categories);
+     * lets the view indent / nest visually without recursing.
+     *
+     * Categories with zero public posts are filtered out — the `/category/
+     * :slug` page they'd link to would render an empty list, so surfacing
+     * them on the index is a broken click-through. The post-type filter
+     * matches PublicPostService.baseQuery (post-type 'post', published,
+     * public, deleted_at null) so the count and the linked listing agree.
+     */
+    array function listPublicWithCounts() {
+        var rows = variables.wirebox.getInstance( "Category" )
+            .orderBy( "path", "asc" )
+            .get();
+        if ( !arrayLen( rows ) ) return [];
+
+        // One grouped query → { categoryId : publishedCount }. The
+        // post predicates mirror PublicPostService.baseQuery so the
+        // count and the actual /category/:slug listing always agree.
+        var nowStr = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+        var counts = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "post_categories" )
+            .join( "posts", "post_categories.post_id", "=", "posts.id" )
+            .where( "posts.post_type", "post" )
+            .where( "posts.status", "published" )
+            .where( "posts.visibility", "public" )
+            .where( "posts.published_at", "<=", nowStr )
+            .whereNull( "posts.deleted_at" )
+            .selectRaw( "post_categories.category_id AS cid, COUNT(*) AS n" )
+            .groupBy( "post_categories.category_id" )
+            .get();
+
+        var counted = [:];
+        for ( var c in counts ) counted[ c.cid ] = val( c.n ?: 0 );
+
+        var out = [];
+        for ( var cat in rows ) {
+            var n = val( counted[ cat.getId() ] ?: 0 );
+            if ( n <= 0 ) continue;     // hide categories with no public posts
+            out.append( {
+                "id"        : cat.getId(),
+                "parentId"  : cat.getParentId() ?: 0,
+                "name"      : cat.getName(),
+                "slug"      : cat.getSlug(),
+                "path"      : cat.getPath(),
+                "depth"     : listLen( cat.getPath() ?: "", "/" ) - 1,
+                "postCount" : n
+            } );
+        }
+        return out;
+    }
+
     string function slugify( required string source ) {
         var s = lCase( trim( arguments.source ) );
         s = replaceList( s,

@@ -61,6 +61,12 @@ class accessors="true" singleton {
                     ? stored[ decl.key ]
                     : ( decl.default ?: "" )
             };
+            // `enum` is select-specific — pass it through so the admin
+            // form can render the choice list. Other types simply omit
+            // the key from the entry.
+            if ( structKeyExists( decl, "enum" ) && isArray( decl.enum ) ) {
+                entry[ "enum" ] = decl.enum;
+            }
             out.append( entry );
         }
 
@@ -241,7 +247,8 @@ class accessors="true" singleton {
     private any function normalizeForType( required string slug, required string key, required any value ) {
         var decls = declaredOptionsFor( arguments.slug );
         if ( !structKeyExists( decls, arguments.key ) ) return arguments.value;
-        var type = decls[ arguments.key ].type ?: "string";
+        var decl = decls[ arguments.key ];
+        var type = decl.type ?: "string";
 
         switch ( type ) {
             case "bool":
@@ -253,7 +260,40 @@ class accessors="true" singleton {
                 // falls back to the manifest default.
                 var v = trim( arguments.value );
                 if ( reFind( "^##[0-9a-fA-F]{6}$", v ) ) return lCase( v );
-                return decls[ arguments.key ].default ?: "";
+                return decl.default ?: "";
+            case "select":
+                // Reject any value not in the manifest's enum. Defends
+                // against a stale client posting a value that's been
+                // removed from the manifest. Falls back to default
+                // (which itself is whatever the manifest declares).
+                var submitted = arguments.value & "";
+                if ( structKeyExists( decl, "enum" ) && isArray( decl.enum ) ) {
+                    for ( var choice in decl.enum ) {
+                        if ( ( choice.value ?: "" ) == submitted ) return submitted;
+                    }
+                }
+                return decl.default ?: "";
+            case "image":
+                // Stored as the integer media ID. 0 / blank / non-numeric
+                // means "no image set" — render-time helpers fall back to
+                // the manifest default (which itself is usually 0). The
+                // existence check here keeps stale IDs out of the table:
+                // an admin who deletes a media row no longer leaves
+                // dangling FKs in theme_options.
+                if ( !isNumeric( arguments.value ) ) return 0;
+                var mediaId = int( arguments.value );
+                if ( mediaId <= 0 ) return 0;
+                var exists = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "media" )
+                    .where( "id", mediaId )
+                    .whereNull( "deleted_at" )
+                    .count();
+                return exists > 0 ? mediaId : 0;
+            // `text` (canonical) and `string` (legacy alias) — both
+            // pass through unchanged. Listed explicitly so a future
+            // rename or additional shaping is easy to slot in.
+            case "text":
+            case "string":
             default:
                 return arguments.value & "";
         }

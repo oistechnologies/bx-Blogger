@@ -101,10 +101,24 @@ class extends="tests.support.BaseIntegrationSpec" {
                     }
                 } );
 
-                it( "returns [] for a theme whose manifest ships no options (fallback)", function() {
+                it( "returns the declared option set for the fallback theme (header + footer + menu toggles)", function() {
                     var list = svc.getEffectiveOptions( "bx-blogger-fallback" );
                     expect( list ).toBeArray();
-                    expect( list.len() ).toBe( 0 );
+                    expect( list.len() ).toBeGTE(
+                        10,
+                        "fallback now declares logo + site_title + 2 colors + 2 menu toggles + 4 footer toggles/text"
+                    );
+                    var keys = list.map( function( o ) { return o.key; } );
+                    expect( keys ).toInclude( "logo_image" );
+                    expect( keys ).toInclude( "site_title" );
+                    expect( keys ).toInclude( "title_color_light" );
+                    expect( keys ).toInclude( "title_color_dark" );
+                    expect( keys ).toInclude( "show_blog_categories_in_menu" );
+                    expect( keys ).toInclude( "show_blog_tags_in_menu" );
+                    expect( keys ).toInclude( "show_default_footer_brand" );
+                    expect( keys ).toInclude( "custom_footer_text" );
+                    expect( keys ).toInclude( "show_authors_in_footer" );
+                    expect( keys ).toInclude( "show_footer_rss" );
                 } );
 
                 it( "overlays a stored override onto the default", function() {
@@ -147,6 +161,118 @@ class extends="tests.support.BaseIntegrationSpec" {
                     // Anything not matching #RRGGBB reverts to default
                     svc.setOption( variables.FIXTURE_SLUG, "primary_color", "not-a-color" );
                     expect( svc.getOption( variables.FIXTURE_SLUG, "primary_color" ) ).toBe( "##0d6efd" );
+                } );
+
+                it( "stores a select value when it matches the manifest enum", function() {
+                    svc.setOption( variables.FIXTURE_SLUG, "header_layout", "left" );
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "header_layout" ) ).toBe( "left" );
+
+                    svc.setOption( variables.FIXTURE_SLUG, "header_layout", "split" );
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "header_layout" ) ).toBe( "split" );
+                } );
+
+                it( "rejects a select value that isn't in the manifest enum (falls back to default)", function() {
+                    svc.setOption( variables.FIXTURE_SLUG, "header_layout", "bogus-not-in-enum" );
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "header_layout" ) ).toBe( "centered" );
+                } );
+
+                it( "exposes the enum on the entry returned by getEffectiveOptions for the admin form", function() {
+                    var list = svc.getEffectiveOptions( variables.FIXTURE_SLUG );
+                    var headerEntry = "";
+                    for ( var entry in list ) {
+                        if ( entry.key == "header_layout" ) headerEntry = entry;
+                    }
+                    expect( headerEntry ).toBeStruct( "header_layout entry must be present" );
+                    expect( headerEntry ).toHaveKey( "enum" );
+                    expect( headerEntry.enum ).toBeArray();
+                    expect( headerEntry.enum.len() ).toBe( 3 );
+                    expect( headerEntry.enum[ 1 ].value ).toBe( "centered" );
+                } );
+
+                it( "stores a text-type value as a string and falls back to the manifest default when unset", function() {
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "tagline" ) ).toBe( "Just another bx-Blogger site" );
+                    svc.setOption( variables.FIXTURE_SLUG, "tagline", "Edited tagline" );
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "tagline" ) ).toBe( "Edited tagline" );
+                } );
+
+                it( "treats string-type identically to text-type (legacy alias)", function() {
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "footer_credit" ) ).toBe( "© bx-Blogger" );
+                    svc.setOption( variables.FIXTURE_SLUG, "footer_credit", "© 2026 Example, Inc." );
+                    expect( svc.getOption( variables.FIXTURE_SLUG, "footer_credit" ) ).toBe( "© 2026 Example, Inc." );
+                } );
+
+                it( "stores an image-type media ID when the row exists; rejects missing IDs", function() {
+                    // Seed a throwaway user + media row to point at.
+                    var user = createTestUser();
+                    var media = getInstance( "Media" ).create( {
+                        "uploaderId"       : user.getId(),
+                        "disk"             : "media",
+                        "path"             : "specs/spec-hero.png",
+                        "filename"         : "spec-hero.png",
+                        "originalFilename" : "spec-hero.png",
+                        "mimeType"         : "image/png",
+                        "sizeBytes"        : 1024,
+                        "title"            : "Spec Hero",
+                        "altText"          : "spec hero"
+                    } );
+                    var mediaId = media.getId();
+                    var qb      = getInstance( "QueryBuilder@qb" );
+
+                    try {
+                        svc.setOption( variables.FIXTURE_SLUG, "hero_image", mediaId );
+                        expect( svc.getOption( variables.FIXTURE_SLUG, "hero_image" ) ).toBe( mediaId );
+
+                        // Stale ID (a media row that doesn't exist) → falls back to 0
+                        svc.setOption( variables.FIXTURE_SLUG, "hero_image", 999999 );
+                        expect( svc.getOption( variables.FIXTURE_SLUG, "hero_image" ) ).toBe( 0 );
+
+                        // Non-numeric → 0
+                        svc.setOption( variables.FIXTURE_SLUG, "hero_image", "not-a-number" );
+                        expect( svc.getOption( variables.FIXTURE_SLUG, "hero_image" ) ).toBe( 0 );
+
+                        // Negative / zero → 0
+                        svc.setOption( variables.FIXTURE_SLUG, "hero_image", -5 );
+                        expect( svc.getOption( variables.FIXTURE_SLUG, "hero_image" ) ).toBe( 0 );
+                    }
+                    finally {
+                        qb.newQuery().from( "media" ).where( "id", mediaId ).delete();
+                    }
+                } );
+
+                it( "Theme.imageUrl() resolves a stored media ID to a public URL; empty string when unset", function() {
+                    var user = createTestUser();
+                    var media = getInstance( "Media" ).create( {
+                        "uploaderId"       : user.getId(),
+                        "disk"             : "media",
+                        "path"             : "specs/spec-hero-2.png",
+                        "filename"         : "spec-hero-2.png",
+                        "originalFilename" : "spec-hero-2.png",
+                        "mimeType"         : "image/png",
+                        "sizeBytes"        : 2048,
+                        "title"            : "Spec Hero 2",
+                        "altText"          : "spec hero 2"
+                    } );
+                    var mediaId = media.getId();
+                    var qb      = getInstance( "QueryBuilder@qb" );
+                    try {
+                        themeSvc.activate( variables.FIXTURE_SLUG );
+                        var theme = themeSvc.resolveActive();
+
+                        // Unset → empty string
+                        expect( theme.imageUrl( "hero_image" ) ).toBe( "" );
+
+                        // Set → some non-empty URL string ending in our filename.
+                        // (`url` is a reserved scope name in CFML/BoxLang —
+                        // local would silently resolve to the URL scope on
+                        // the next read; use `resolved` instead.)
+                        svc.setOption( variables.FIXTURE_SLUG, "hero_image", mediaId );
+                        var resolved = theme.imageUrl( "hero_image" );
+                        expect( len( resolved ) ).toBeGT( 0, "expected a resolved URL, got empty" );
+                        expect( resolved ).toInclude( "spec-hero-2.png" );
+                    }
+                    finally {
+                        qb.newQuery().from( "media" ).where( "id", mediaId ).delete();
+                    }
                 } );
 
                 it( "isolates values by theme_slug", function() {
@@ -201,6 +327,57 @@ class extends="tests.support.BaseIntegrationSpec" {
                     var theme = themeSvc.resolveActive();
                     expect( theme.getSlug() ).toBe( variables.FIXTURE_SLUG );
                     expect( theme.option( "primary_color" ) ).toBe( "##123456" );
+                } );
+            } );
+
+            describe( "Theme.siteTitle()", function() {
+                it( "prefers the theme-option site_title when set", function() {
+                    themeSvc.activate( "bx-blogger-default" );
+                    var settingSvc = getInstance( "SettingService" );
+                    var prior      = settingSvc.get( "site.name", "" );
+                    try {
+                        settingSvc.set( "site.name", "Site-Wide Name" );
+                        getInstance( "ThemeOptionsService" ).setOption( "bx-blogger-default", "site_title", "Theme-Override Title" );
+
+                        var theme = themeSvc.resolveActive();
+                        expect( theme.siteTitle() ).toBe( "Theme-Override Title" );
+                    }
+                    finally {
+                        getInstance( "ThemeOptionsService" ).reset( "bx-blogger-default" );
+                        settingSvc.set( "site.name", prior );
+                    }
+                } );
+
+                it( "falls back to SettingService site.name when site_title is empty", function() {
+                    themeSvc.activate( "bx-blogger-default" );
+                    var settingSvc = getInstance( "SettingService" );
+                    var prior      = settingSvc.get( "site.name", "" );
+                    try {
+                        settingSvc.set( "site.name", "Just The Site Name" );
+                        getInstance( "ThemeOptionsService" ).reset( "bx-blogger-default" );
+
+                        var theme = themeSvc.resolveActive();
+                        expect( theme.siteTitle() ).toBe( "Just The Site Name" );
+                    }
+                    finally {
+                        settingSvc.set( "site.name", prior );
+                    }
+                } );
+
+                it( "falls back to literal 'bx-Blogger' when both option and setting are blank", function() {
+                    themeSvc.activate( "bx-blogger-default" );
+                    var settingSvc = getInstance( "SettingService" );
+                    var prior      = settingSvc.get( "site.name", "" );
+                    try {
+                        settingSvc.set( "site.name", "" );
+                        getInstance( "ThemeOptionsService" ).reset( "bx-blogger-default" );
+
+                        var theme = themeSvc.resolveActive();
+                        expect( theme.siteTitle() ).toBe( "bx-Blogger" );
+                    }
+                    finally {
+                        settingSvc.set( "site.name", prior );
+                    }
                 } );
             } );
 

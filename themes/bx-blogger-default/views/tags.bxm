@@ -1,0 +1,21 @@
+<bx:output>
+<header class="mb-4 pb-3 border-bottom">
+    <p class="text-secondary mb-1 text-uppercase small">Browse</p>
+    <h1 class="h3 mb-1">Tags</h1>
+    <p class="text-secondary mb-0">All tags used across posts on #encodeForHTML( getSetting( "AppName" ) )#.</p>
+</header>
+
+<bx:if ( prc.tags ?: [] ).len()>
+    <section class="d-flex flex-wrap gap-2 mb-4" aria-label="Tag cloud">
+        <bx:loop array="#prc.tags#" item="t">
+            <a class="btn btn-sm btn-outline-secondary text-decoration-none"
+               href="/tag/#encodeForHTMLAttribute( t.slug )#">
+                #encodeForHTML( t.name )#
+                <span class="badge bg-body-tertiary text-secondary ms-1">#t.postCount#</span>
+            </a>
+        </bx:loop>
+    </section>
+<bx:else>
+    <p class="text-secondary">No tags yet.</p>
+</bx:if>
+</bx:output>

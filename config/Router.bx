@@ -153,10 +153,15 @@ class {
 		// regex syntax that varies by version. Nested URL support is
 		// deferred to Phase 4 when the themes manager + admin builder
 		// land; the CategoryService data model is unchanged.
+		// `/categories` is the listing of every category — declared
+		// BEFORE `/category/:slug` (and using the plural form) so the
+		// two patterns never collide.
+		route( "/categories"          ).to( "blog.categories" );
 		route( "/category/:slug/feed" ).to( "blog.categoryFeed" );
 		route( "/category/:slug"      ).to( "blog.category"     );
 
-		// Tag
+		// Tag — same plural-listing-first ordering as categories above.
+		route( "/tags"           ).to( "blog.tags" );
 		route( "/tag/:slug/feed" ).to( "blog.tagFeed" );
 		route( "/tag/:slug"      ).to( "blog.tag"     );
 

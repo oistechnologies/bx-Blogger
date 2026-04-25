@@ -1,21 +1,38 @@
 <bx:output>
+<bx:set showDefaultBrand = !!prc.theme.option( "show_default_footer_brand" )>
+<bx:set customFooterText = prc.theme.option( "custom_footer_text" )>
+<bx:set showAuthorsLink  = !!prc.theme.option( "show_authors_in_footer" )>
+<bx:set showRssLink      = !!prc.theme.option( "show_footer_rss" )>
 <footer class="border-top bg-body-tertiary py-3 mt-5">
     <div class="container d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
         <div class="d-flex align-items-center gap-2">
-            <a href="/" class="d-inline-block">
-                <img src="/includes/public/branding/logo-dark.png"
-                     srcset="/includes/public/branding/logo-dark.png 1x, /includes/public/branding/logo-dark@2x.png 2x"
-                     alt="#encodeForHTMLAttribute( getSetting( "AppName" ) )#"
-                     height="32"
-                     style="width:auto;">
-            </a>
-            <p class="text-muted small mb-0">
-                &copy; #dateFormat( now(), "yyyy" )# #encodeForHTML( getSetting( "AppName" ) )#
-            </p>
+            <bx:if showDefaultBrand>
+                <a href="/" class="d-inline-block">
+                    <img src="/includes/public/branding/logo-dark.png"
+                         srcset="/includes/public/branding/logo-dark.png 1x, /includes/public/branding/logo-dark@2x.png 2x"
+                         alt="#encodeForHTMLAttribute( getSetting( "AppName" ) )#"
+                         height="32"
+                         style="width:auto;">
+                </a>
+                <p class="text-muted small mb-0">
+                    &copy; #dateFormat( now(), "yyyy" )# #encodeForHTML( getSetting( "AppName" ) )#
+                </p>
+            <bx:elseif len( trim( customFooterText ) )>
+                <p class="text-muted small mb-0">
+                    #replace( encodeForHTML( customFooterText ), char( 10 ), "<br>", "all" )#
+                </p>
+            </bx:if>
         </div>
         <p class="text-muted small mb-0">
             Powered by <a href="https://boxlang.io" class="link-secondary" rel="noopener">BoxLang</a>
-            &middot; <a href="/feed.xml" class="link-secondary">RSS</a>
+            <bx:set footerLinks = []>
+            <bx:if showAuthorsLink>
+                <bx:set footerLinks.append( "<a href=""/authors"" class=""link-secondary"">Authors</a>" )>
+            </bx:if>
+            <bx:if showRssLink>
+                <bx:set footerLinks.append( "<a href=""/feed.xml"" class=""link-secondary"">RSS</a>" )>
+            </bx:if>
+            <bx:if footerLinks.len()>&middot; #footerLinks.toList( " &middot; " )#</bx:if>
             <bx:set cbauth = getInstance( "AuthenticationService@cbauth" )>
             <bx:if cbauth.isLoggedIn()>
                 &middot;

@@ -31,6 +31,16 @@
         { "name": "hero",   "width": 1800, "crop": false }
     ],
     "options": [
-        { "key": "posts_per_page", "type": "int", "default": 9, "label": "Posts Per Page" }
+        { "key": "posts_per_page",              "type": "int",      "default": 9,         "label": "Posts Per Page" },
+        { "key": "logo_image",                  "type": "image",    "default": 0,         "label": "Top-bar Logo (rendered to the left of the site title; leave unset for no logo)" },
+        { "key": "site_title",                  "type": "text",     "default": "",        "label": "Site Title (top bar — leave blank to use the site-wide name from System Settings)" },
+        { "key": "title_color_light",           "type": "color",    "default": "#5c2e0c", "label": "Top-bar Title Color (Light Mode)" },
+        { "key": "title_color_dark",            "type": "color",    "default": "#f5d99a", "label": "Top-bar Title Color (Dark Mode)" },
+        { "key": "show_blog_categories_in_menu", "type": "bool",    "default": true,      "label": "Show Categories link in main menu (under Blog)" },
+        { "key": "show_blog_tags_in_menu",      "type": "bool",     "default": true,      "label": "Show Tags link in main menu (under Blog)" },
+        { "key": "show_default_footer_brand",   "type": "bool",     "default": true,      "label": "Show bx-Blogger logo + copyright in footer (left side)" },
+        { "key": "custom_footer_text",          "type": "textarea", "default": "",        "label": "Custom Footer Text (shown in place of the bx-Blogger logo + copyright when the option above is OFF)" },
+        { "key": "show_authors_in_footer",      "type": "bool",     "default": true,      "label": "Show Authors link in footer (before the RSS link)" },
+        { "key": "show_footer_rss",             "type": "bool",     "default": true,      "label": "Show RSS link in footer" }
     ]
 }

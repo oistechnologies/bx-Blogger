@@ -15,6 +15,25 @@ class extends="tests.support.BaseIntegrationSpec" {
     }
 
     function run() {
+        // Probe up front whether the media disk is Local-backed. The dev
+        // stack ships Local by default (CI's .env.example leaves
+        // S3_BUCKET_MEDIA blank), but operators with B2 / S3 credentials
+        // in their local .env get an S3-backed disk where
+        // `diskFreeUploadsPct()` intentionally returns ok=false ("not
+        // local"). Probe runs in run() rather than beforeAll() because
+        // TestBox evaluates `skip` arguments at spec-registration time
+        // (inside run()), BEFORE beforeAll() executes — same gotcha
+        // surfaced in B2ProviderSpec.
+        var mediaIsLocal = false;
+        try {
+            var probeDisk = getInstance( "DiskService@cbfs" ).get( "media" );
+            // S3 providers expose getS3(); Local providers don't.
+            try { probeDisk.getS3(); }
+            catch ( any e ) { mediaIsLocal = true; }
+        } catch ( any e ) {
+            mediaIsLocal = false;
+        }
+
         describe( "HealthService", function() {
 
             describe( "minimal() — probe endpoint payload", function() {
@@ -88,15 +107,31 @@ class extends="tests.support.BaseIntegrationSpec" {
             } );
 
             describe( "diskFreeUploadsPct() — uploads-disk free %", function() {
-                it( "returns a struct with `ok` + the free-pct when media is Local", function() {
-                    var out = svc.diskFreeUploadsPct();
-                    // Dev stack ships media as Local → expect ok=true.
-                    // An install switched to S3 flips ok=false with a
-                    // reason — that path isn't exercised in dev.
-                    expect( out.ok ).toBeTrue();
-                    expect( val( out.free_pct ) ).toBeGTE( 0 );
-                    expect( val( out.free_pct ) ).toBeLTE( 100 );
-                } );
+                it(
+                    "returns a struct with `ok` + the free-pct when media is Local",
+                    function() {
+                        var out = svc.diskFreeUploadsPct();
+                        // Dev stack ships media as Local → expect ok=true.
+                        // An install switched to S3 flips ok=false with a
+                        // reason — that path isn't exercised in dev.
+                        expect( out.ok ).toBeTrue();
+                        expect( val( out.free_pct ) ).toBeGTE( 0 );
+                        expect( val( out.free_pct ) ).toBeLTE( 100 );
+                    },
+                    [],
+                    !mediaIsLocal
+                );
+
+                it(
+                    "returns ok=false with a reason when media is NOT Local-backed",
+                    function() {
+                        var out = svc.diskFreeUploadsPct();
+                        expect( out.ok ).toBeFalse();
+                        expect( len( out.reason ?: "" ) ).toBeGT( 0, "expected a reason string when media isn't Local" );
+                    },
+                    [],
+                    mediaIsLocal
+                );
             } );
 
             describe( "activeTheme() + isFallbackThemeActive()", function() {

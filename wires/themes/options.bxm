@@ -22,14 +22,22 @@
 property name="themeService"        inject="ThemeService";
 property name="themeOptionsService" inject="ThemeOptionsService";
 property name="cbauth"              inject="AuthenticationService@cbauth";
+property name="wirebox"             inject="wirebox";
 
 data = {
-    "slug"        : "",
-    "themeName"   : "",
-    "values"      : {},
-    "flashOk"     : "",
-    "flashError"  : "",
-    "missing"     : false
+    "slug"             : "",
+    "themeName"        : "",
+    "values"           : {},
+    "flashOk"          : "",
+    "flashError"       : "",
+    "missing"          : false,
+    // Image-picker modal state. `pickerTarget` holds the option key
+    // being picked for so the modal's onSelect knows which slot to
+    // assign back into. `pickerSearch` filters the gallery by filename
+    // / alt-text / title (substring match, mirrors posts.editor).
+    "showMediaPicker"  : false,
+    "pickerTarget"     : "",
+    "pickerSearch"     : ""
 };
 
 /**
@@ -64,6 +72,54 @@ function reset() {
     themeOptionsService.reset( data.slug );
     loadEffective();
     data.flashOk = "Options reset to manifest defaults.";
+}
+
+// --------------------------------------------------------------------
+// Image picker — modal that lets the operator pick a media row to
+// attach to an `image`-type option. Mirrors the posts.editor picker
+// shape (search field + grid of thumbnails + click-to-select).
+// --------------------------------------------------------------------
+
+function openMediaPicker( required string key ) {
+    data.pickerTarget    = arguments.key;
+    data.pickerSearch    = "";
+    data.showMediaPicker = true;
+}
+
+function closeMediaPicker() {
+    data.showMediaPicker = false;
+    data.pickerTarget    = "";
+}
+
+function selectMedia( required numeric id ) {
+    if ( !len( data.pickerTarget ) ) return;
+    data.values[ data.pickerTarget ] = arguments.id;
+    closeMediaPicker();
+}
+
+function clearMedia( required string key ) {
+    data.values[ arguments.key ] = 0;
+}
+
+/**
+ * Gallery rows for the picker modal. Restricts to image MIME types
+ * since theme-options image picks are presentation assets, not docs.
+ * Top 60 by created_at desc keeps the modal snappy without paging.
+ */
+array function pickerRows() {
+    var qb = wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+        .from( "media" )
+        .whereNull( "deleted_at" )
+        .where( "mime_type", "like", "image/%" );
+    if ( len( trim( data.pickerSearch ) ) ) {
+        var q = "%" & trim( data.pickerSearch ) & "%";
+        qb.where( function( w ) {
+            w.where( "original_filename", "like", q )
+             .orWhere( "alt_text",          "like", q )
+             .orWhere( "title",             "like", q );
+        } );
+    }
+    return qb.orderBy( "created_at", "desc" ).limit( 60 ).get();
 }
 
 // --------------------------------------------------------------------
@@ -200,12 +256,86 @@ private boolean function requirePerm( required string perm ) {
                                                wire:model.blur="values.#opt.key#"
                                                style="max-width: 10rem;">
                                     </bx:case>
+                                    <bx:case value="text">
+                                        <label for="#fieldId#" class="form-label">#encodeForHTML( opt.label )#</label>
+                                        <input type="text"
+                                               class="form-control"
+                                               id="#fieldId#"
+                                               wire:model.blur="values.#opt.key#"
+                                               placeholder="#encodeForHTMLAttribute( opt.default ?: '' )#">
+                                    </bx:case>
+                                    <bx:case value="string">
+                                        <label for="#fieldId#" class="form-label">#encodeForHTML( opt.label )#</label>
+                                        <input type="text"
+                                               class="form-control"
+                                               id="#fieldId#"
+                                               wire:model.blur="values.#opt.key#"
+                                               placeholder="#encodeForHTMLAttribute( opt.default ?: '' )#">
+                                    </bx:case>
                                     <bx:case value="textarea">
                                         <label for="#fieldId#" class="form-label">#encodeForHTML( opt.label )#</label>
                                         <textarea class="form-control"
                                                   id="#fieldId#"
                                                   rows="4"
                                                   wire:model.blur="values.#opt.key#"></textarea>
+                                    </bx:case>
+                                    <bx:case value="select">
+                                        <label for="#fieldId#" class="form-label">#encodeForHTML( opt.label )#</label>
+                                        <select class="form-select"
+                                                id="#fieldId#"
+                                                wire:model.blur="values.#opt.key#"
+                                                style="max-width: 20rem;">
+                                            <bx:loop array="#( opt.enum ?: [] )#" item="choice">
+                                                <option value="#encodeForHTMLAttribute( choice.value ?: '' )#">
+                                                    #encodeForHTML( choice.label ?: choice.value ?: '' )#
+                                                </option>
+                                            </bx:loop>
+                                        </select>
+                                    </bx:case>
+                                    <bx:case value="image">
+                                        <label class="form-label">#encodeForHTML( opt.label )#</label>
+                                        <bx:script>
+                                            currentMediaId = val( args.values[ opt.key ] ?: 0 );
+                                            currentMedia   = "";
+                                            if ( currentMediaId gt 0 ) {
+                                                try { currentMedia = getInstance( "Media" ).find( currentMediaId ); }
+                                                catch ( any e ) { currentMedia = ""; }
+                                            }
+                                        </bx:script>
+                                        <div class="d-flex align-items-start gap-3">
+                                            <div style="width: 120px; height: 120px; flex-shrink: 0;
+                                                        background: ##f4f4f5;
+                                                        border: 1px dashed ##ced4da;
+                                                        border-radius: .375rem;
+                                                        display: flex; align-items: center; justify-content: center;
+                                                        overflow: hidden;">
+                                                <bx:if !isSimpleValue( currentMedia ) && !isNull( currentMedia )>
+                                                    <img src="#getInstance( 'MediaService' ).urlFor( currentMedia )#"
+                                                         alt="#encodeForHTMLAttribute( currentMedia.getAltText() ?: '' )#"
+                                                         style="max-width: 100%; max-height: 100%; object-fit: contain;">
+                                                <bx:else>
+                                                    <i class="bi bi-image text-muted" style="font-size: 2rem;" aria-hidden="true"></i>
+                                                </bx:if>
+                                            </div>
+                                            <div class="d-flex flex-column gap-2">
+                                                <button type="button" class="btn btn-sm btn-primary"
+                                                        wire:click="openMediaPicker('#opt.key#')">
+                                                    <i class="bi bi-images" aria-hidden="true"></i>
+                                                    <bx:if currentMediaId gt 0>Replace image<bx:else>Pick from media library</bx:if>
+                                                </button>
+                                                <bx:if currentMediaId gt 0>
+                                                    <button type="button" class="btn btn-sm btn-outline-secondary"
+                                                            wire:click="clearMedia('#opt.key#')">
+                                                        <i class="bi bi-x-circle" aria-hidden="true"></i> Clear
+                                                    </button>
+                                                    <bx:if !isSimpleValue( currentMedia ) && !isNull( currentMedia )>
+                                                        <small class="text-muted text-truncate" style="max-width: 18rem;">
+                                                            #encodeForHTML( currentMedia.getOriginalFilename() )#
+                                                        </small>
+                                                    </bx:if>
+                                                </bx:if>
+                                            </div>
+                                        </div>
                                     </bx:case>
                                     <bx:defaultcase>
                                         <label for="#fieldId#" class="form-label">#encodeForHTML( opt.label )#</label>
@@ -237,6 +367,72 @@ private boolean function requirePerm( required string perm ) {
             </div>
         </div>
 
+    </bx:if>
+
+    <!--- Media-library picker modal — surfaced when an image-type
+          option's "Pick" button is clicked. wire:click on each
+          thumbnail routes back to selectMedia(id) which sets the
+          target option's value and closes the modal. --->
+    <bx:if args.showMediaPicker>
+        <div class="modal show d-block" tabindex="-1" role="dialog"
+             style="background: rgba(0,0,0,.5);">
+            <div class="modal-dialog modal-xl modal-dialog-scrollable" role="document">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Pick image from media library</h5>
+                        <button type="button" class="btn-close"
+                                wire:click="closeMediaPicker"
+                                aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <input type="search"
+                               class="form-control mb-3"
+                               placeholder="Search filename, alt text, or title…"
+                               wire:model.live.debounce.300ms="pickerSearch">
+                        <bx:script>
+                            rows = pickerRows();
+                        </bx:script>
+                        <bx:if !rows.len()>
+                            <p class="text-muted text-center py-4 mb-0">No matching media found.</p>
+                        <bx:else>
+                            <div class="row g-3">
+                                <bx:loop array="#rows#" item="m">
+                                    <div class="col-6 col-md-4 col-lg-3">
+                                        <button type="button"
+                                                class="btn btn-light w-100 p-2 border"
+                                                wire:click="selectMedia(#m.id#)"
+                                                style="height: 200px; overflow: hidden;">
+                                            <bx:script>
+                                                mediaUrl = "";
+                                                try {
+                                                    mediaEnt = getInstance( "Media" ).find( m.id );
+                                                    if ( !isNull( mediaEnt ) ) mediaUrl = getInstance( "MediaService" ).urlFor( mediaEnt );
+                                                } catch ( any e ) { mediaUrl = ""; }
+                                            </bx:script>
+                                            <div style="height: 130px; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                                                <bx:if len( mediaUrl )>
+                                                    <img src="#mediaUrl#"
+                                                         alt="#encodeForHTMLAttribute( m.alt_text ?: '' )#"
+                                                         style="max-width: 100%; max-height: 100%; object-fit: contain;">
+                                                </bx:if>
+                                            </div>
+                                            <small class="d-block text-truncate text-muted mt-2"
+                                                   style="font-size: .75rem;">
+                                                #encodeForHTML( m.original_filename )#
+                                            </small>
+                                        </button>
+                                    </div>
+                                </bx:loop>
+                            </div>
+                        </bx:if>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-outline-secondary"
+                                wire:click="closeMediaPicker">Cancel</button>
+                    </div>
+                </div>
+            </div>
+        </div>
     </bx:if>
 </div>
 </bx:output>

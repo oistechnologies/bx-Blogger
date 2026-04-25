@@ -31,7 +31,7 @@ class extends="coldbox.system.EventHandler" {
 
         prc.posts          = list.posts;
         prc.pagination     = buildPagination( baseUrl = "/blog", list = list );
-        prc.pageTitle      = "Blog &middot; " & getSetting( "AppName" );
+        prc.pageTitle      = "Blog · " & getSetting( "AppName" );
         prc.pageDescription = "";
         prc.breadcrumbs    = [ { "label" : "Blog", "url" : "/blog" } ];
 
@@ -70,7 +70,7 @@ class extends="coldbox.system.EventHandler" {
             prc.authorBylineHtml = '<a href="' & encodeForHTMLAttribute( prc.authorPageUrl ) & '">'
                 & encodeForHTML( prc.authorName ) & '</a>';
         }
-        prc.pageTitle  = post.getTitle() & " &middot; " & getSetting( "AppName" );
+        prc.pageTitle  = post.getTitle() & " · " & getSetting( "AppName" );
         prc.pageDescription = post.getSeoDescription() ?: ( post.getExcerpt() ?: "" );
 
         // Preload taxonomy so theme partials can render chips / tag
@@ -145,7 +145,7 @@ class extends="coldbox.system.EventHandler" {
         prc.category        = foundCategory;
         prc.posts           = list.posts;
         prc.pagination      = buildPagination( baseUrl = "/category/" & slug, list = list );
-        prc.pageTitle       = foundCategory.getName() & " &middot; " & getSetting( "AppName" );
+        prc.pageTitle       = foundCategory.getName() & " · " & getSetting( "AppName" );
         prc.pageDescription = foundCategory.getDescription() ?: "";
         prc.breadcrumbs     = buildCategoryBreadcrumbs( foundCategory );
 
@@ -180,10 +180,10 @@ class extends="coldbox.system.EventHandler" {
         prc.tag             = foundTag;
         prc.posts           = list.posts;
         prc.pagination      = buildPagination( baseUrl = "/tag/" & slug, list = list );
-        prc.pageTitle       = "##" & slug & " &middot; " & getSetting( "AppName" );
+        prc.pageTitle       = "##" & slug & " · " & getSetting( "AppName" );
         prc.pageDescription = "";
         prc.breadcrumbs     = [
-            { "label" : "Tags",      "url" : "/tag"         },
+            { "label" : "Tags",      "url" : "/tags"        },
             { "label" : "##" & slug, "url" : "/tag/" & slug }
         ];
 
@@ -226,7 +226,7 @@ class extends="coldbox.system.EventHandler" {
             baseUrl = "/author/" & slug,
             list    = list
         );
-        prc.pageTitle          = ( foundAuthor.getDisplayName() ?: slug ) & " &middot; " & getSetting( "AppName" );
+        prc.pageTitle          = ( foundAuthor.getDisplayName() ?: slug ) & " · " & getSetting( "AppName" );
         prc.pageDescription    = foundAuthor.getBioShort() ?: "";
         prc.breadcrumbs        = [
             { "label" : "Authors", "url" : "/authors" },
@@ -251,12 +251,45 @@ class extends="coldbox.system.EventHandler" {
      */
     function authors( event, rc, prc ) {
         prc.authors            = getInstance( "UserService" ).listPublicAuthors();
-        prc.pageTitle          = "Authors &middot; " & getSetting( "AppName" );
+        prc.pageTitle          = "Authors · " & getSetting( "AppName" );
         prc.pageDescription    = "Contributors writing on " & getSetting( "AppName" ) & ".";
         prc.breadcrumbs        = [ { "label" : "Authors", "url" : "/authors" } ];
 
         event.setLayout( prc.theme.layout( "Archive" ) );
         event.setView( prc.theme.view( "authors" ) );
+    }
+
+    /**
+     * GET /categories — public listing of every category with the
+     * count of currently-visible posts in each.
+     *
+     * Empty state (no categories) renders a friendly message rather
+     * than 404 — categories are a known surface even if a fresh site
+     * hasn't created any yet.
+     */
+    function categories( event, rc, prc ) {
+        prc.categories         = getInstance( "CategoryService" ).listPublicWithCounts();
+        prc.pageTitle          = "Categories · " & getSetting( "AppName" );
+        prc.pageDescription    = "Browse posts by category on " & getSetting( "AppName" ) & ".";
+        prc.breadcrumbs        = [ { "label" : "Categories", "url" : "/categories" } ];
+
+        event.setLayout( prc.theme.layout( "Archive" ) );
+        event.setView( prc.theme.view( "categories" ) );
+    }
+
+    /**
+     * GET /tags — public listing of every tag with the count of
+     * currently-visible posts. Sorted by count desc so the most-used
+     * tags surface first; secondary sort by name for stability.
+     */
+    function tags( event, rc, prc ) {
+        prc.tags               = getInstance( "TagService" ).listPublicWithCounts();
+        prc.pageTitle          = "Tags · " & getSetting( "AppName" );
+        prc.pageDescription    = "Browse posts by tag on " & getSetting( "AppName" ) & ".";
+        prc.breadcrumbs        = [ { "label" : "Tags", "url" : "/tags" } ];
+
+        event.setLayout( prc.theme.layout( "Archive" ) );
+        event.setView( prc.theme.view( "tags" ) );
     }
 
     /**
@@ -306,7 +339,7 @@ class extends="coldbox.system.EventHandler" {
         prc.archiveLabel   = label;
         prc.posts          = list.posts;
         prc.pagination     = buildPagination( baseUrl = baseUrl, list = list );
-        prc.pageTitle      = "Archive: " & label & " &middot; " & getSetting( "AppName" );
+        prc.pageTitle      = "Archive: " & label & " · " & getSetting( "AppName" );
         prc.pageDescription = "";
         prc.breadcrumbs    = [
             { "label" : "Archive", "url" : "/archive/" & year },
@@ -464,7 +497,7 @@ class extends="coldbox.system.EventHandler" {
         catch ( any e ) {}
 
         arguments.event.setHTTPHeader( statusCode = 404, statusText = "Not Found" );
-        arguments.prc.pageTitle = "Not Found &middot; " & getSetting( "AppName" );
+        arguments.prc.pageTitle = "Not Found · " & getSetting( "AppName" );
         arguments.event.setLayout( arguments.prc.theme.layout( "Main" ) );
         arguments.event.setView( arguments.prc.theme.view( "404" ) );
     }
@@ -475,7 +508,7 @@ class extends="coldbox.system.EventHandler" {
      */
     private array function buildCategoryBreadcrumbs( required any category ) {
         var segments = listToArray( arguments.category.getPath(), "/" );
-        var built    = [ { "label" : "Categories", "url" : "/category" } ];
+        var built    = [ { "label" : "Categories", "url" : "/categories" } ];
         var running  = "";
         for ( var seg in segments ) {
             running = running.len() ? running & "/" & seg : seg;
