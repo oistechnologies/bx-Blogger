@@ -1283,7 +1283,8 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 									       type="checkbox"
 									       id="ogAsFeaturedImage"
 									       wire:model.live="ogAsFeaturedImage"
-									       wire:change="toggleOgAsFeatured">
+									       wire:change="toggleOgAsFeatured"
+									       <bx:if val( args.ogAsFeaturedImage ?: 0 )>checked</bx:if>>
 									<label class="form-check-label" for="ogAsFeaturedImage">
 										Use OG image as featured image everywhere
 									</label>
