@@ -53,6 +53,23 @@ class extends="coldbox.system.EventHandler" {
         var author = post.author().first();
         prc.post       = post;
         prc.authorName = isNull( author ) ? "" : ( author.getDisplayName() ?: "" );
+        // Byline link target: only when the author has opted into a
+        // public author page AND has a slug. Empty string = render
+        // the byline as plain text. `authorBylineHtml` is the
+        // pre-rendered "Display Name" or `<a href>Display Name</a>`
+        // string the theme templates emit verbatim — keeps theme
+        // markup free of conditional href logic that would have to
+        // be duplicated across post.bxm / post-wide.bxm / post-
+        // longform.bxm / etc.
+        prc.authorPageUrl   = "";
+        prc.authorBylineHtml = encodeForHTML( prc.authorName );
+        if ( !isNull( author )
+             && author.getPublicAuthorPageEnabled()
+             && len( author.getAuthorSlug() ?: "" ) ) {
+            prc.authorPageUrl    = "/author/" & author.getAuthorSlug();
+            prc.authorBylineHtml = '<a href="' & encodeForHTMLAttribute( prc.authorPageUrl ) & '">'
+                & encodeForHTML( prc.authorName ) & '</a>';
+        }
         prc.pageTitle  = post.getTitle() & " &middot; " & getSetting( "AppName" );
         prc.pageDescription = post.getSeoDescription() ?: ( post.getExcerpt() ?: "" );
 
@@ -175,12 +192,18 @@ class extends="coldbox.system.EventHandler" {
     }
 
     /**
-     * GET /author/:username
+     * GET /author/:slug
+     *
+     * Public author page — opt-in via the user's
+     * `public_author_page_enabled` preference. A disabled author
+     * 404s cleanly, same shape as a non-existent slug, so the
+     * disabled-state response doesn't confirm the author's existence.
      */
     function author( event, rc, prc ) {
-        var username    = trim( rc.username ?: "" );
-        var foundAuthor = getInstance( "User" ).where( "username", username ).first();
-        if ( isNull( foundAuthor ) ) {
+        var slug        = trim( rc.slug ?: "" );
+        var userService = getInstance( "UserService" );
+        var foundAuthor = userService.findByAuthorSlug( slug );
+        if ( isNull( foundAuthor ) || !foundAuthor.getPublicAuthorPageEnabled() ) {
             renderNotFound( event, prc );
             return;
         }
@@ -192,18 +215,44 @@ class extends="coldbox.system.EventHandler" {
             perPage = themePerPage( prc )
         );
 
-        prc.author          = foundAuthor;
-        prc.posts           = list.posts;
-        prc.pagination      = buildPagination( baseUrl = "/author/" & username, list = list );
-        prc.pageTitle       = ( foundAuthor.getDisplayName() ?: username ) & " &middot; " & getSetting( "AppName" );
-        prc.pageDescription = foundAuthor.getBio() ?: "";
-        prc.breadcrumbs     = [
+        prc.author             = foundAuthor;
+        prc.authorPhotoUrl     = userService.profilePhotoUrl( foundAuthor );
+        prc.authorBioHtml      = renderAuthorBio( foundAuthor );
+        prc.authorSocials      = foundAuthor.getOgIncludeSocialsAndUrl()
+            ? foundAuthor.socialUrls()
+            : [:];
+        prc.posts              = list.posts;
+        prc.pagination         = buildPagination(
+            baseUrl = "/author/" & slug,
+            list    = list
+        );
+        prc.pageTitle          = ( foundAuthor.getDisplayName() ?: slug ) & " &middot; " & getSetting( "AppName" );
+        prc.pageDescription    = foundAuthor.getBioShort() ?: "";
+        prc.breadcrumbs        = [
             { "label" : "Authors", "url" : "/author" },
-            { "label" : ( foundAuthor.getDisplayName() ?: username ), "url" : "/author/" & username }
+            { "label" : ( foundAuthor.getDisplayName() ?: slug ), "url" : "/author/" & slug }
         ];
 
         event.setLayout( prc.theme.layout( "Archive" ) );
         event.setView( prc.theme.view( "author" ) );
+    }
+
+    /**
+     * Render the author's long-form bio markdown to HTML using the
+     * exact pipeline PostService.compileBody applies to post bodies
+     * (markdown → bx-markdown → cbantisamy clean). Reuses the existing
+     * service so policy stays in sync; the bio doesn't need its own
+     * sanitization rules.
+     */
+    private string function renderAuthorBio( required any author ) {
+        var raw = arguments.author.getBio() ?: "";
+        if ( !len( trim( raw ) ) ) return "";
+        try {
+            return getInstance( "PostService" ).compileBody( raw );
+        }
+        catch ( any e ) {
+            return encodeForHTML( raw );  // graceful degrade
+        }
     }
 
     /**
@@ -301,9 +350,11 @@ class extends="coldbox.system.EventHandler" {
      * GET /author/:username/feed.xml
      */
     function authorFeed( event, rc, prc ) {
-        var username    = trim( rc.username ?: "" );
-        var foundAuthor = getInstance( "User" ).where( "username", username ).first();
-        if ( isNull( foundAuthor ) ) {
+        var slug        = trim( rc.slug ?: "" );
+        var foundAuthor = getInstance( "UserService" ).findByAuthorSlug( slug );
+        // Same opt-in gate as the HTML page — a disabled author's
+        // feed 404s rather than silently emitting an empty channel.
+        if ( isNull( foundAuthor ) || !foundAuthor.getPublicAuthorPageEnabled() ) {
             renderFeedNotFound( event );
             return;
         }

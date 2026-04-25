@@ -313,21 +313,29 @@ class accessors="true" singleton {
             } );
         }
 
-        // Author archives — only users who have at least one
-        // published post.
+        // Author archives — only users who:
+        //   - have at least one published public post AND
+        //   - have opted into the public author page AND
+        //   - have an `author_slug` populated (handler routes by slug).
+        // Disabled authors are omitted entirely so search engines
+        // don't index a 404. Lookup uses author_slug since the
+        // public route is /author/:slug; username is no longer the
+        // identifier for these pages.
         var authorRows = freshQb().from( "users" )
-            .select( [ "users.username", "users.updated_at" ] )
+            .select( [ "users.author_slug", "users.updated_at" ] )
             .distinct()
             .join( "posts", "posts.author_id", "=", "users.id" )
             .where( "posts.post_type",  "post" )
             .where( "posts.status",     "published" )
             .where( "posts.visibility", "public" )
             .whereNull( "posts.deleted_at" )
+            .where( "users.public_author_page_enabled", 1 )
+            .whereNotNull( "users.author_slug" )
             .get();
         for ( var a in authorRows ) {
-            if ( !len( a.username ?: "" ) ) continue;
+            if ( !len( a.author_slug ?: "" ) ) continue;
             urls.append( {
-                "loc"        : arguments.baseUrl & "/author/" & a.username,
+                "loc"        : arguments.baseUrl & "/author/" & a.author_slug,
                 "lastmod"    : w3cDate( a.updated_at ),
                 "changefreq" : "weekly",
                 "priority"   : "0.4"

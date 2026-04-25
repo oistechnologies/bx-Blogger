@@ -1,24 +1,75 @@
 <bx:output>
-<header class="mb-4 pb-3 border-bottom">
-    <p class="text-secondary mb-1 text-uppercase small">Author</p>
-    <h1 class="h3 mb-1">#encodeForHTML( prc.author.getDisplayName() ?: "Author" )#</h1>
-    <bx:if len( prc.author.getBio() ?: "" )>
-        <p class="text-secondary mb-0">#encodeForHTML( prc.author.getBio() )#</p>
-    </bx:if>
+<header class="mb-4 pb-4 border-bottom">
+	<div class="d-flex flex-column flex-md-row align-items-md-center gap-3 mb-3">
+		<bx:if len( prc.authorPhotoUrl ?: "" )>
+			<img src="#encodeForHTMLAttribute( prc.authorPhotoUrl )#"
+			     alt="#encodeForHTMLAttribute( prc.author.getDisplayName() ?: 'Author photo' )#"
+			     width="96"
+			     height="96"
+			     class="rounded-circle border"
+			     style="object-fit: cover;">
+		</bx:if>
+		<div class="flex-grow-1">
+			<p class="text-secondary mb-1 text-uppercase small">Author</p>
+			<h1 class="h3 mb-1">#encodeForHTML( prc.author.getDisplayName() ?: "Author" )#</h1>
+			<bx:if len( prc.author.getBioShort() ?: "" )>
+				<p class="text-secondary mb-0">#encodeForHTML( prc.author.getBioShort() )#</p>
+			</bx:if>
+		</div>
+	</div>
+
+	<bx:if !structIsEmpty( prc.authorSocials ?: {} )>
+		<bx:script>
+			socialIcons = {
+				"website"  : "bi-globe",
+				"twitter"  : "bi-twitter-x",
+				"linkedin" : "bi-linkedin",
+				"github"   : "bi-github",
+				"gitlab"   : "bi-git",
+				"mastodon" : "bi-mastodon",
+				"bluesky"  : "bi-cloud",
+				"facebook" : "bi-facebook"
+			};
+		</bx:script>
+		<div class="d-flex flex-wrap gap-2 mb-3" aria-label="Social profiles">
+			<bx:loop collection="#prc.authorSocials#" item="key" value="url">
+				<a href="#encodeForHTMLAttribute( url )#"
+				   target="_blank"
+				   rel="me noopener"
+				   class="btn btn-sm btn-outline-secondary"
+				   title="#encodeForHTMLAttribute( key )#">
+					<i class="bi #( socialIcons[ key ] ?: 'bi-link-45deg' )#" aria-hidden="true"></i>
+					<span class="visually-hidden">#encodeForHTML( key )#</span>
+				</a>
+			</bx:loop>
+			<a href="/author/#encodeForHTMLAttribute( prc.author.getAuthorSlug() )#/feed"
+			   class="btn btn-sm btn-outline-secondary"
+			   title="RSS feed for this author">
+				<i class="bi bi-rss" aria-hidden="true"></i>
+				<span class="visually-hidden">RSS feed</span>
+			</a>
+		</div>
+	</bx:if>
+
+	<bx:if len( prc.authorBioHtml ?: "" )>
+		<div class="author-bio">
+			#prc.authorBioHtml#
+		</div>
+	</bx:if>
 </header>
 
 <bx:if ( prc.posts ?: [] ).len()>
-    <section class="row g-4 mb-4">
-        <bx:loop array="#prc.posts#" item="post">
-            <div class="col-md-6">
-                #view( view = "bx-blogger-default/partials/post-card", args = { "post" : post } )#
-            </div>
-        </bx:loop>
-    </section>
-    <bx:if structKeyExists( prc, "pagination" )>
-        #view( view = "bx-blogger-default/partials/pagination" )#
-    </bx:if>
+	<section class="row g-4 mb-4">
+		<bx:loop array="#prc.posts#" item="post">
+			<div class="col-md-6">
+				#view( view = "bx-blogger-default/partials/post-card", args = { "post" : post } )#
+			</div>
+		</bx:loop>
+	</section>
+	<bx:if structKeyExists( prc, "pagination" )>
+		#view( view = "bx-blogger-default/partials/pagination" )#
+	</bx:if>
 <bx:else>
-    <p class="text-secondary">No posts by this author yet.</p>
+	<p class="text-secondary">No posts by this author yet.</p>
 </bx:if>
 </bx:output>

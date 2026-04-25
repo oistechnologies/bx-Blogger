@@ -160,9 +160,14 @@ class {
 		route( "/tag/:slug/feed" ).to( "blog.tagFeed" );
 		route( "/tag/:slug"      ).to( "blog.tag"     );
 
-		// Author
-		route( "/author/:username/feed" ).to( "blog.authorFeed" );
-		route( "/author/:username"      ).to( "blog.author"     );
+		// Author — public author page + RSS feed. The `:slug`
+		// param is the user's `author_slug` column (auto-generated
+		// from display_name on first opt-in to a public page;
+		// editable on the account page). Pages 404 cleanly when the
+		// author has `public_author_page_enabled=0` so a disabled
+		// state doesn't confirm the author exists.
+		route( "/author/:slug/feed" ).to( "blog.authorFeed" );
+		route( "/author/:slug"      ).to( "blog.author"     );
 
 		// Date archive — year, then year+month. Handler validates the
 		// numeric shape so no regex constraint is needed at the route

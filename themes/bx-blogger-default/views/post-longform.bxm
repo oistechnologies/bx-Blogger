@@ -4,7 +4,7 @@
         <h1 class="display-4 mb-3">#encodeForHTML( prc.post.getTitle() )#</h1>
         <p class="text-secondary small mb-0">
             <bx:if len( prc.authorName ?: "" )>
-                By #encodeForHTML( prc.authorName )#
+                By #prc.authorBylineHtml#
             </bx:if>
             <bx:if !isNull( prc.post.getPublishedAt() )>
                 <bx:if len( prc.authorName ?: "" )>&middot;</bx:if>

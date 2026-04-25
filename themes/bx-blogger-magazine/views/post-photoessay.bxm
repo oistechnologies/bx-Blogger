@@ -14,7 +14,7 @@
         <h1 class="display-4 mb-2 fw-semibold">#encodeForHTML( prc.post.getTitle() )#</h1>
         <p class="text-muted small mb-0">
             <bx:if len( prc.authorName ?: "" )>
-                Photographs by <strong class="text-body">#encodeForHTML( prc.authorName )#</strong>
+                Photographs by <strong class="text-body">#prc.authorBylineHtml#</strong>
             </bx:if>
             <bx:if !isNull( prc.post.getPublishedAt() )>
                 <bx:if len( prc.authorName ?: "" )>&middot;</bx:if>
