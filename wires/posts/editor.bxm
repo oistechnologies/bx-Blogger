@@ -1143,12 +1143,13 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 				     role="button"
 				     data-bs-toggle="collapse"
 				     data-bs-target="##sidebarFeaturedImageBody"
-				     aria-expanded="true"
+				     aria-expanded="false"
+				     wire:ignore.self
 				     aria-controls="sidebarFeaturedImageBody">
 					<span class="h6 mb-0">Featured image</span>
 					<i class="bi bi-chevron-up sidebar-chevron text-muted" aria-hidden="true"></i>
 				</div>
-				<div class="collapse show" id="sidebarFeaturedImageBody">
+				<div class="collapse" id="sidebarFeaturedImageBody" wire:ignore.self>
 					<div class="card-body">
 						<bx:if val( args.featuredMediaId ?: 0 ) gt 0>
 							<bx:script>
@@ -1208,12 +1209,13 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 				     role="button"
 				     data-bs-toggle="collapse"
 				     data-bs-target="##sidebarOgImageBody"
-				     aria-expanded="true"
+				     aria-expanded="false"
+				     wire:ignore.self
 				     aria-controls="sidebarOgImageBody">
 					<span class="h6 mb-0">OG image</span>
 					<i class="bi bi-chevron-up sidebar-chevron text-muted" aria-hidden="true"></i>
 				</div>
-				<div class="collapse show" id="sidebarOgImageBody">
+				<div class="collapse" id="sidebarOgImageBody" wire:ignore.self>
 					<div class="card-body">
 						<bx:if ( args.postId ?: 0 ) lte 0>
 							<p class="small text-muted mb-0">
@@ -1298,7 +1300,11 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 
 			<!--- OG image preview modal — full-size --->
 			<bx:if hasOgRender>
-				<div class="modal fade" id="ogImagePreviewModal" tabindex="-1" aria-hidden="true">
+				<div class="modal fade"
+				     id="ogImagePreviewModal"
+				     tabindex="-1"
+				     aria-hidden="true"
+				     wire:ignore.self>
 					<div class="modal-dialog modal-xl modal-dialog-centered">
 						<div class="modal-content">
 							<div class="modal-header">
@@ -1333,12 +1339,13 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 				     role="button"
 				     data-bs-toggle="collapse"
 				     data-bs-target="##sidebarCategoriesBody"
-				     aria-expanded="true"
+				     aria-expanded="false"
+				     wire:ignore.self
 				     aria-controls="sidebarCategoriesBody">
 					<span class="h6 mb-0">Categories</span>
 					<i class="bi bi-chevron-up sidebar-chevron text-muted" aria-hidden="true"></i>
 				</div>
-				<div class="collapse show" id="sidebarCategoriesBody">
+				<div class="collapse" id="sidebarCategoriesBody" wire:ignore.self>
 					<div class="card-body">
 						<bx:if !catTree.len()>
 							<p class="small text-muted mb-0">
@@ -1375,12 +1382,13 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 				     role="button"
 				     data-bs-toggle="collapse"
 				     data-bs-target="##sidebarTagsBody"
-				     aria-expanded="true"
+				     aria-expanded="false"
+				     wire:ignore.self
 				     aria-controls="sidebarTagsBody">
 					<span class="h6 mb-0">Tags</span>
 					<i class="bi bi-chevron-up sidebar-chevron text-muted" aria-hidden="true"></i>
 				</div>
-				<div class="collapse show" id="sidebarTagsBody">
+				<div class="collapse" id="sidebarTagsBody" wire:ignore.self>
 					<div class="card-body">
 						<label for="postTags" class="form-label small d-block mb-1">
 							Comma-separated. New tags are created on save.
@@ -1406,12 +1414,13 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 				     role="button"
 				     data-bs-toggle="collapse"
 				     data-bs-target="##sidebarSeoBody"
-				     aria-expanded="true"
+				     aria-expanded="false"
+				     wire:ignore.self
 				     aria-controls="sidebarSeoBody">
 					<span class="h6 mb-0">SEO</span>
 					<i class="bi bi-chevron-up sidebar-chevron text-muted" aria-hidden="true"></i>
 				</div>
-				<div class="collapse show" id="sidebarSeoBody">
+				<div class="collapse" id="sidebarSeoBody" wire:ignore.self>
 					<div class="card-body">
 						<div class="mb-2">
 							<label for="postSeoTitle" class="form-label small">SEO title</label>

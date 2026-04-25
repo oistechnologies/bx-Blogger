@@ -222,6 +222,7 @@ class accessors="true" singleton {
         return {
             "post"             : arguments.post,
             "title"            : arguments.post.getTitle() ?: "",
+            "excerpt"          : trim( arguments.post.getExcerpt() ?: "" ),
             "siteName"         : siteName,
             "author"           : hasAuthor ? author : javaCast( "null", "" ),
             "authorName"       : hasAuthor ? ( author.getDisplayName() ?: "" ) : "",
@@ -254,24 +255,86 @@ class accessors="true" singleton {
         return type == "page" ? ( base & "/" & slug ) : ( base & "/blog/" & slug );
     }
 
+    /**
+     * Title (bold, 64 pt, up to 2 lines) — and an optional excerpt
+     * line block (regular, 22 pt, muted color, up to 2 lines) drawn
+     * directly below when the post has one.
+     *
+     * Vertical layout: the combined title-+-excerpt block is centered
+     * within a SAFE ZONE between the top of the canvas (clear of the
+     * logo + site name) and the top of the bottom row (clear of the
+     * author block + URL + QR). Centering against the whole canvas
+     * pushed long excerpts down into the bottom row; this keeps the
+     * combined block firmly in the middle band regardless of length.
+     * When no excerpt is present, the prior canvas-centered geometry
+     * is preserved.
+     */
     private void function drawTitle( required any g, required any Font, required any Color, required struct ctx ) {
         var titleText = left( arguments.ctx.title, variables.titleMaxChars );
         var titleFont = arguments.Font.init( "SansSerif", arguments.Font.BOLD, 64 );
         arguments.g.setFont( titleFont );
-        arguments.g.setColor( decodeColor( arguments.Color, variables.fgColorHex ) );
 
         var maxTextWidth = variables.canvasWidth - ( 2 * variables.paddingX );
-        var lines        = wrapText( arguments.g, titleText, maxTextWidth, 2 );
-        var fm           = arguments.g.getFontMetrics();
-        var lineHeight   = fm.getHeight();
+        var titleLines   = wrapText( arguments.g, titleText, maxTextWidth, 2 );
+        var titleFm      = arguments.g.getFontMetrics();
+        var titleLineH   = titleFm.getHeight();
+        var titleBlockH  = arrayLen( titleLines ) * titleLineH;
 
-        var titleBlockHeight = arrayLen( lines ) * lineHeight;
-        var titleBaseY       = int( ( variables.canvasHeight - titleBlockHeight ) / 2 ) + fm.getAscent();
-        for ( var i = 1; i <= arrayLen( lines ); i++ ) {
+        // Optional excerpt — wrap with the excerpt font's metrics.
+        var hasExcerpt    = len( arguments.ctx.excerpt ?: "" ) > 0;
+        var excerptLines  = [];
+        var excerptLineH  = 0;
+        var excerptBlockH = 0;
+        var excerptGap    = 20;
+        var excerptFont   = arguments.Font.init( "SansSerif", arguments.Font.PLAIN, 22 );
+        if ( hasExcerpt ) {
+            arguments.g.setFont( excerptFont );
+            var excerptFm = arguments.g.getFontMetrics();
+            excerptLineH  = excerptFm.getHeight();
+            excerptLines  = wrapText( arguments.g, arguments.ctx.excerpt, maxTextWidth, 2 );
+            excerptBlockH = arrayLen( excerptLines ) * excerptLineH;
+        }
+
+        var combinedHeight = titleBlockH + ( hasExcerpt ? ( excerptGap + excerptBlockH ) : 0 );
+        var blockTopY      = 0;
+        if ( hasExcerpt ) {
+            // Center within the safe zone — top reserved for logo +
+            // site name, bottom reserved for author/URL/QR row.
+            var topReserved    = variables.paddingY + variables.logoMaxHeight + 16;
+            var bottomReserved = variables.paddingY + variables.urlLineReserve + variables.authorPhotoSize + 24;
+            var safeZoneTop    = topReserved;
+            var safeZoneBot    = variables.canvasHeight - bottomReserved;
+            var safeHeight     = safeZoneBot - safeZoneTop;
+            blockTopY          = safeZoneTop + int( ( safeHeight - combinedHeight ) / 2 );
+        } else {
+            // No excerpt — preserve the original canvas-centered title
+            // geometry pixel-for-pixel.
+            blockTopY = int( ( variables.canvasHeight - combinedHeight ) / 2 );
+        }
+
+        // Draw title.
+        arguments.g.setFont( titleFont );
+        arguments.g.setColor( decodeColor( arguments.Color, variables.fgColorHex ) );
+        var titleBaseY = blockTopY + titleFm.getAscent();
+        for ( var i = 1; i <= arrayLen( titleLines ); i++ ) {
             arguments.g.drawString(
-                lines[ i ],
+                titleLines[ i ],
                 variables.paddingX,
-                titleBaseY + ( ( i - 1 ) * lineHeight )
+                titleBaseY + ( ( i - 1 ) * titleLineH )
+            );
+        }
+
+        if ( !hasExcerpt ) return;
+
+        // Draw excerpt block below the title.
+        arguments.g.setFont( excerptFont );
+        arguments.g.setColor( decodeColor( arguments.Color, variables.fgMutedHex ) );
+        var excerptBaseY = blockTopY + titleBlockH + excerptGap + arguments.g.getFontMetrics().getAscent();
+        for ( var j = 1; j <= arrayLen( excerptLines ); j++ ) {
+            arguments.g.drawString(
+                excerptLines[ j ],
+                variables.paddingX,
+                excerptBaseY + ( ( j - 1 ) * excerptLineH )
             );
         }
     }
