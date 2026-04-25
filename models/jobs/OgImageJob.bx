@@ -44,6 +44,25 @@ class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
 
         wirebox.getInstance( "OgImageService" ).regenerate( post );
 
+        // Bust cached HTML — the post's pages embed the OG URL in
+        // their `<meta og:image>` (and, when og_as_featured_image
+        // is on, in <img src=...> for cards + the post header). The
+        // og_version bump changes those URLs, so cached HTML still
+        // references the old version. PageCacheService only exposes
+        // a coarse invalidateAll(); cheap enough for a blog-scale
+        // workload, refined per-route in a future revision if the
+        // cost becomes load-bearing.
+        try {
+            wirebox.getInstance( "PageCacheService" ).invalidateAll();
+        }
+        catch ( any e ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "OgImageJob: page cache invalidate failed for post=" & postId & " — " & e.message
+            );
+        }
+
         writeLog(
             file = "bxblogger",
             type = "information",

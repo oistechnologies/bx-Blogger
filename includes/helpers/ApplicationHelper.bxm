@@ -40,6 +40,28 @@
      * every partial call explicitly).
      */
     struct function resolveFeaturedImage( required any post ) {
+        // OG-as-featured override (Step 6) — when the author has
+        // toggled `og_as_featured_image` on for this post, the
+        // auto-rendered OG share card substitutes for the featured
+        // image everywhere a theme renders one (home cards, post
+        // header, related posts, archives). The `<meta og:image>`
+        // tag always uses the OG image regardless; the override
+        // is purely an in-site display swap. Falls through to the
+        // real featured image when the OG render hasn't been
+        // produced yet (an unusual race — saves dispatch a render
+        // immediately).
+        try {
+            if ( !!( arguments.post.getOgAsFeaturedImage() ?: 0 ) ) {
+                var ogUrl = getInstance( "OgImageService" ).urlFor( arguments.post );
+                if ( len( ogUrl ) ) {
+                    return {
+                        "url" : ogUrl,
+                        "alt" : arguments.post.getTitle() ?: ""
+                    };
+                }
+            }
+        } catch ( any e ) { /* fall through to real featured image */ }
+
         var mediaId = 0;
         try {
             mediaId = arguments.post.getFeaturedMediaId() ?: 0;
