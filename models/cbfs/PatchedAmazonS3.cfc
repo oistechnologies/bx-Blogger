@@ -46,32 +46,32 @@
  */
 component extends="s3sdk.models.AmazonS3" {
 
-    /**
-     * Override the URL endpoint builder. For path-style URLs against
-     * a non-AWS domain, use `awsDomain` verbatim — the operator-
-     * supplied endpoint already includes the region, no prefix needed.
-     *
-     * For everything else (AWS, virtual-style) defer to the parent.
-     *
-     * @bucketName  Optional. Honoured by the parent for virtual-style
-     *              AWS URLs; ignored on the patched path because
-     *              path-style puts the bucket in the URL path, not
-     *              the hostname.
-     */
-    public any function buildUrlEndpoint( string bucketName ) {
-        var awsDomain = variables.awsDomain ?: "";
-        var isAws     = awsDomain contains "amazonaws.com";
-        var isPath    = ( variables.urlStyle ?: "" ) == "path";
+	/**
+	 * Override the URL endpoint builder. For path-style URLs against
+	 * a non-AWS domain, use `awsDomain` verbatim — the operator-
+	 * supplied endpoint already includes the region, no prefix needed.
+	 *
+	 * For everything else (AWS, virtual-style) defer to the parent.
+	 *
+	 * @bucketName  Optional. Honoured by the parent for virtual-style
+	 *              AWS URLs; ignored on the patched path because
+	 *              path-style puts the bucket in the URL path, not
+	 *              the hostname.
+	 */
+	public any function buildUrlEndpoint( string bucketName ) {
+		var awsDomain = variables.awsDomain    ?: "";
+		var isAws     = awsDomain contains "amazonaws.com";
+		var isPath    = ( variables.urlStyle ?: "" ) == "path";
 
-        if ( isPath && !isAws ) {
-            var protocol = ( variables.ssl ) ? "https://" : "http://";
-            variables.URLEndpointHostname = awsDomain;
-            variables.URLEndpoint         = protocol & awsDomain;
-            return this;
-        }
+		if ( isPath && !isAws ) {
+			var protocol                  = ( variables.ssl ) ? "https://" : "http://";
+			variables.URLEndpointHostname = awsDomain;
+			variables.URLEndpoint         = protocol & awsDomain;
+			return this;
+		}
 
-        // AWS or virtual-style — let the original method run.
-        return super.buildUrlEndpoint( argumentCollection = arguments );
-    }
+		// AWS or virtual-style — let the original method run.
+		return super.buildUrlEndpoint( argumentCollection = arguments );
+	}
 
 }

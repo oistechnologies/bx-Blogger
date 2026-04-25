@@ -41,39 +41,38 @@
  */
 component extends="cbfs.models.providers.S3Provider" {
 
-    /**
-     * Run the parent's startup, then conditionally replace the s3
-     * client with our patched subclass. The parent constructs an
-     * AmazonS3 instance via `createObject("component","s3sdk.models.AmazonS3")`
-     * during its own startup; we swap our subclass in afterwards so
-     * we don't have to duplicate the parent's param-defaults block.
-     *
-     * The replacement is safe because cbfs reads `variables.s3` for
-     * every operation (put / get / delete / list / etc.) and the
-     * patched class is fully ABI-compatible with the parent — same
-     * methods, same return shapes, just a corrected URL builder.
-     */
-    public any function startup( required string name, struct properties = {} ) {
-        super.startup( argumentCollection = arguments );
+	/**
+	 * Run the parent's startup, then conditionally replace the s3
+	 * client with our patched subclass. The parent constructs an
+	 * AmazonS3 instance via `createObject("component","s3sdk.models.AmazonS3")`
+	 * during its own startup; we swap our subclass in afterwards so
+	 * we don't have to duplicate the parent's param-defaults block.
+	 *
+	 * The replacement is safe because cbfs reads `variables.s3` for
+	 * every operation (put / get / delete / list / etc.) and the
+	 * patched class is fully ABI-compatible with the parent — same
+	 * methods, same return shapes, just a corrected URL builder.
+	 */
+	public any function startup( required string name, struct properties = {} ) {
+		super.startup( argumentCollection = arguments );
 
-        var awsDomain = arguments.properties.awsDomain ?: "amazonaws.com";
-        var urlStyle  = arguments.properties.urlStyle  ?: "path";
+		var awsDomain = arguments.properties.awsDomain ?: "amazonaws.com";
+		var urlStyle  = arguments.properties.urlStyle  ?: "path";
 
-        if ( urlStyle == "path" && !( awsDomain contains "amazonaws.com" ) ) {
-            try {
-                variables.s3 = createObject( "component", "models.cbfs.PatchedAmazonS3" )
-                    .init( argumentCollection = arguments.properties );
-                variables.wirebox.autowire( variables.s3 );
-            }
-            catch ( any e ) {
-                throw(
-                    type    = "bxBlogger.B2Provider.ConfigurationException",
-                    message = "B2Provider failed to swap in PatchedAmazonS3: " & e.message
-                );
-            }
-        }
+		if ( urlStyle == "path" && !( awsDomain contains "amazonaws.com" ) ) {
+			try {
+				variables.s3 = createObject( "component", "models.cbfs.PatchedAmazonS3" )
+					.init( argumentCollection = arguments.properties );
+				variables.wirebox.autowire( variables.s3 );
+			} catch ( any e ) {
+				throw(
+					type    = "bxBlogger.B2Provider.ConfigurationException",
+					message = "B2Provider failed to swap in PatchedAmazonS3: " & e.message
+				);
+			}
+		}
 
-        return this;
-    }
+		return this;
+	}
 
 }
