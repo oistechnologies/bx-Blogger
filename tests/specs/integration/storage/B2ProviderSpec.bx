@@ -30,6 +30,13 @@
  * AWS itself is intentionally skipped via an `awsDomain contains
  * "amazonaws.com"` short-circuit because the region prepend IS
  * correct there.
+ *
+ * Skip behavior in CI: when S3_BUCKET_MEDIA isn't set (the default
+ * .env.example shape) the cbfs `media` disk is the Local provider,
+ * which has no `getS3()` method. Detection happens up front in run()
+ * and the entire describe block is skipped — TestBox sees the bundle
+ * as having no executed specs rather than a hard failure. The full
+ * spec runs anywhere S3_BUCKET_MEDIA is configured.
  */
 class extends="tests.support.BaseIntegrationSpec" {
 
@@ -37,106 +44,94 @@ class extends="tests.support.BaseIntegrationSpec" {
         super.beforeAll();
         variables.cbfsService = getInstance( "DiskService@cbfs" );
         variables.disk        = variables.cbfsService.get( "media" );
-
-        // Detect whether the `media` disk is S3-backed. The full spec
-        // only makes sense against an S3-style provider; CI seeds .env
-        // from .env.example which leaves S3_BUCKET_MEDIA blank, so the
-        // disk is the Local provider there and every IT below would
-        // either fail or error trying to call getS3(). When that's the
-        // case we skip the suite cleanly so CI stays green while the
-        // assertions still run on any local/dev setup that DOES have
-        // S3_BUCKET_MEDIA set (or in a future env-aware integration
-        // env that wires real B2 credentials).
-        variables.isS3 = false;
-        try {
-            variables.disk.getS3();
-            variables.isS3 = true;
-        } catch ( any e ) {
-            variables.isS3 = false;
-        }
     }
 
     function run() {
+        // Probe S3 backing up front. We can't gate at the IT level via
+        // the `skip` arg because TestBox evaluates skip-args inside
+        // run() at registration time — BEFORE beforeAll() runs — so
+        // any reference to variables.disk or variables.isS3 from a
+        // skip arg fails with "key not found." Resolve the disk and
+        // detect S3 here, then skip describing entirely if Local.
+        var probeService = getInstance( "DiskService@cbfs" );
+        var probeDisk    = probeService.get( "media" );
+        var isS3         = false;
+        try {
+            probeDisk.getS3();
+            isS3 = true;
+        } catch ( any e ) {
+            isS3 = false;
+        }
+
+        if ( !isS3 ) {
+            // Local-disk environment (typical CI). Register zero specs.
+            // TestBox reports the bundle as no-tests-executed rather
+            // than a failure.
+            return;
+        }
+
         describe( "cbfs S3 disk on non-AWS endpoint (B2 / DO Spaces / MinIO / Wasabi)", function() {
 
-            it(
-                "is configured against an S3-style provider (sanity)",
-                function() {
-                    expect( variables.isS3 )
-                        .toBeTrue( "media disk should be S3-backed for this spec to mean anything" );
-                },
-                [],
-                !variables.isS3
-            );
+            it( "is configured against an S3-style provider (sanity)", function() {
+                expect( variables.disk ).notToBeNull( "media disk must resolve" );
+                expect( function() {
+                    variables.disk.getS3();
+                } ).notToThrow();
+            } );
 
-            it(
-                "URLEndpointHostname equals awsDomain (no double region prepend)",
-                function() {
-                    var s3        = variables.disk.getS3();
-                    var awsDomain = s3.getAwsDomain();
-                    var hostname  = s3.getURLEndpointHostname();
+            it( "URLEndpointHostname equals awsDomain (no double region prepend)", function() {
+                var s3        = variables.disk.getS3();
+                var awsDomain = s3.getAwsDomain();
+                var hostname  = s3.getURLEndpointHostname();
 
-                    if ( awsDomain contains "amazonaws.com" ) {
-                        // Region prepend IS correct on real AWS — spec doesn't apply.
-                        return;
-                    }
+                if ( awsDomain contains "amazonaws.com" ) {
+                    // Region prepend IS correct on real AWS — spec doesn't apply.
+                    return;
+                }
 
-                    expect( hostname ).toBe(
-                        awsDomain,
-                        "non-AWS endpoint hostname should equal awsDomain. Got hostname=[" &
-                        hostname & "] for awsDomain=[" & awsDomain &
-                        "]. If you see the region prefixed twice, the s3sdk patch did not apply."
-                    );
-                },
-                [],
-                !variables.isS3
-            );
+                expect( hostname ).toBe(
+                    awsDomain,
+                    "non-AWS endpoint hostname should equal awsDomain. Got hostname=[" &
+                    hostname & "] for awsDomain=[" & awsDomain &
+                    "]. If you see the region prefixed twice, the s3sdk patch did not apply."
+                );
+            } );
 
-            it(
-                "stays corrected after an external buildUrlEndpoint(bucketName) call",
-                function() {
-                    var s3        = variables.disk.getS3();
-                    var awsDomain = s3.getAwsDomain();
-                    if ( awsDomain contains "amazonaws.com" ) return;
+            it( "stays corrected after an external buildUrlEndpoint(bucketName) call", function() {
+                var s3        = variables.disk.getS3();
+                var awsDomain = s3.getAwsDomain();
+                if ( awsDomain contains "amazonaws.com" ) return;
 
                 // Internal s3sdk callers (putObject, getObject, head)
                 // re-invoke buildUrlEndpoint as a side effect. Simulate
                 // one such call and confirm the hostname doesn't drift
                 // back to the broken `<region>.<awsDomain>` shape.
-                    s3.buildUrlEndpoint( "any-bucket-name" );
+                s3.buildUrlEndpoint( "any-bucket-name" );
 
-                    expect( s3.getURLEndpointHostname() ).toBe(
-                        awsDomain,
-                        "buildUrlEndpoint() must not introduce a region prefix on non-AWS endpoints"
-                    );
-                },
-                [],
-                !variables.isS3
-            );
+                expect( s3.getURLEndpointHostname() ).toBe(
+                    awsDomain,
+                    "buildUrlEndpoint() must not introduce a region prefix on non-AWS endpoints"
+                );
+            } );
 
-            it(
-                "round-trips a small file: write -> exists -> read -> delete",
-                function() {
-                    var key     = "specs/b2-provider/" & lCase( hash( createUUID(), "SHA-256" ) ).left( 16 ) & ".txt";
-                    var payload = "hello-from-b2-provider-spec-" & dateTimeFormat( now(), "yyyymmddHHnnss" );
+            it( "round-trips a small file: write -> exists -> read -> delete", function() {
+                var key     = "specs/b2-provider/" & lCase( hash( createUUID(), "SHA-256" ) ).left( 16 ) & ".txt";
+                var payload = "hello-from-b2-provider-spec-" & dateTimeFormat( now(), "yyyymmddHHnnss" );
 
-                    try {
-                        variables.disk.create( path = arguments.key ?: key, contents = payload, overwrite = true );
-                        expect( variables.disk.exists( key ) ).toBeTrue( "file should exist after create" );
+                try {
+                    variables.disk.create( path = key, contents = payload, overwrite = true );
+                    expect( variables.disk.exists( key ) ).toBeTrue( "file should exist after create" );
 
-                        var fetched = variables.disk.get( key );
-                        var asString = isBinary( fetched ) ? toString( fetched ) : fetched;
-                        expect( asString ).toBe( payload, "round-tripped content matches what we wrote" );
-                    }
-                    finally {
-                        try { variables.disk.delete( key ); } catch ( any e ) {}
-                    }
+                    var fetched  = variables.disk.get( key );
+                    var asString = isBinary( fetched ) ? toString( fetched ) : fetched;
+                    expect( asString ).toBe( payload, "round-tripped content matches what we wrote" );
+                }
+                finally {
+                    try { variables.disk.delete( key ); } catch ( any e ) {}
+                }
 
-                    expect( variables.disk.exists( key ) ).toBeFalse( "file should be gone after delete" );
-                },
-                [],
-                !variables.isS3
-            );
+                expect( variables.disk.exists( key ) ).toBeFalse( "file should be gone after delete" );
+            } );
 
         } );
     }
