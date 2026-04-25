@@ -166,6 +166,11 @@ class {
 		// editable on the account page). Pages 404 cleanly when the
 		// author has `public_author_page_enabled=0` so a disabled
 		// state doesn't confirm the author exists.
+		// `/authors` is the listing of every author who has opted into
+		// a public author page. It must be declared BEFORE `/author/:slug`
+		// or the slug pattern (which is greedier than it looks because
+		// "authors" is a valid slug) would swallow the literal path.
+		route( "/authors" ).to( "blog.authors" );
 		route( "/author/:slug/feed" ).to( "blog.authorFeed" );
 		route( "/author/:slug"      ).to( "blog.author"     );
 

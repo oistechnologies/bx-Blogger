@@ -1,0 +1,32 @@
+<bx:output>
+<header class="mb-4">
+    <p class="text-muted mb-1 text-uppercase small">Authors</p>
+    <h1 class="h3 mb-1">Contributors</h1>
+</header>
+
+<bx:if ( prc.authors ?: [] ).len()>
+    <div class="row g-4">
+        <bx:loop array="#prc.authors#" item="author">
+            <div class="col-md-6">
+                <article class="card h-100">
+                    <div class="card-body">
+                        <h2 class="h5 mb-1">
+                            <a href="/author/#encodeForHTMLAttribute( author.authorSlug )#">
+                                #encodeForHTML( author.displayName )#
+                            </a>
+                        </h2>
+                        <p class="text-muted small mb-2">
+                            <bx:if author.postCount eq 1>1 post<bx:else>#author.postCount# posts</bx:if>
+                        </p>
+                        <bx:if len( author.bioShort )>
+                            <p class="mb-0">#encodeForHTML( author.bioShort )#</p>
+                        </bx:if>
+                    </div>
+                </article>
+            </div>
+        </bx:loop>
+    </div>
+<bx:else>
+    <p class="text-muted">No public author profiles yet.</p>
+</bx:if>
+</bx:output>

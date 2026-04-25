@@ -229,12 +229,34 @@ class extends="coldbox.system.EventHandler" {
         prc.pageTitle          = ( foundAuthor.getDisplayName() ?: slug ) & " &middot; " & getSetting( "AppName" );
         prc.pageDescription    = foundAuthor.getBioShort() ?: "";
         prc.breadcrumbs        = [
-            { "label" : "Authors", "url" : "/author" },
+            { "label" : "Authors", "url" : "/authors" },
             { "label" : ( foundAuthor.getDisplayName() ?: slug ), "url" : "/author/" & slug }
         ];
 
         event.setLayout( prc.theme.layout( "Archive" ) );
         event.setView( prc.theme.view( "author" ) );
+    }
+
+    /**
+     * GET /authors — public author roster.
+     *
+     * Lists every user who has opted into a public author page,
+     * alphabetically by display name, with a card showing their
+     * photo, short bio, social row (when enabled), and published
+     * post count linking to /author/:slug.
+     *
+     * Empty state (no opted-in authors) renders a friendly message
+     * rather than 404 — "Authors" is a known surface even if nobody
+     * has filled out a profile yet.
+     */
+    function authors( event, rc, prc ) {
+        prc.authors            = getInstance( "UserService" ).listPublicAuthors();
+        prc.pageTitle          = "Authors &middot; " & getSetting( "AppName" );
+        prc.pageDescription    = "Contributors writing on " & getSetting( "AppName" ) & ".";
+        prc.breadcrumbs        = [ { "label" : "Authors", "url" : "/authors" } ];
+
+        event.setLayout( prc.theme.layout( "Archive" ) );
+        event.setView( prc.theme.view( "authors" ) );
     }
 
     /**

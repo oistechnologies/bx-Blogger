@@ -1,0 +1,87 @@
+<bx:output>
+<header class="mb-5 pb-3 border-bottom">
+    <p class="text-uppercase small text-muted mb-2 letter-spaced">Authors</p>
+    <h1 class="display-6 mb-1 fw-semibold">Contributors</h1>
+    <p class="text-secondary mb-0">Writers publishing on #encodeForHTML( getSetting( "AppName" ) )#.</p>
+</header>
+
+<bx:if ( prc.authors ?: [] ).len()>
+    <bx:script>
+        socialIcons = {
+            "website"  : "bi-globe",
+            "twitter"  : "bi-twitter-x",
+            "linkedin" : "bi-linkedin",
+            "github"   : "bi-github",
+            "gitlab"   : "bi-git",
+            "mastodon" : "bi-mastodon",
+            "bluesky"  : "bi-cloud",
+            "facebook" : "bi-facebook"
+        };
+    </bx:script>
+    <section class="row g-4 mb-4">
+        <bx:loop array="#prc.authors#" item="author">
+            <div class="col-md-6 col-lg-4">
+                <article class="card h-100 border-0 bg-body-tertiary">
+                    <div class="card-body d-flex flex-column p-4">
+                        <div class="d-flex flex-column align-items-center text-center mb-3">
+                            <bx:if len( author.photoUrl )>
+                                <img src="#encodeForHTMLAttribute( author.photoUrl )#"
+                                     alt="#encodeForHTMLAttribute( author.displayName )#"
+                                     width="96"
+                                     height="96"
+                                     class="rounded-circle border mb-3"
+                                     style="object-fit: cover;"
+                                     loading="lazy">
+                            <bx:else>
+                                <div class="rounded-circle border d-flex align-items-center justify-content-center mb-3 bg-body text-secondary fw-semibold"
+                                     style="width:96px;height:96px;font-size:2rem;font-family:Fraunces,Georgia,serif;">
+                                    #encodeForHTML( ucase( left( author.displayName, 1 ) ) )#
+                                </div>
+                            </bx:if>
+                            <h2 class="h5 mb-1 fw-semibold">
+                                <a class="text-decoration-none link-body-emphasis stretched-link"
+                                   href="/author/#encodeForHTMLAttribute( author.authorSlug )#">
+                                    #encodeForHTML( author.displayName )#
+                                </a>
+                            </h2>
+                            <p class="text-uppercase small text-muted letter-spaced mb-0">
+                                <bx:if author.postCount eq 1>
+                                    1 Post
+                                <bx:else>
+                                    #author.postCount# Posts
+                                </bx:if>
+                            </p>
+                        </div>
+
+                        <bx:if len( author.bioShort )>
+                            <p class="text-secondary text-center flex-grow-1 mb-3">
+                                #encodeForHTML( author.bioShort )#
+                            </p>
+                        <bx:else>
+                            <div class="flex-grow-1"></div>
+                        </bx:if>
+
+                        <bx:if author.showSocials && !structIsEmpty( author.socials )>
+                            <div class="d-flex flex-wrap justify-content-center gap-1 mt-auto position-relative" style="z-index:2;" aria-label="Social profiles">
+                                <bx:loop collection="#author.socials#" item="key">
+                                    <bx:set socialUrl = author.socials[ key ]>
+                                    <a href="#encodeForHTMLAttribute( socialUrl )#"
+                                       target="_blank"
+                                       rel="me noopener"
+                                       class="btn btn-sm btn-outline-dark"
+                                       title="#encodeForHTMLAttribute( key )#">
+                                        <i class="bi #( socialIcons[ key ] ?: 'bi-link-45deg' )#" aria-hidden="true"></i>
+                                        <span class="visually-hidden">#encodeForHTML( key )#</span>
+                                    </a>
+                                </bx:loop>
+                            </div>
+                        </bx:if>
+                    </div>
+                </article>
+            </div>
+        </bx:loop>
+    </section>
+<bx:else>
+    <p class="text-secondary">No public author profiles yet.</p>
+</bx:if>
+</bx:output>

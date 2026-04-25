@@ -446,6 +446,72 @@ class accessors="true" singleton {
             .first();
     }
 
+    /**
+     * Public author roster — every user who has opted into a public
+     * author page AND has an `author_slug`, ordered alphabetically by
+     * display_name (then username as a stable tiebreaker for users
+     * who haven't filled in display_name yet).
+     *
+     * Returns an array of view-ready structs (NOT Quick entities) so
+     * the listing template doesn't have to call entity helpers in a
+     * loop. Each struct carries everything the card needs: name,
+     * slug, short bio, photo URL, socials struct (gated by the
+     * author's `og_include_socials_and_url` toggle — same gate the
+     * single-author page uses), and a published post count.
+     *
+     * Post counts come from a single grouped qb query so we don't
+     * issue N+1 lookups for the count column. Authors with zero
+     * published posts still appear; the public-author-page opt-in
+     * is the source of truth for "should this person be listed",
+     * not whether they've shipped anything yet.
+     */
+    array function listPublicAuthors() {
+        var User    = variables.wirebox.getInstance( "User" );
+        var authors = User.where( "public_author_page_enabled", 1 )
+            .whereNotNull( "author_slug" )
+            .where( "author_slug", "!=", "" )
+            .whereNull( "deleted_at" )
+            .orderBy( "display_name", "asc" )
+            .orderBy( "username", "asc" )
+            .get();
+
+        if ( !arrayLen( authors ) ) return [];
+
+        // Single grouped query → { authorId : publishedCount }. Mirrors
+        // PublicPostService.baseQuery's "is publicly visible" predicate
+        // so the count and the actual /author/:slug listing agree.
+        var nowStr = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+        var rows   = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "posts" )
+            .where( "post_type", "post" )
+            .where( "status", "published" )
+            .where( "visibility", "public" )
+            .where( "published_at", "<=", nowStr )
+            .whereNull( "deleted_at" )
+            .selectRaw( "author_id, COUNT(*) AS n" )
+            .groupBy( "author_id" )
+            .get();
+
+        var counts = [:];
+        for ( var r in rows ) counts[ r.author_id ] = val( r.n ?: 0 );
+
+        var out = [];
+        for ( var u in authors ) {
+            var card = {
+                "id"          : u.getId(),
+                "displayName" : u.getDisplayName() ?: u.getUsername(),
+                "authorSlug"  : u.getAuthorSlug(),
+                "bioShort"    : u.getBioShort()    ?: "",
+                "photoUrl"    : profilePhotoUrl( u ),
+                "showSocials" : !!u.getOgIncludeSocialsAndUrl(),
+                "socials"     : !!u.getOgIncludeSocialsAndUrl() ? u.socialUrls() : [:],
+                "postCount"   : val( counts[ u.getId() ] ?: 0 )
+            };
+            out.append( card );
+        }
+        return out;
+    }
+
     private string function ensureUniqueAuthorSlug( required string base, required numeric excludeId ) {
         var candidate = arguments.base;
         var suffix    = 1;
