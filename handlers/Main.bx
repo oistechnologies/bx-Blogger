@@ -40,7 +40,7 @@ class extends="coldbox.system.EventHandler" {
 		// circuits without touching the DB on themes that don't use
 		// the section.
 		prc.featured = [];
-		if ( !!arguments.prc.theme.option( "show_featured_section" ) ) {
+		if ( arguments.prc.theme.boolOption( "show_featured_section" ) ) {
 			var limit = val( arguments.prc.theme.option( "featured_count" ) );
 			if ( limit <= 0 ) limit = 3;
 			prc.featured = getInstance( "PublicPostService" ).listFeatured( limit = limit );
