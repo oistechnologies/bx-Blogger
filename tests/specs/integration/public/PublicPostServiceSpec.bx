@@ -128,6 +128,44 @@ class extends="tests.support.BaseIntegrationSpec" {
             } );
 
             // ----------------------------------------------------------
+            // listFeatured
+            // ----------------------------------------------------------
+            describe( "listFeatured()", function() {
+                it( "returns only posts pinned via featured=1, ordered by featured_at desc", function() {
+                    var author = createTestUser();
+                    var older  = publishNew( author, "Older pin",   "older-pin-"   & left( createUUID(), 8 ) );
+                    var newer  = publishNew( author, "Newer pin",   "newer-pin-"   & left( createUUID(), 8 ) );
+                    var unpin  = publishNew( author, "Unpinned",    "unpinned-"    & left( createUUID(), 8 ) );
+
+                    var qb = getInstance( "QueryBuilder@qb" );
+                    qb.newQuery().from( "posts" ).where( "id", older.getId() )
+                        .update( { "featured" : 1, "featured_at" : "2026-01-01 00:00:00" } );
+                    qb.newQuery().from( "posts" ).where( "id", newer.getId() )
+                        .update( { "featured" : 1, "featured_at" : "2026-04-01 00:00:00" } );
+
+                    var result = svc.listFeatured( limit = 10 );
+                    var ids = result.map( function( p ) { return p.getId(); } );
+                    expect( ids ).toInclude( newer.getId() );
+                    expect( ids ).toInclude( older.getId() );
+                    expect( ids ).notToInclude( unpin.getId() );
+                    // Newest pin first
+                    expect( ids[ 1 ] ).toBe( newer.getId() );
+                } );
+
+                it( "honors the limit argument", function() {
+                    var author = createTestUser();
+                    var qb = getInstance( "QueryBuilder@qb" );
+                    for ( var i = 1; i <= 4; i++ ) {
+                        var p = publishNew( author, "Pin " & i, "pin-" & i & "-" & left( createUUID(), 8 ) );
+                        qb.newQuery().from( "posts" ).where( "id", p.getId() )
+                            .update( { "featured" : 1, "featured_at" : "2026-04-0" & i & " 00:00:00" } );
+                    }
+                    var result = svc.listFeatured( limit = 2 );
+                    expect( result.len() ).toBe( 2 );
+                } );
+            } );
+
+            // ----------------------------------------------------------
             // listPublishedByCategory
             // ----------------------------------------------------------
             describe( "listPublishedByCategory()", function() {

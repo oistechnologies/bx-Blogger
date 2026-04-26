@@ -135,6 +135,28 @@ array function effectiveOptions() {
     return themeOptionsService.getEffectiveOptions( data.slug );
 }
 
+/**
+ * Every currently publicly-visible page (post_type='page', published,
+ * public, published_at <= now, not deleted) — used to populate the
+ * <select> for `page`-type theme options. Sorted by title for a
+ * predictable dropdown order. Empty array when no pages exist;
+ * the template renders just the "— None —" sentinel option in
+ * that case.
+ */
+array function publicPages() {
+    var nowStr = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+    return wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+        .from( "posts" )
+        .selectRaw( "id, title" )
+        .where( "post_type", "page" )
+        .where( "status", "published" )
+        .where( "visibility", "public" )
+        .where( "published_at", "<=", nowStr )
+        .whereNull( "deleted_at" )
+        .orderBy( "title", "asc" )
+        .get();
+}
+
 // --------------------------------------------------------------------
 // Private
 // --------------------------------------------------------------------
@@ -215,12 +237,51 @@ private boolean function requirePerm( required string perm ) {
                 <bx:if !options.len()>
                     <p class="text-muted mb-0">This theme doesn&rsquo;t declare any configurable options.</p>
                 <bx:else>
+                    <bx:script>
+                        // Bucket options into groups, preserving first-
+                        // occurrence order from the manifest. groupOrder
+                        // drives the visual order of cards; groupedOpts
+                        // keys back into the option lists per card.
+                        // (No `var` inside template-context bx:script —
+                        // that keyword is function-only in BoxLang/CFML.)
+                        groupOrder  = [];
+                        groupSeen   = {};
+                        groupedOpts = {};
+                        for ( optEntry in options ) {
+                            gname = optEntry.group ?: "General";
+                            if ( !structKeyExists( groupSeen, gname ) ) {
+                                groupSeen[ gname ] = true;
+                                groupOrder.append( gname );
+                                groupedOpts[ gname ] = [];
+                            }
+                            groupedOpts[ gname ].append( optEntry );
+                        }
+                    </bx:script>
+                    <style>
+                        .theme-options-grid { columns: 2; column-gap: 1.25rem; }
+                        .theme-options-grid > .card {
+                            break-inside: avoid;
+                            margin-bottom: 1.25rem;
+                            display: inline-block;
+                            width: 100%;
+                        }
+                        @media ( max-width: 992px ) {
+                            .theme-options-grid { columns: 1; }
+                        }
+                    </style>
                     <form wire:submit.prevent="save">
-                        <bx:loop array="#options#" item="opt">
-                            <bx:set fieldId = "opt-" & encodeForHTMLAttribute( opt.key )>
+                        <div class="theme-options-grid">
+                            <bx:loop array="#groupOrder#" item="groupName">
+                                <div class="card border">
+                                    <div class="card-header bg-body-tertiary py-2 px-3">
+                                        <strong class="small text-uppercase text-secondary">#encodeForHTML( groupName )#</strong>
+                                    </div>
+                                    <div class="card-body">
+                                        <bx:loop array="#groupedOpts[ groupName ]#" item="opt">
+                                            <bx:set fieldId = "opt-" & encodeForHTMLAttribute( opt.key )>
 
-                            <div class="mb-3">
-                                <bx:switch expression="#opt.type#">
+                                            <div class="mb-3">
+                                                <bx:switch expression="#opt.type#">
                                     <bx:case value="bool">
                                         <div class="form-check">
                                             <input type="checkbox"
@@ -292,6 +353,18 @@ private boolean function requirePerm( required string perm ) {
                                             </bx:loop>
                                         </select>
                                     </bx:case>
+                                    <bx:case value="page">
+                                        <label for="#fieldId#" class="form-label">#encodeForHTML( opt.label )#</label>
+                                        <select class="form-select"
+                                                id="#fieldId#"
+                                                wire:model.blur="values.#opt.key#"
+                                                style="max-width: 28rem;">
+                                            <option value="0">&mdash; None &mdash;</option>
+                                            <bx:loop array="#publicPages()#" item="p">
+                                                <option value="#p.id#">#encodeForHTML( p.title )#</option>
+                                            </bx:loop>
+                                        </select>
+                                    </bx:case>
                                     <bx:case value="image">
                                         <label class="form-label">#encodeForHTML( opt.label )#</label>
                                         <bx:script>
@@ -350,8 +423,12 @@ private boolean function requirePerm( required string perm ) {
                                         Default: <code>#encodeForHTML( opt.default )#</code>
                                     </div>
                                 </bx:if>
-                            </div>
-                        </bx:loop>
+                                            </div>
+                                        </bx:loop>
+                                    </div>
+                                </div>
+                            </bx:loop>
+                        </div>
 
                         <div class="d-flex gap-2 mt-4">
                             <button type="submit" class="btn btn-primary">Save options</button>

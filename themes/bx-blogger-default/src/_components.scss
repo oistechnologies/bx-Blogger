@@ -17,13 +17,39 @@
     // Site brand a touch heavier
     .site-header .navbar-brand { letter-spacing: -0.02em; }
 
-    // Post cards — subtle lift on hover, minimal in default state
+    // Post cards — subtle lift on hover, minimal in default state.
+    // Accent left-border picks up the operator's accent_color_light/dark
+    // (which override --bs-primary at :root and on [data-bs-theme="dark"]
+    // via partials/head-assets.bxm). Falls back to Bootstrap blue when
+    // no accent is configured. !important wins against the Bootstrap
+    // .border-0 utility on the markup.
+    .post-card,
+    .related-posts .related-card,
+    .author-card,
+    .category-card {
+        border-left: 3px solid var(--bs-primary) !important;
+    }
     .post-card {
         transition: transform 120ms ease-out, box-shadow 120ms ease-out;
 
         &:hover {
             transform: translateY(-2px);
         }
+    }
+
+    // Tag-cloud pills (/tags) — keep btn-outline-secondary baseline so
+    // markup degrades gracefully if CSS doesn't load, but rebind the
+    // Bootstrap CSS vars to --bs-primary so the operator's accent flows
+    // through. Targets the aria-labeled cloud section directly so it
+    // doesn't bleed into other secondary outlines on the page.
+    [aria-label="Tag cloud"] .btn {
+        --bs-btn-color: var(--bs-primary);
+        --bs-btn-border-color: var(--bs-primary);
+        --bs-btn-hover-color: #fff;
+        --bs-btn-hover-bg: var(--bs-primary);
+        --bs-btn-hover-border-color: var(--bs-primary);
+        --bs-btn-active-bg: var(--bs-primary);
+        --bs-btn-active-border-color: var(--bs-primary);
     }
 
     // Post body: give markdown-rendered content breathing room

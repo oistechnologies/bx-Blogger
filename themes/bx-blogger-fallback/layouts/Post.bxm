@@ -18,6 +18,30 @@
         integrity="sha384-T3c6CoIi6uLrA9TneNEoa7RxnatzjcDSCmG1MXxSR1GAsXEV/Dwwykc2MPK8M2HN"
         crossorigin="anonymous">
     #prc.theme.syntaxHighlightingStyles()#
+
+    <bx:set faviconUrl = prc.theme.imageUrl( "favicon_image" )>
+    <bx:if len( faviconUrl )>
+        <link rel="icon" href="#encodeForHTMLAttribute( faviconUrl )#">
+    </bx:if>
+
+    <bx:set accentLight = trim( prc.theme.option( "accent_color_light" ) )>
+    <bx:set accentDark  = trim( prc.theme.option( "accent_color_dark" ) )>
+    <bx:if len( accentLight ) || len( accentDark )>
+        <style>
+            <bx:if len( accentLight )>[data-bs-theme="light"] { --bs-primary: #accentLight#; }</bx:if>
+            <bx:if len( accentDark )>[data-bs-theme="dark"]  { --bs-primary: #accentDark#; }</bx:if>
+        </style>
+    </bx:if>
+
+    <bx:set customCss = prc.theme.option( "custom_css" )>
+    <bx:if len( trim( customCss ) )>
+        <style>#customCss#</style>
+    </bx:if>
+
+    <bx:set customHead = prc.theme.option( "custom_head_html" )>
+    <bx:if len( trim( customHead ) )>
+        #customHead#
+    </bx:if>
 </head>
 <body data-bs-theme="light" class="d-flex flex-column min-vh-100 post-layout">
     #view( view = "bx-blogger-fallback/partials/header" )#

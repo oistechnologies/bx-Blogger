@@ -19,7 +19,40 @@
         crossorigin="anonymous">
     <link rel="alternate" type="application/rss+xml" title="#encodeForHTMLAttribute( getSetting( "AppName" ) )#" href="/feed.xml">
     <link rel="sitemap" type="application/xml" title="Sitemap" href="/sitemap.xml">
+
+    <bx:set faviconUrl = prc.theme.imageUrl( "favicon_image" )>
+    <bx:if len( faviconUrl )>
+        <link rel="icon" href="#encodeForHTMLAttribute( faviconUrl )#">
+    </bx:if>
     #prc.theme.syntaxHighlightingStyles()#
+
+    <!--
+        Operator-supplied custom CSS (theme option `custom_css`).
+        Injected AFTER the theme's stylesheet so the cascade lets
+        the override win without !important.
+    -->
+    <bx:set accentLight = trim( prc.theme.option( "accent_color_light" ) )>
+    <bx:set accentDark  = trim( prc.theme.option( "accent_color_dark" ) )>
+    <bx:if len( accentLight ) || len( accentDark )>
+        <style>
+            <bx:if len( accentLight )>[data-bs-theme="light"] { --bs-primary: #accentLight#; }</bx:if>
+            <bx:if len( accentDark )>[data-bs-theme="dark"]  { --bs-primary: #accentDark#; }</bx:if>
+        </style>
+    </bx:if>
+
+    <bx:set customCss = prc.theme.option( "custom_css" )>
+    <bx:if len( trim( customCss ) )>
+        <style>#customCss#</style>
+    </bx:if>
+
+    <!--
+        Operator-supplied raw <head> HTML (theme option `custom_head_html`).
+        Analytics, verification meta, custom <link>s. UNSANITIZED.
+    -->
+    <bx:set customHead = prc.theme.option( "custom_head_html" )>
+    <bx:if len( trim( customHead ) )>
+        #customHead#
+    </bx:if>
 </head>
 <body data-bs-theme="light" class="d-flex flex-column min-vh-100">
     #view( view = "bx-blogger-fallback/partials/header" )#

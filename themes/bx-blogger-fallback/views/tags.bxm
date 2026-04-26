@@ -4,6 +4,11 @@
     <h1 class="h3 mb-1">Tags</h1>
 </header>
 
+<bx:set introHtml = prc.theme.pageContent( "tags_intro_page" )>
+<bx:if len( introHtml )>
+    <section class="mb-4 tags-intro">#introHtml#</section>
+</bx:if>
+
 <bx:if ( prc.tags ?: [] ).len()>
     <div class="d-flex flex-wrap gap-2" aria-label="Tag cloud">
         <bx:loop array="#prc.tags#" item="t">

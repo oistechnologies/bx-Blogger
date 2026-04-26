@@ -65,8 +65,12 @@
                 "required": [ "key", "type", "label" ],
                 "properties": {
                     "key":     { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
-                    "type":    { "enum": [ "color", "int", "bool", "string", "text", "select", "textarea", "image" ] },
+                    "type":    { "enum": [ "color", "int", "bool", "string", "text", "select", "textarea", "image", "page" ] },
                     "label":   { "type": "string" },
+                    "group":   {
+                        "type":        "string",
+                        "description": "Optional grouping key. The admin options form groups options by this value (each group becomes a Bootstrap card in a CSS-columns flow layout). The key doubles as the group's display label. Options without `group` fall into a default 'General' group rendered first. Group ordering is determined by first occurrence in the manifest."
+                    },
                     "default": {},
                     "enum": {
                         "type":        "array",

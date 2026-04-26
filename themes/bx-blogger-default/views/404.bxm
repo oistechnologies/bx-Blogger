@@ -1,8 +1,13 @@
 <bx:output>
-<div class="text-center py-5 mx-auto" style="max-width: 32rem;">
-    <p class="display-3 text-secondary fw-light mb-2">404</p>
-    <h1 class="h3 mb-3">Page not found</h1>
-    <p class="text-secondary">The page you&rsquo;re looking for doesn&rsquo;t exist or may have moved.</p>
-    <p class="mt-4"><a href="/" class="btn btn-primary">Back to home</a></p>
-</div>
+<bx:set customNotFound = prc.theme.pageContent( "not_found_page" )>
+<bx:if len( customNotFound )>
+    <article class="not-found-custom">#customNotFound#</article>
+<bx:else>
+    <div class="text-center py-5 mx-auto" style="max-width: 32rem;">
+        <p class="display-3 text-secondary fw-light mb-2">404</p>
+        <h1 class="h3 mb-3">Page not found</h1>
+        <p class="text-secondary">The page you&rsquo;re looking for doesn&rsquo;t exist or may have moved.</p>
+        <p class="mt-4"><a href="/" class="btn btn-primary">Back to home</a></p>
+    </div>
+</bx:if>
 </bx:output>

@@ -4,6 +4,11 @@
     <h1 class="h3 mb-1">Categories</h1>
 </header>
 
+<bx:set introHtml = prc.theme.pageContent( "categories_intro_page" )>
+<bx:if len( introHtml )>
+    <section class="mb-4 categories-intro">#introHtml#</section>
+</bx:if>
+
 <bx:if ( prc.categories ?: [] ).len()>
     <ul class="list-group">
         <bx:loop array="#prc.categories#" item="cat">

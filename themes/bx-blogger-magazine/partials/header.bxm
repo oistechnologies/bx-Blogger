@@ -1,5 +1,7 @@
 <bx:output>
-<bx:set logoUrl = prc.theme.imageUrl( "logo_image" )>
+<bx:set logoUrl         = prc.theme.imageUrl( "logo_image" )>
+<bx:set logoUrlDark     = prc.theme.imageUrl( "logo_image_dark" )>
+<bx:set hideTitle       = !!prc.theme.option( "hide_site_title" )>
 <bx:set titleColorLight = prc.theme.option( "title_color_light" )>
 <bx:set titleColorDark  = prc.theme.option( "title_color_dark" )>
 <bx:if !len( titleColorLight )>
@@ -8,21 +10,44 @@
 <bx:if !len( titleColorDark )>
     <bx:set titleColorDark = "##f5d99a">
 </bx:if>
+<bx:set hasAnyLogo   = len( logoUrl ) || len( logoUrlDark )>
+<bx:set hasBothLogos = len( logoUrl ) && len( logoUrlDark )>
+<bx:set renderTitleText = !hideTitle || !hasAnyLogo>
 <style>
     .site-header .navbar-brand.site-title { color: #titleColorLight#; }
     [data-bs-theme="dark"] .site-header .navbar-brand.site-title { color: #titleColorDark#; }
+    <bx:if hasBothLogos>
+        [data-bs-theme="dark"]  .site-header .site-logo-light-mode { display: none; }
+        [data-bs-theme="light"] .site-header .site-logo-dark-mode  { display: none; }
+    </bx:if>
 </style>
 <header class="border-bottom bg-body site-header">
     <nav class="container navbar navbar-expand-md py-3" aria-label="Site header">
         <a class="navbar-brand site-title fw-semibold d-inline-flex align-items-center gap-2" href="/">
-            <bx:if len( logoUrl )>
+            <bx:if hasBothLogos>
+                <img src="#encodeForHTMLAttribute( logoUrl )#"
+                     alt=""
+                     class="site-logo site-logo-light-mode"
+                     style="height: 36px; width: auto;">
+                <img src="#encodeForHTMLAttribute( logoUrlDark )#"
+                     alt=""
+                     class="site-logo site-logo-dark-mode"
+                     style="height: 36px; width: auto;">
+            <bx:elseif len( logoUrl )>
                 <img src="#encodeForHTMLAttribute( logoUrl )#"
                      alt=""
                      class="site-logo"
                      style="height: 36px; width: auto;">
+            <bx:elseif len( logoUrlDark )>
+                <img src="#encodeForHTMLAttribute( logoUrlDark )#"
+                     alt=""
+                     class="site-logo"
+                     style="height: 36px; width: auto;">
             </bx:if>
-            <span class="letter-spaced text-uppercase small text-muted me-2 d-none d-sm-inline">The</span>
-            <span>#encodeForHTML( prc.theme.siteTitle() )#</span>
+            <bx:if renderTitleText>
+                <span class="letter-spaced text-uppercase small text-muted me-2 d-none d-sm-inline">The</span>
+                <span>#encodeForHTML( prc.theme.siteTitle() )#</span>
+            </bx:if>
         </a>
         <button
             class="navbar-toggler"

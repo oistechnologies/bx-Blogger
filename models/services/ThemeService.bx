@@ -432,6 +432,33 @@ class accessors="true" singleton {
             catch ( any e ) { return ""; }
         } );
 
+        // Page-type options store the integer post ID of a publicly-
+        // visible `post_type='page'` row; templates want the compiled
+        // HTML body. Re-checks visibility at read time so an admin
+        // who unpublishes a page after selecting it (or whose page
+        // has scheduled-publish hit a future date) gets clean empty-
+        // string fallback instead of a stale render.
+        var publicPostSvc = variables.wirebox.getInstance( "PublicPostService" );
+        theme.setPageContentLookup( function( slug, key ) {
+            var pageId = svc.getOption( slug, key );
+            if ( !isNumeric( pageId ) || int( pageId ) <= 0 ) return "";
+            try {
+                var nowStr = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+                var page = variables.wirebox.getInstance( "Post" )
+                    .where( "id", int( pageId ) )
+                    .where( "post_type", "page" )
+                    .where( "status", "published" )
+                    .where( "visibility", "public" )
+                    .where( "published_at", "<=", nowStr )
+                    .whereNull( "deleted_at" )
+                    .first();
+                if ( isNull( page ) ) return "";
+                return page.getBodyHtml() ?: "";
+            } catch ( any e ) {
+                return "";
+            }
+        } );
+
         // 4.E — same closure pattern for the nested-menu tree. Templates
         // call `prc.theme.menu("header")` and get an empty array when
         // the admin hasn't built one yet, so layouts can fall back

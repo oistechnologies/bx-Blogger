@@ -1,10 +1,21 @@
 <bx:output>
-<section class="mb-5">
-    <h1 class="display-5 mb-0">#encodeForHTML( prc.siteName ?: getSetting( "AppName" ) )#</h1>
-    <bx:if len( prc.siteTagline ?: "" )>
-        <p class="lead text-secondary-emphasis">#encodeForHTML( prc.siteTagline )#</p>
-    </bx:if>
-</section>
+<bx:set introHtml = prc.theme.pageContent( "home_intro_page" )>
+<bx:if len( introHtml )>
+    <section class="mb-5 home-intro">#introHtml#</section>
+</bx:if>
+
+<bx:if ( prc.featured ?: [] ).len()>
+    <section class="mb-5 featured-posts">
+        <h2 class="h4 text-secondary text-uppercase small letter-spaced mb-3">Featured</h2>
+        <div class="row g-4">
+            <bx:loop array="#prc.featured#" item="post">
+                <div class="col-md-6">
+                    #view( view = "bx-blogger-default/partials/post-card", args = { "post" : post } )#
+                </div>
+            </bx:loop>
+        </div>
+    </section>
+</bx:if>
 
 <bx:if ( prc.posts ?: [] ).len()>
     <section class="row g-4 mb-4">

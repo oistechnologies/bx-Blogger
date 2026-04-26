@@ -212,6 +212,29 @@ class accessors="true" {
     }
 
     /**
+     * Resolve a page-type option to the selected page's compiled HTML
+     * body. The option stores the integer post ID of a publicly-visible
+     * `post_type='page'` row (per ThemeOptionsService normalization);
+     * this helper resolves it to the rendered HTML the layout can drop
+     * into the page directly. Returns `""` when the option is unset,
+     * the page is no longer publicly visible (re-checked at read time),
+     * or no lookup was wired.
+     *
+     * Templates: `prc.theme.pageContent( "home_intro_page" )`. The
+     * returned HTML is already-sanitized markdown output — safe to
+     * render verbatim with `#prc.theme.pageContent(...)#` (no
+     * encodeForHTML wrapper).
+     */
+    string function pageContent( required string key ) {
+        if ( !structKeyExists( variables, "pageContentLookup" ) || isNull( variables.pageContentLookup ) ) return "";
+        return variables.pageContentLookup( variables.slug, arguments.key );
+    }
+
+    void function setPageContentLookup( required any lookup ) {
+        variables.pageContentLookup = arguments.lookup;
+    }
+
+    /**
      * Resolve the displayable site title with a sensible fallback chain:
      *
      *   1. The theme-option `site_title` if the operator has set it

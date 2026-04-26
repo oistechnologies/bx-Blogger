@@ -239,6 +239,87 @@ class extends="tests.support.BaseIntegrationSpec" {
                     }
                 } );
 
+                it( "stores a page-type ID for a published+public page; rejects missing/unpublished/non-public", function() {
+                    var user = createTestUser();
+                    var ps   = getInstance( "PostService" );
+                    // A real published+public page — should round-trip cleanly.
+                    var livePage = ps.create( {
+                        "authorId"     : user.getId(),
+                        "title"        : "Spec live page " & createUUID(),
+                        "slug"         : "spec-live-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                        "bodyMarkdown" : "Body.",
+                        "postType"     : "page",
+                        "status"       : "published",
+                        "visibility"   : "public",
+                        "publishedAt"  : dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" )
+                    } );
+                    // A draft page — should be rejected (falls back to 0).
+                    var draftPage = ps.create( {
+                        "authorId"     : user.getId(),
+                        "title"        : "Spec draft page " & createUUID(),
+                        "slug"         : "spec-draft-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                        "bodyMarkdown" : "Body.",
+                        "postType"     : "page",
+                        "status"       : "draft"
+                    } );
+                    try {
+                        // Live published+public page → stored
+                        svc.setOption( variables.FIXTURE_SLUG, "intro_page", livePage.getId() );
+                        expect( svc.getOption( variables.FIXTURE_SLUG, "intro_page" ) ).toBe( livePage.getId() );
+
+                        // Draft page → rejected, falls back to 0
+                        svc.setOption( variables.FIXTURE_SLUG, "intro_page", draftPage.getId() );
+                        expect( svc.getOption( variables.FIXTURE_SLUG, "intro_page" ) ).toBe( 0 );
+
+                        // Non-existent ID → 0
+                        svc.setOption( variables.FIXTURE_SLUG, "intro_page", 999999 );
+                        expect( svc.getOption( variables.FIXTURE_SLUG, "intro_page" ) ).toBe( 0 );
+
+                        // Non-numeric → 0
+                        svc.setOption( variables.FIXTURE_SLUG, "intro_page", "not-a-number" );
+                        expect( svc.getOption( variables.FIXTURE_SLUG, "intro_page" ) ).toBe( 0 );
+
+                        // Negative → 0
+                        svc.setOption( variables.FIXTURE_SLUG, "intro_page", -5 );
+                        expect( svc.getOption( variables.FIXTURE_SLUG, "intro_page" ) ).toBe( 0 );
+                    }
+                    finally {
+                        var qb = getInstance( "QueryBuilder@qb" );
+                        qb.newQuery().from( "posts" ).where( "id", livePage.getId() ).delete();
+                        qb.newQuery().from( "posts" ).where( "id", draftPage.getId() ).delete();
+                    }
+                } );
+
+                it( "Theme.pageContent() returns the page's compiled HTML; empty string when unset / unpublished", function() {
+                    var user = createTestUser();
+                    var page = getInstance( "PostService" ).create( {
+                        "authorId"     : user.getId(),
+                        "title"        : "Spec page " & createUUID(),
+                        "slug"         : "spec-page-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                        "bodyMarkdown" : "## Hero heading" & char( 10 ) & "Some intro markdown content.",
+                        "postType"     : "page",
+                        "status"       : "published",
+                        "visibility"   : "public",
+                        "publishedAt"  : dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" )
+                    } );
+                    try {
+                        themeSvc.activate( variables.FIXTURE_SLUG );
+                        var theme = themeSvc.resolveActive();
+
+                        // Unset → empty string
+                        expect( theme.pageContent( "intro_page" ) ).toBe( "" );
+
+                        // Set → compiled HTML containing the heading text
+                        svc.setOption( variables.FIXTURE_SLUG, "intro_page", page.getId() );
+                        var html = theme.pageContent( "intro_page" );
+                        expect( len( html ) ).toBeGT( 0, "expected compiled HTML, got empty" );
+                        expect( html ).toInclude( "Hero heading" );
+                    }
+                    finally {
+                        getInstance( "QueryBuilder@qb" ).newQuery().from( "posts" ).where( "id", page.getId() ).delete();
+                    }
+                } );
+
                 it( "Theme.imageUrl() resolves a stored media ID to a public URL; empty string when unset", function() {
                     var user = createTestUser();
                     var media = getInstance( "Media" ).create( {

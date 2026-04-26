@@ -31,6 +31,31 @@
         font-style: italic;
     }
 
+    // Card accent left-border — picks up the operator's accent_color
+    // setting via the --bs-primary override in partials/head-assets.bxm.
+    // Magazine's related-card is intentionally omitted (it's a borderless
+    // editorial flex column, not a Bootstrap .card). !important wins
+    // against the .border-0 utility on the markup.
+    .post-card,
+    .author-card,
+    .category-card {
+        border-left: 3px solid var(--bs-primary) !important;
+    }
+
+    // Tag-cloud pills (/tags) — rebind Bootstrap button CSS vars to
+    // --bs-primary so the operator's accent flows through the outlined
+    // tag pills (Bootstrap's btn-outline-* uses literal hex, not the
+    // primary CSS var, so a class swap alone wouldn't honor accent).
+    [aria-label="Tag cloud"] .btn {
+        --bs-btn-color: var(--bs-primary);
+        --bs-btn-border-color: var(--bs-primary);
+        --bs-btn-hover-color: #fff;
+        --bs-btn-hover-bg: var(--bs-primary);
+        --bs-btn-hover-border-color: var(--bs-primary);
+        --bs-btn-active-bg: var(--bs-primary);
+        --bs-btn-active-border-color: var(--bs-primary);
+    }
+
     // Post cards: no card chrome, just a column with a subtle hover rule
     .post-card {
         position: relative;

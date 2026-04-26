@@ -36,7 +36,10 @@ class extends="coldbox.system.EventHandler" {
         prc.breadcrumbs    = [ { "label" : "Blog", "url" : "/blog" } ];
 
         event.setLayout( prc.theme.layout( "Archive" ) );
-        event.setView( prc.theme.view( "home" ) );
+        // /blog renders its own view (was sharing home.bxm). Lets each
+        // theme give the blog index its own header + intro slot
+        // independent of the home page.
+        event.setView( prc.theme.view( "blog" ) );
     }
 
     /**

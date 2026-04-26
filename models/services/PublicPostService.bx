@@ -80,6 +80,24 @@ class accessors="true" singleton {
     }
 
     /**
+     * Featured posts (admin-pinned via the editor's "Pin to home as
+     * featured" checkbox), most-recently-pinned first. Backs the
+     * theme-configurable featured section on the home page.
+     *
+     * Returns a flat array (NOT a paginated struct) — the caller knows
+     * exactly how many to show via the theme's `featured_count` option,
+     * so pagination doesn't apply. Empty array when nothing is pinned.
+     */
+    array function listFeatured( numeric limit = 3 ) {
+        return baseQuery( postType = "post" )
+            .where( "featured", 1 )
+            .whereNotNull( "featured_at" )
+            .orderBy( "featured_at", "desc" )
+            .limit( arguments.limit )
+            .get();
+    }
+
+    /**
      * Posts in a given category (optionally including descendants).
      * Category tree uses a materialized `path` column, so descendants
      * are `path LIKE 'parent/%'` — one index scan.

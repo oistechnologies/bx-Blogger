@@ -79,7 +79,11 @@ data = {
     // OG image widget — hydrated on mount, refreshed after a regen
     "ogVersion"          : 0,
     "ogGeneratedAt"      : "",
-    "ogAsFeaturedImage"  : 0      // checkbox: substitute OG image wherever featured renders
+    "ogAsFeaturedImage"  : 0,     // checkbox: substitute OG image wherever featured renders
+    // Featured pin — admin checkbox in the sidebar publishes-this-post-
+    // to-the-home-page-featured-section toggle. PostService.normalize
+    // stamps featured_at when this flips true.
+    "featured"           : 0
 };
 
 /**
@@ -130,6 +134,7 @@ private function loadFromDb( required id ) {
     data.ogVersion         = val( post.getOgVersion() ?: 0 );
     data.ogAsFeaturedImage = !!( post.getOgAsFeaturedImage() ?: 0 ) ? 1 : 0;
     data.ogGeneratedAt     = ogGeneratedAtFor( post );
+    data.featured          = !!( post.getFeatured() ?: 0 ) ? 1 : 0;
 
     // Phase UX — hydrate category + tag assignments from the pivots.
     // qb is cheaper + simpler than Quick's `.categories().get()` for
@@ -691,6 +696,11 @@ private struct function collectAttrs() {
     // dropped the attribute on remove, so the DB kept whatever image
     // was attached before.
     attrs.featuredMediaId = val( data.featuredMediaId ?: 0 );
+    // Featured pin — sidebar checkbox. PostService.normalize stamps
+    // featured_at on transitions to true; the timestamp is what
+    // PublicPostService.listFeatured() sorts by, so re-pinning bumps
+    // the post back to the top of the home featured section.
+    attrs.featured = !!data.featured;
     return attrs;
 }
 
@@ -1120,6 +1130,27 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 						       class="form-control form-control-sm"
 						       wire:model.blur="scheduledAt">
 					</div>
+
+					<!---
+						Featured pin — surfaces the post in the active theme's
+						home-page featured section (when show_featured_section
+						is on in /admin/themes/{slug}/options). PostService
+						stamps featured_at on transitions to true so re-pinning
+						bumps the post to the top.
+					--->
+					<bx:if args.postType == "post">
+						<div class="form-check small mb-3">
+							<input type="checkbox"
+							       class="form-check-input"
+							       id="postFeatured"
+							       wire:model.live="featured"
+							       value="1"
+							       <bx:if val( args.featured ?: 0 )>checked</bx:if>>
+							<label class="form-check-label" for="postFeatured">
+								Pin to home as featured
+							</label>
+						</div>
+					</bx:if>
 					<div class="d-grid gap-2">
 						<!---
 							Each action button:

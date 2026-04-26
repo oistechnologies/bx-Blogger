@@ -1,20 +1,12 @@
 <bx:output>
-<bx:set introHtml = prc.theme.pageContent( "home_intro_page" )>
-<bx:if len( introHtml )>
-    <section class="mb-4 home-intro">#introHtml#</section>
-</bx:if>
+<header class="mb-4">
+    <p class="text-muted mb-1 text-uppercase small">All posts</p>
+    <h1 class="h3 mb-0">Blog</h1>
+</header>
 
-<bx:if ( prc.featured ?: [] ).len()>
-    <section class="mb-4 featured-posts">
-        <h2 class="h5 text-muted text-uppercase mb-3">Featured</h2>
-        <div class="row g-4">
-            <bx:loop array="#prc.featured#" item="post">
-                <div class="col-md-6">
-                    #view( view = "bx-blogger-fallback/partials/post-card", args = { "post" : post } )#
-                </div>
-            </bx:loop>
-        </div>
-    </section>
+<bx:set introHtml = prc.theme.pageContent( "blog_intro_page" )>
+<bx:if len( introHtml )>
+    <section class="mb-4 blog-intro">#introHtml#</section>
 </bx:if>
 
 <bx:if ( prc.posts ?: [] ).len()>

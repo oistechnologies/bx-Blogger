@@ -131,7 +131,7 @@ class extends="tests.support.BaseIntegrationSpec" {
 
                 it( "ships every view name the public handlers set", function() {
                     var views = [
-                        "home", "post", "page",
+                        "home", "blog", "post", "page",
                         "category",   "tag",   "author",
                         "categories", "tags",  "authors",
                         "archive", "search", "404", "500"

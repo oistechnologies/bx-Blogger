@@ -25,6 +25,7 @@
         },
         { "key": "tagline",       "type": "text",   "default": "Just another bx-Blogger site", "label": "Tagline (text canonical)" },
         { "key": "footer_credit", "type": "string", "default": "© bx-Blogger",                 "label": "Footer Credit (string alias)" },
-        { "key": "hero_image",    "type": "image",  "default": 0,                              "label": "Hero Image" }
+        { "key": "hero_image",    "type": "image",  "default": 0,                              "label": "Hero Image" },
+        { "key": "intro_page",    "type": "page",   "default": 0,                              "label": "Intro Page (page-type fixture)" }
     ]
 }

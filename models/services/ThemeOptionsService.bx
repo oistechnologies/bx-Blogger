@@ -67,6 +67,13 @@ class accessors="true" singleton {
             if ( structKeyExists( decl, "enum" ) && isArray( decl.enum ) ) {
                 entry[ "enum" ] = decl.enum;
             }
+            // `group` is optional. Default to "General" so the wire's
+            // grouping logic always sees a value. Operator-set group
+            // strings are passed through verbatim (key doubles as
+            // display label).
+            entry[ "group" ] = ( structKeyExists( decl, "group" ) && len( trim( decl.group ?: "" ) ) )
+                ? trim( decl.group )
+                : "General";
             out.append( entry );
         }
 
@@ -289,6 +296,29 @@ class accessors="true" singleton {
                     .whereNull( "deleted_at" )
                     .count();
                 return exists > 0 ? mediaId : 0;
+            case "page":
+                // Stored as the integer post ID of a `post_type='page'`
+                // row that is currently publicly visible (published,
+                // public visibility, published_at <= now, not deleted).
+                // Anything that doesn't satisfy that — including non-
+                // numeric, zero/negative, missing, draft, scheduled,
+                // private — falls back to 0 so render-time helpers
+                // render nothing for the slot. Catches both stale IDs
+                // (admin unpublished the page) and bad client input.
+                if ( !isNumeric( arguments.value ) ) return 0;
+                var pageId = int( arguments.value );
+                if ( pageId <= 0 ) return 0;
+                var nowStr = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+                var pageExists = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "posts" )
+                    .where( "id", pageId )
+                    .where( "post_type", "page" )
+                    .where( "status", "published" )
+                    .where( "visibility", "public" )
+                    .where( "published_at", "<=", nowStr )
+                    .whereNull( "deleted_at" )
+                    .count();
+                return pageExists > 0 ? pageId : 0;
             // `text` (canonical) and `string` (legacy alias) — both
             // pass through unchanged. Listed explicitly so a future
             // rename or additional shaping is easy to slot in.

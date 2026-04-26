@@ -566,6 +566,19 @@ class accessors="true" singleton {
                 }
             }
         }
+
+        // `featured` toggle controls home-page pinning. When the wire
+        // sends featured=true, stamp featuredAt with the current time
+        // (unless the caller passed an explicit value) so the listing
+        // sort key always reflects when the pin happened. When false,
+        // the stale featuredAt is left in place — the listFeatured()
+        // query filters by featured=1 first so it's never observable.
+        if ( structKeyExists( out, "featured" ) ) {
+            out.featured = isBoolean( out.featured ) && out.featured;
+            if ( out.featured && !structKeyExists( out, "featuredAt" ) ) {
+                out.featuredAt = now();
+            }
+        }
         return out;
     }
 

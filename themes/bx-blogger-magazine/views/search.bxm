@@ -23,6 +23,11 @@
     </div>
 </form>
 
+<bx:set introHtml = prc.theme.pageContent( "search_intro_page" )>
+<bx:if len( introHtml )>
+    <section class="mb-5 search-intro">#introHtml#</section>
+</bx:if>
+
 <bx:if ( prc.posts ?: [] ).len()>
     <section class="row g-4 more-posts mb-4">
         <bx:loop array="#prc.posts#" item="post">

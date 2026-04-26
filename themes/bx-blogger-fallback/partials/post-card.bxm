@@ -2,6 +2,26 @@
 <bx:if structKeyExists( args, "post" ) && !isNull( args.post )>
     <bx:set featured = resolveFeaturedImage( args.post )>
     <bx:set hasFeatured = len( featured.url ) gt 0>
+    <bx:set showExcerpt  = !!prc.theme.option( "show_excerpt_on_cards" )>
+    <bx:set showAuthor   = !!prc.theme.option( "show_author_on_cards" )>
+    <bx:set showDate     = !!prc.theme.option( "show_date_on_cards" )>
+    <bx:set showReadTime = !!prc.theme.option( "show_read_time_on_cards" )>
+    <bx:set authorName   = "">
+    <bx:if showAuthor>
+        <bx:try>
+            <bx:set authorRow = getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "users" ).select( "display_name", "username" )
+                .where( "id", args.post.getAuthorId() )
+                .whereNull( "deleted_at" )
+                .first()>
+            <bx:if !isNull( authorRow ) && isStruct( authorRow ) && !structIsEmpty( authorRow )>
+                <bx:set authorName = authorRow.display_name ?: ( authorRow.username ?: "" )>
+            </bx:if>
+        <bx:catch any>
+            <bx:set authorName = "">
+        </bx:catch>
+        </bx:try>
+    </bx:if>
     <article class="card h-100 shadow-sm post-card">
         <div class="row g-0 h-100">
             <bx:if hasFeatured>
@@ -25,21 +45,24 @@
                             #encodeForHTML( args.post.getTitle() )#
                         </a>
                     </h2>
-                    <bx:if len( args.post.getExcerpt() ?: "" )>
+                    <bx:if showExcerpt && len( args.post.getExcerpt() ?: "" )>
                         <p class="card-text text-muted small flex-grow-1">
                             #encodeForHTML( args.post.getExcerpt() )#
                         </p>
                     </bx:if>
-                    <p class="text-muted small mb-0 mt-2">
-                        <bx:if !isNull( args.post.getPublishedAt() )>
-                            <time datetime="#dateTimeFormat( args.post.getPublishedAt(), 'yyyy-mm-dd' )#">
-                                #dateFormat( args.post.getPublishedAt(), "mmm d, yyyy" )#
-                            </time>
-                        </bx:if>
-                        <bx:if ( args.post.getReadingTimeMinutes() ?: 0 ) gt 0>
-                            &middot; #args.post.getReadingTimeMinutes()# min read
-                        </bx:if>
-                    </p>
+                    <bx:set metaParts = []>
+                    <bx:if showAuthor && len( authorName )>
+                        <bx:set metaParts.append( "By " & encodeForHTML( authorName ) )>
+                    </bx:if>
+                    <bx:if showDate && !isNull( args.post.getPublishedAt() )>
+                        <bx:set metaParts.append( "<time datetime=""" & dateTimeFormat( args.post.getPublishedAt(), 'yyyy-mm-dd' ) & """>" & dateFormat( args.post.getPublishedAt(), "mmm d, yyyy" ) & "</time>" )>
+                    </bx:if>
+                    <bx:if showReadTime && ( args.post.getReadingTimeMinutes() ?: 0 ) gt 0>
+                        <bx:set metaParts.append( args.post.getReadingTimeMinutes() & " min read" )>
+                    </bx:if>
+                    <bx:if metaParts.len()>
+                        <p class="text-muted small mb-0 mt-2">#metaParts.toList( " &middot; " )#</p>
+                    </bx:if>
                 </div>
             </div>
         </div>

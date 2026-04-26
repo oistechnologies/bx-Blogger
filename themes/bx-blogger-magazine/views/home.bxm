@@ -1,11 +1,21 @@
 <bx:output>
-<section class="masthead text-center mb-5 pb-4 border-bottom">
-    <p class="text-uppercase small text-muted mb-2 letter-spaced">The Magazine</p>
-    <h1 class="display-3 fw-semibold mb-1">#encodeForHTML( prc.siteName ?: getSetting( "AppName" ) )#</h1>
-    <bx:if len( prc.siteTagline ?: "" )>
-        <p class="lead text-secondary">#encodeForHTML( prc.siteTagline )#</p>
-    </bx:if>
-</section>
+<bx:set introHtml = prc.theme.pageContent( "home_intro_page" )>
+<bx:if len( introHtml )>
+    <section class="masthead mb-5 pb-4 border-bottom home-intro">#introHtml#</section>
+</bx:if>
+
+<bx:if ( prc.featured ?: [] ).len()>
+    <section class="mb-5 featured-posts">
+        <p class="text-uppercase small text-muted letter-spaced mb-3">Featured</p>
+        <div class="row g-4">
+            <bx:loop array="#prc.featured#" item="post">
+                <div class="col-md-6">
+                    #view( view = "bx-blogger-magazine/partials/post-card", args = { "post" : post } )#
+                </div>
+            </bx:loop>
+        </div>
+    </section>
+</bx:if>
 
 <bx:if ( prc.posts ?: [] ).len()>
     <bx:set hero = prc.posts[ 1 ]>
