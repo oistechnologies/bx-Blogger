@@ -1,7 +1,7 @@
 <bx:output>
 <bx:set logoUrl         = prc.theme.imageUrl( "logo_image" )>
 <bx:set logoUrlDark     = prc.theme.imageUrl( "logo_image_dark" )>
-<bx:set hideTitle       = !!prc.theme.option( "hide_site_title" )>
+<bx:set hideTitle       = prc.theme.boolOption( "hide_site_title" )>
 <bx:set titleColorLight = prc.theme.option( "title_color_light" )>
 <bx:set titleColorDark  = prc.theme.option( "title_color_dark" )>
 <bx:if !len( titleColorLight )>
@@ -76,8 +76,8 @@
         </button>
         <div class="collapse navbar-collapse" id="site-header-nav">
             <ul class="navbar-nav ms-auto align-items-md-center gap-md-2">
-                <bx:set showCats = !!prc.theme.option( "show_blog_categories_in_menu" )>
-                <bx:set showTags = !!prc.theme.option( "show_blog_tags_in_menu" )>
+                <bx:set showCats = prc.theme.boolOption( "show_blog_categories_in_menu" )>
+                <bx:set showTags = prc.theme.boolOption( "show_blog_tags_in_menu" )>
                 <li class="nav-item"><a class="nav-link" href="/">Home</a></li>
                 <bx:if showCats || showTags>
                     <li class="nav-item dropdown">

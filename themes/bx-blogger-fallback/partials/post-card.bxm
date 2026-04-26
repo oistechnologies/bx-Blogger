@@ -2,10 +2,10 @@
 <bx:if structKeyExists( args, "post" ) && !isNull( args.post )>
     <bx:set featured = resolveFeaturedImage( args.post )>
     <bx:set hasFeatured = len( featured.url ) gt 0>
-    <bx:set showExcerpt  = !!prc.theme.option( "show_excerpt_on_cards" )>
-    <bx:set showAuthor   = !!prc.theme.option( "show_author_on_cards" )>
-    <bx:set showDate     = !!prc.theme.option( "show_date_on_cards" )>
-    <bx:set showReadTime = !!prc.theme.option( "show_read_time_on_cards" )>
+    <bx:set showExcerpt  = prc.theme.boolOption( "show_excerpt_on_cards" )>
+    <bx:set showAuthor   = prc.theme.boolOption( "show_author_on_cards" )>
+    <bx:set showDate     = prc.theme.boolOption( "show_date_on_cards" )>
+    <bx:set showReadTime = prc.theme.boolOption( "show_read_time_on_cards" )>
     <bx:set authorName   = "">
     <bx:if showAuthor>
         <bx:try>

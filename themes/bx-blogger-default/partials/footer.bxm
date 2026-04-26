@@ -4,10 +4,10 @@
     [data-bs-theme="light"] .footer-logo-dark-mode  { display: none; }
 </style>
 <bx:set footerMenu       = prc.theme.menu( "footer" )>
-<bx:set showDefaultBrand = !!prc.theme.option( "show_default_footer_brand" )>
+<bx:set showDefaultBrand = prc.theme.boolOption( "show_default_footer_brand" )>
 <bx:set customFooterText = prc.theme.option( "custom_footer_text" )>
-<bx:set showAuthorsLink  = !!prc.theme.option( "show_authors_in_footer" )>
-<bx:set showRssLink      = !!prc.theme.option( "show_footer_rss" )>
+<bx:set showAuthorsLink  = prc.theme.boolOption( "show_authors_in_footer" )>
+<bx:set showRssLink      = prc.theme.boolOption( "show_footer_rss" )>
 <footer class="border-top bg-body-tertiary py-4 mt-5 site-footer">
     <div class="container">
         <!---

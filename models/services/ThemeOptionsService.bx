@@ -91,12 +91,33 @@ class accessors="true" singleton {
         if ( structKeyExists( stored, arguments.key ) ) return stored[ arguments.key ];
 
         var manifest = manifestFor( arguments.slug );
+        var declType = "";
         if ( isStruct( manifest ) && structKeyExists( manifest, "options" ) && isArray( manifest.options ) ) {
             for ( var decl in manifest.options ) {
-                if ( ( decl.key ?: "" ) == arguments.key ) return decl.default ?: "";
+                if ( ( decl.key ?: "" ) == arguments.key ) {
+                    declType = decl.type ?: "";
+                    return decl.default ?: typedFallback( declType );
+                }
             }
         }
+        // Unknown key — caller asked for an option not in the manifest.
+        // Fall back to empty string; Theme.boolOption() coerces this
+        // safely for callers that expected a boolean.
         return "";
+    }
+
+    /**
+     * Type-aware empty-default. When a manifest declares a bool option
+     * without an explicit `default` field, return `false` instead of ""
+     * so any downstream `!!value` coercion doesn't blow up on strict
+     * BoxLang. Same logic for int (0). Other types stay empty-string.
+     */
+    private any function typedFallback( required string declType ) {
+        switch ( arguments.declType ) {
+            case "bool": return false;
+            case "int":  return 0;
+            default:     return "";
+        }
     }
 
     /**

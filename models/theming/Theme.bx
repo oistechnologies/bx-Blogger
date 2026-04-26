@@ -182,6 +182,29 @@ class accessors="true" {
     }
 
     /**
+     * Safe boolean coercion for bool-type options. Templates can't use
+     * `!!prc.theme.option("...")` because BoxLang strict-mode rejects
+     * coercing an empty string to boolean — and `option()` returns ""
+     * for any key not stored AND not present in the cached manifest_json
+     * (which happens when a theme adds a new bool option but the
+     * existing themes-table row hasn't been re-discovered yet).
+     *
+     * Accepts any value; returns false on empty / null / unrecognized;
+     * returns true for the obvious truthy markers.
+     */
+    boolean function boolOption( required string key, boolean defaultValue = false ) {
+        var v = option( arguments.key );
+        if ( isNull( v ) ) return arguments.defaultValue;
+        if ( isBoolean( v ) ) return v;
+        if ( !isSimpleValue( v ) ) return arguments.defaultValue;
+        var s = lCase( trim( toString( v ) ) );
+        if ( !len( s ) ) return arguments.defaultValue;
+        if ( s == "true" || s == "1" || s == "yes" )  return true;
+        if ( s == "false" || s == "0" || s == "no" )  return false;
+        return arguments.defaultValue;
+    }
+
+    /**
      * Install the options-lookup closure. Called by
      * `ThemeService.buildTheme()` immediately after construction so
      * every Theme instance can resolve `option(...)` without being
