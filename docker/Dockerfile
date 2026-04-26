@@ -48,6 +48,12 @@ RUN npm run build
 # -----------------------------------------------------------------------------
 FROM ortussolutions/commandbox
 
+# Auto-populated by buildx for multi-platform builds. We use them below to
+# detect cross-arch builds (BUILDPLATFORM != TARGETPLATFORM, i.e. QEMU
+# emulation) and skip the warmup step that's prohibitively slow under it.
+ARG BUILDPLATFORM
+ARG TARGETPLATFORM
+
 LABEL maintainer="Michael Rigsby"
 LABEL repository="https://github.com/oistechnologies/bx-Blogger"
 
@@ -86,7 +92,18 @@ RUN cd ${APP_DIR} && box install
 # Ortus image ships a warmup script that starts the server once during build,
 # compiles classes into the server home, and shuts down. Subsequent container
 # starts are fast (<2s instead of 60s+).
-RUN ${BUILD_DIR}/util/warmup-server.sh
+#
+# Skip the warmup on cross-arch buildx legs (BUILDPLATFORM != TARGETPLATFORM,
+# meaning we're running under QEMU emulation). Booting BoxLang under emulation
+# took the GHA arm64 leg over the 20m job timeout. Native builds — amd64 prod
+# images on the GHA runner, arm64 images built on Apple Silicon — still warm
+# up. Arm64 images pulled to a Mac will cold-start once (~60s) on first run
+# but every subsequent start is fast; that's an acceptable trade.
+RUN if [ "${BUILDPLATFORM}" = "${TARGETPLATFORM}" ] || [ -z "${TARGETPLATFORM}" ]; then \
+        ${BUILD_DIR}/util/warmup-server.sh; \
+    else \
+        echo "Skipping warmup-server.sh — cross-arch build (BUILDPLATFORM=${BUILDPLATFORM}, TARGETPLATFORM=${TARGETPLATFORM})"; \
+    fi
 
 # Our entrypoint wraps Ortus's run.sh to add database-migration handling.
 COPY docker/docker-entrypoint.sh /docker-entrypoint.sh
