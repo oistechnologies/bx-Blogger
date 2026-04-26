@@ -24,7 +24,13 @@
 # -----------------------------------------------------------------------------
 # Stage 1 — theme-builder
 # -----------------------------------------------------------------------------
-FROM node:20-alpine AS theme-builder
+# Always build theme assets on the native arch of the build host
+# (`$BUILDPLATFORM`), regardless of the image's target arch. The output is
+# pure CSS + JS — arch-independent — so there's no reason to pay QEMU
+# emulation cost on cross-arch buildx legs. This also dodges a known bug
+# where `npm ci` hangs indefinitely on linux/arm64 under QEMU due to
+# Node's `getrandom()` + sass native-binding post-install scripts.
+FROM --platform=$BUILDPLATFORM node:20-alpine AS theme-builder
 
 WORKDIR /build
 
