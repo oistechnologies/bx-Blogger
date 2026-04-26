@@ -890,34 +890,45 @@ private string function ogGeneratedAtFor( required any post ) {
 
 <bx:output>
 <div>
-	<bx:if len( args.flashOk )>
-		<div class="alert alert-success alert-dismissible fade show"
-		     role="alert"
-		     x-data
-		     x-init="setTimeout( () => window._postEditor &amp;&amp; window._postEditor.set( 'flashOk', '' ), 20000 )">
-			#encodeForHTML( args.flashOk )#
-			<button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
-		</div>
-	</bx:if>
-	<bx:if len( args.flashError )>
-		<div class="alert alert-danger alert-dismissible fade show"
-		     role="alert"
-		     x-data
-		     x-init="setTimeout( () => window._postEditor &amp;&amp; window._postEditor.set( 'flashError', '' ), 20000 )">
-			#encodeForHTML( args.flashError )#
-			<button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
-		</div>
-	</bx:if>
-	<bx:if args.validationErrors.len()>
-		<div class="alert alert-warning">
-			<strong>Fix these before saving:</strong>
-			<ul class="mb-0">
-				<bx:loop array="#args.validationErrors#" item="err">
-					<li>#encodeForHTML( err )#</li>
-				</bx:loop>
-			</ul>
-		</div>
-	</bx:if>
+	<!---
+	  Persistent wrapper for the flash + validation alerts. Keep this
+	  div ALWAYS present (even when every alert inside is empty) so the
+	  positional morphdom diff never sees the editor row shift from
+	  child[0] to child[1] when an alert appears after a save. Without
+	  this wrapper the wire:ignore'd EasyMDE container two siblings
+	  away gets nuked because morphdom treats the position-0 mismatch
+	  as a "replace from here forward" cue and walks past wire:ignore.
+	--->
+	<div class="post-editor-alerts">
+		<bx:if len( args.flashOk )>
+			<div class="alert alert-success alert-dismissible fade show"
+			     role="alert"
+			     x-data
+			     x-init="setTimeout( () => window._postEditor &amp;&amp; window._postEditor.set( 'flashOk', '' ), 20000 )">
+				#encodeForHTML( args.flashOk )#
+				<button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+			</div>
+		</bx:if>
+		<bx:if len( args.flashError )>
+			<div class="alert alert-danger alert-dismissible fade show"
+			     role="alert"
+			     x-data
+			     x-init="setTimeout( () => window._postEditor &amp;&amp; window._postEditor.set( 'flashError', '' ), 20000 )">
+				#encodeForHTML( args.flashError )#
+				<button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+			</div>
+		</bx:if>
+		<bx:if args.validationErrors.len()>
+			<div class="alert alert-warning">
+				<strong>Fix these before saving:</strong>
+				<ul class="mb-0">
+					<bx:loop array="#args.validationErrors#" item="err">
+						<li>#encodeForHTML( err )#</li>
+					</bx:loop>
+				</ul>
+			</div>
+		</bx:if>
+	</div>
 
 	<div class="row g-3">
 		<!--- Main editor column --->
