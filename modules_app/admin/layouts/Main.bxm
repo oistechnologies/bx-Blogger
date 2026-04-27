@@ -450,10 +450,15 @@
 								</a>
 							</bx:if>
 							<bx:if canSysSettings>
-								<a class="nav-link nav-sub #( currentEvent.startsWith( 'admin:Settings.' ) ? 'active' : '' )#"
-								   href="#event.buildLink( 'admin:Settings.index' )#"
+								<a class="nav-link nav-sub #( ( currentEvent == 'admin:Settings.seo' || currentEvent == 'admin:Settings.index' ) ? 'active' : '' )#"
+								   href="#event.buildLink( 'admin:Settings.seo' )#"
 								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="SEO Settings">
 									<i class="bi bi-search nav-icon"></i><span class="nav-label">SEO Settings</span>
+								</a>
+								<a class="nav-link nav-sub #( currentEvent == 'admin:Settings.ogImage' ? 'active' : '' )#"
+								   href="/admin/settings/og-image"
+								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="OG Image Settings">
+									<i class="bi bi-card-image nav-icon"></i><span class="nav-label">OG Image Settings</span>
 								</a>
 							</bx:if>
 							<bx:if canSysAiPrompts>

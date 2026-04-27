@@ -25,7 +25,26 @@ class extends="tests.support.BaseIntegrationSpec" {
         variables.seoSvc         = getInstance( "SeoService" );
         variables.postSvc        = getInstance( "PostService" );
         variables.cbfs           = getInstance( "DiskService@cbfs" );
+        variables.settingSvc     = getInstance( "SettingService" );
         variables.createdOgPaths = [];
+
+        // Snapshot the current `og.*` settings so each test can flip
+        // a value and the afterAll() restore writes the originals
+        // back. Keys match the seed migration; absent keys read as
+        // their defaults from buildRenderContext().
+        variables.ogSettingKeys = [
+            "og.qr_enabled",
+            "og.author_photo_enabled",
+            "og.logo_media_id",
+            "og.color_background",
+            "og.color_highlight",
+            "og.color_title",
+            "og.color_synopsis"
+        ];
+        variables.ogSettingsBackup = {};
+        for ( var k in variables.ogSettingKeys ) {
+            variables.ogSettingsBackup[ k ] = variables.settingSvc.get( k, "" );
+        }
     }
 
     function afterAll() {
@@ -37,6 +56,25 @@ class extends="tests.support.BaseIntegrationSpec" {
         }
         catch ( any e ) {
             writeLog( file = "testbox", text = "OgImageServiceSpec tracked cleanup failed: " & e.message );
+        }
+
+        // Restore the OG settings to whatever was there before the
+        // spec started touching them. Empty value means "not seeded
+        // yet"; SettingService has no "delete if not present"
+        // helper but `set` with the empty string round-trips
+        // safely through coerceWrite for the string-typed colors.
+        try {
+            for ( var k in variables.ogSettingKeys ) {
+                var orig = variables.ogSettingsBackup[ k ];
+                if ( !len( orig ) ) continue;
+                var t = ( reFind( "^og\.color_", k ) ) ? "string"
+                      : ( k == "og.logo_media_id"   ) ? "int"
+                      :                                  "bool";
+                variables.settingSvc.set( key = k, value = orig, type = t );
+            }
+        }
+        catch ( any e ) {
+            writeLog( file = "testbox", text = "OgImageServiceSpec settings restore failed: " & e.message );
         }
 
         super.afterAll();
@@ -126,6 +164,80 @@ class extends="tests.support.BaseIntegrationSpec" {
                 trackPath( v2Path );
                 expect( v2Path ).notToBe( v1Path, "regen produces a new key" );
                 expect( variables.cbfs.get( "og" ).exists( v2Path ) ).toBeTrue( "fresh PNG at new key" );
+            } );
+
+            it( "honors `og.qr_enabled = false` — author with QR opt-in still gets a card without QR", function() {
+                // Force the per-author opt-in on so this is a true
+                // global-master-switch test. Then turn the global
+                // off; the spec passes if the regenerate succeeds
+                // (no exception, valid PNG) which proves the new
+                // gating wiring doesn't crash when the master flag
+                // suppresses QR draw.
+                variables.settingSvc.set( "og.qr_enabled", false, "bool" );
+
+                var post = makePost();
+                post.getAuthor().setOgIncludeSocialsAndUrl( true ).save();
+                ogSvc.regenerate( post );
+                trackPath( ogSvc.pathFor( post ) );
+
+                var bytes = variables.cbfs.get( "og" ).getAsBinary( ogSvc.pathFor( post ) );
+                expect( arrayLen( bytes ) ).toBeGTE( 8 );
+                expect( bytes[ 1 ] ).toBe( -119 );
+                expect( bytes[ 2 ] ).toBe( 80 );
+
+                // Restore for subsequent tests within this describe.
+                variables.settingSvc.set( "og.qr_enabled", true, "bool" );
+            } );
+
+            it( "honors custom color settings — fully overridden palette renders without crash", function() {
+                variables.settingSvc.set( "og.color_background", "##2A0033", "string" );
+                variables.settingSvc.set( "og.color_highlight",  "##FF00AA", "string" );
+                variables.settingSvc.set( "og.color_title",      "##FFFF00", "string" );
+                variables.settingSvc.set( "og.color_synopsis",   "##CCCCCC", "string" );
+
+                var post = makePost();
+                ogSvc.regenerate( post );
+                trackPath( ogSvc.pathFor( post ) );
+
+                var bytes = variables.cbfs.get( "og" ).getAsBinary( ogSvc.pathFor( post ) );
+                expect( arrayLen( bytes ) ).toBeGTE( 8 );
+                expect( bytes[ 1 ] ).toBe( -119 );
+
+                // Restore so subsequent tests render against the
+                // bundled defaults (visual baseline expectations).
+                variables.settingSvc.set( "og.color_background", "##1B1E2C", "string" );
+                variables.settingSvc.set( "og.color_highlight",  "##00DBFF", "string" );
+                variables.settingSvc.set( "og.color_title",      "##FFFFFF", "string" );
+                variables.settingSvc.set( "og.color_synopsis",   "##B0B6C8", "string" );
+            } );
+
+            it( "falls back to the bundled logo when og.logo_media_id is 0 (default)", function() {
+                variables.settingSvc.set( "og.logo_media_id", 0, "int" );
+
+                var post = makePost();
+                ogSvc.regenerate( post );
+                trackPath( ogSvc.pathFor( post ) );
+
+                var bytes = variables.cbfs.get( "og" ).getAsBinary( ogSvc.pathFor( post ) );
+                expect( arrayLen( bytes ) ).toBeGTE( 8 );
+                expect( bytes[ 1 ] ).toBe( -119 );
+            } );
+
+            it( "falls back to the bundled logo when og.logo_media_id points at a missing media row", function() {
+                // 9999999 chosen so it's well outside any seeded id.
+                // The drawLogo path catches the empty-result query
+                // and routes to the bundled mark.
+                variables.settingSvc.set( "og.logo_media_id", 9999999, "int" );
+
+                var post = makePost();
+                ogSvc.regenerate( post );
+                trackPath( ogSvc.pathFor( post ) );
+
+                var bytes = variables.cbfs.get( "og" ).getAsBinary( ogSvc.pathFor( post ) );
+                expect( arrayLen( bytes ) ).toBeGTE( 8 );
+                expect( bytes[ 1 ] ).toBe( -119 );
+
+                variables.settingSvc.set( "og.logo_media_id", 0, "int" );
             } );
 
             it( "SeoService falls through to OgImageService.urlFor when no other og:image candidate exists", function() {

@@ -1,0 +1,507 @@
+<bx:script>
+// @startWire
+/**
+ * settings.ogImage — admin form for the generated OG share-card.
+ *
+ * Loads the seven `og.*` settings, lets the admin toggle the master
+ * QR / photo switches, pick a logo from the media library (or fall
+ * back to the bundled bx-Blogger mark), and dial in the four key
+ * colors (background, highlight bar / author name, title text,
+ * synopsis text). Saves through SettingService — which invalidates
+ * the per-key cache AND the page cache so subsequent OG renders
+ * read fresh values.
+ *
+ * Scope decisions:
+ *   - No bulk regeneration. Existing OG images stay frozen at their
+ *     og_version key; new posts and the per-post Regenerate button
+ *     in the editor pick up the new settings.
+ *   - Master toggles are AND-combined with the per-author
+ *     `ogIncludeProfilePhoto` / `ogIncludeSocialsAndUrl` flags,
+ *     not overrides. Help text on the form spells that out.
+ *   - Media picker is restricted to image MIME types and shows the
+ *     60 most recent rows (mirrors wires/themes/options.bxm).
+ */
+
+property name="settingService" inject="SettingService";
+property name="cbauth"         inject="AuthenticationService@cbauth";
+property name="wirebox"        inject="wirebox";
+
+data = {
+    "values" : {
+        "qr_enabled"           : true,
+        "author_photo_enabled" : true,
+        "logo_media_id"        : 0,
+        "color_background"     : "##1B1E2C",
+        "color_highlight"      : "##00DBFF",
+        "color_title"          : "##FFFFFF",
+        "color_synopsis"       : "##B0B6C8"
+    },
+    "showMediaPicker" : false,
+    "pickerSearch"    : "",
+    "flashOk"         : "",
+    "flashError"      : ""
+};
+
+function onMount( event, rc, prc, params ) {
+    loadValues();
+}
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function save() {
+    clearFlashes();
+    if ( !requirePerm() ) return;
+
+    // Normalize hex inputs — HTML5 color input emits `#rrggbb`,
+    // SettingService expects either `#RRGGBB` or `##RRGGBB` (CFML
+    // double-escaped). We persist the latter to match how the
+    // bundled defaults are stored, so an admin who flips between
+    // bundled and custom never sees mixed casing in the DB.
+    var bgVal       = normalizeHex( data.values.color_background ?: "" );
+    var highlightVal = normalizeHex( data.values.color_highlight ?: "" );
+    var titleVal    = normalizeHex( data.values.color_title      ?: "" );
+    var synopsisVal = normalizeHex( data.values.color_synopsis   ?: "" );
+
+    if ( !len( bgVal ) || !len( highlightVal ) || !len( titleVal ) || !len( synopsisVal ) ) {
+        data.flashError = "Each color must be a valid 6-digit hex code (e.g. ##1B1E2C).";
+        return;
+    }
+
+    settingService.set(
+        key         = "og.qr_enabled",
+        value       = !!( data.values.qr_enabled ?: false ),
+        type        = "bool",
+        description = "Master switch for the QR code on generated OG images. ANDs with the per-author 'show socials/URL' preference."
+    );
+    settingService.set(
+        key         = "og.author_photo_enabled",
+        value       = !!( data.values.author_photo_enabled ?: false ),
+        type        = "bool",
+        description = "Master switch for the author photo on generated OG images. ANDs with the per-author 'show profile photo' preference."
+    );
+    settingService.set(
+        key         = "og.logo_media_id",
+        value       = val( data.values.logo_media_id ?: 0 ),
+        type        = "int",
+        description = "Media row id of the logo shown top-left on generated OG images. 0 = use the bundled bx-Blogger default mark."
+    );
+    settingService.set( key = "og.color_background", value = bgVal,        type = "string", description = "Background fill color for generated OG images (hex)." );
+    settingService.set( key = "og.color_highlight",  value = highlightVal, type = "string", description = "Highlight color: bottom accent bar and the 'by {author}' text (hex)." );
+    settingService.set( key = "og.color_title",      value = titleVal,     type = "string", description = "Title text color on generated OG images (hex)." );
+    settingService.set( key = "og.color_synopsis",   value = synopsisVal,  type = "string", description = "Synopsis / excerpt / email / URL text color on generated OG images (hex)." );
+
+    loadValues();
+    data.flashOk = "OG image settings saved. New share cards will use these values; existing cards stay as-is until you regenerate them per post.";
+}
+
+function resetToDefaults() {
+    clearFlashes();
+    if ( !requirePerm() ) return;
+
+    data.values = {
+        "qr_enabled"           : true,
+        "author_photo_enabled" : true,
+        "logo_media_id"        : 0,
+        "color_background"     : "##1B1E2C",
+        "color_highlight"      : "##00DBFF",
+        "color_title"          : "##FFFFFF",
+        "color_synopsis"       : "##B0B6C8"
+    };
+    save();
+}
+
+// --------------------------------------------------------------------
+// Media picker (logo selection)
+// --------------------------------------------------------------------
+
+function openMediaPicker() {
+    data.pickerSearch    = "";
+    data.showMediaPicker = true;
+}
+
+function closeMediaPicker() {
+    data.showMediaPicker = false;
+}
+
+function selectMedia( required numeric id ) {
+    data.values.logo_media_id = arguments.id;
+    closeMediaPicker();
+}
+
+function clearLogo() {
+    data.values.logo_media_id = 0;
+}
+
+/**
+ * Gallery rows for the picker modal — image MIME types only, 60
+ * most recent first. Search filters filename / alt-text / title
+ * with a substring LIKE.
+ */
+array function pickerRows() {
+    var qb = wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+        .from( "media" )
+        .whereNull( "deleted_at" )
+        .where( "mime_type", "like", "image/%" );
+    if ( len( trim( data.pickerSearch ) ) ) {
+        var q = "%" & trim( data.pickerSearch ) & "%";
+        qb.where( function( w ) {
+            w.where( "original_filename", "like", q )
+             .orWhere( "alt_text",          "like", q )
+             .orWhere( "title",             "like", q );
+        } );
+    }
+    return qb.orderBy( "created_at", "desc" ).limit( 60 ).get();
+}
+
+// --------------------------------------------------------------------
+// View helpers
+// --------------------------------------------------------------------
+
+/**
+ * Public URL for the currently-selected logo media row, or an
+ * empty string when the admin hasn't picked one (use the bundled
+ * default in that case).
+ */
+string function selectedLogoUrl() {
+    var id = val( data.values.logo_media_id ?: 0 );
+    if ( id <= 0 ) return "";
+    try {
+        var m = wirebox.getInstance( "Media" ).find( id );
+        if ( isNull( m ) ) return "";
+        return wirebox.getInstance( "MediaService" ).urlFor( m );
+    }
+    catch ( any e ) {
+        return "";
+    }
+}
+
+/**
+ * Filename for the currently-selected logo media row, for display
+ * in the small caption under the logo preview.
+ */
+string function selectedLogoFilename() {
+    var id = val( data.values.logo_media_id ?: 0 );
+    if ( id <= 0 ) return "";
+    try {
+        var m = wirebox.getInstance( "Media" ).find( id );
+        if ( isNull( m ) ) return "";
+        return m.getOriginalFilename() ?: "";
+    }
+    catch ( any e ) {
+        return "";
+    }
+}
+
+// --------------------------------------------------------------------
+// Private
+// --------------------------------------------------------------------
+
+private void function loadValues() {
+    data.values.qr_enabled           = !!settingService.get( "og.qr_enabled",           true     );
+    data.values.author_photo_enabled = !!settingService.get( "og.author_photo_enabled", true     );
+    data.values.logo_media_id        = val( settingService.get( "og.logo_media_id",     0        ) );
+    data.values.color_background     = settingService.get( "og.color_background", "##1B1E2C" );
+    data.values.color_highlight      = settingService.get( "og.color_highlight",  "##00DBFF" );
+    data.values.color_title          = settingService.get( "og.color_title",      "##FFFFFF" );
+    data.values.color_synopsis       = settingService.get( "og.color_synopsis",   "##B0B6C8" );
+}
+
+private void function clearFlashes() {
+    data.flashOk    = "";
+    data.flashError = "";
+}
+
+private boolean function requirePerm() {
+    var user = cbauth.getUser();
+    if ( user.hasPermission( "settings.manage" ) ) return true;
+    data.flashError = "You don't have permission to edit settings.";
+    return false;
+}
+
+/**
+ * Accept `#RRGGBB`, `##RRGGBB`, or bare `RRGGBB` and emit the
+ * `##RRGGBB` shape we persist. Empty / malformed input returns
+ * empty string so save() can flag the error.
+ */
+private string function normalizeHex( required string raw ) {
+    var s = trim( arguments.raw );
+    if ( !len( s ) ) return "";
+    // `##` inside a double-quoted CFML string is one literal `#`.
+    // The regex below matches one or more leading literal `#` chars
+    // so `#abc123` and `##abc123` both reduce to `abc123`.
+    s = reReplace( s, "^##+", "", "one" );
+    if ( !reFind( "^[0-9a-fA-F]{6}$", s ) ) return "";
+    return "##" & uCase( s );
+}
+
+/**
+ * Hex value rendered into the `<input type="color">` value
+ * attribute. The browser requires `#rrggbb`. Stored values already
+ * carry one leading `#` (the seed migration writes them that way);
+ * this guard is just so a hand-edited DB row missing the `#`
+ * still renders sensibly.
+ */
+string function colorInputValue( required string stored ) {
+    var s = trim( arguments.stored );
+    if ( !len( s ) ) return "##000000";
+    if ( left( s, 1 ) == "##" ) return s;
+    return "##" & s;
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<div>
+    <bx:if len( args.flashOk )>
+        <div class="alert alert-success alert-dismissible">
+            #encodeForHTML( args.flashOk )#
+            <button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+        </div>
+    </bx:if>
+    <bx:if len( args.flashError )>
+        <div class="alert alert-danger alert-dismissible">
+            #encodeForHTML( args.flashError )#
+            <button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+        </div>
+    </bx:if>
+
+    <form wire:submit.prevent="save">
+        <div class="row g-4">
+
+            <!-- Toggles -->
+            <div class="col-12 col-xl-6">
+                <div class="card stat-card stat-card-info">
+                    <div class="card-header card-header-soft card-header-soft-info">
+                        <span class="h6 mb-0">Toggles</span>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted small mb-3">
+                            Master switches. Each one ANDs with the matching per-author
+                            preference set on <code>/admin/account</code>, so flipping a
+                            switch off here suppresses it across every author regardless
+                            of their personal choice.
+                        </p>
+
+                        <div class="form-check form-switch mb-3">
+                            <input type="checkbox"
+                                   class="form-check-input"
+                                   id="og-qr-enabled"
+                                   wire:model.blur="values.qr_enabled">
+                            <label class="form-check-label" for="og-qr-enabled">
+                                Show QR code (top-right)
+                            </label>
+                            <div class="form-text small">
+                                When on, the post URL is encoded as a QR code in the
+                                top-right corner — but only for authors who have also
+                                enabled &ldquo;Show socials and URL&rdquo; on their
+                                account.
+                            </div>
+                        </div>
+
+                        <div class="form-check form-switch mb-0">
+                            <input type="checkbox"
+                                   class="form-check-input"
+                                   id="og-author-photo"
+                                   wire:model.blur="values.author_photo_enabled">
+                            <label class="form-check-label" for="og-author-photo">
+                                Show author profile photo
+                            </label>
+                            <div class="form-text small">
+                                When on, the author&rsquo;s profile photo is drawn next
+                                to their name — but only for authors who have also
+                                enabled &ldquo;Show profile photo&rdquo; on their
+                                account AND have a photo on file.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Logo -->
+            <div class="col-12 col-xl-6">
+                <div class="card stat-card stat-card-info">
+                    <div class="card-header card-header-soft card-header-soft-info">
+                        <span class="h6 mb-0">Logo (top-left)</span>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted small mb-3">
+                            Pick any image from the media library. Leave it empty (or
+                            click &ldquo;Use default&rdquo;) to fall back to the
+                            bundled bx-Blogger mark.
+                        </p>
+
+                        <bx:script>
+                            logoUrl  = selectedLogoUrl();
+                            logoName = selectedLogoFilename();
+                        </bx:script>
+
+                        <div class="d-flex align-items-start gap-3">
+                            <div style="width: 120px; height: 120px; flex-shrink: 0;
+                                        background: ##f4f4f5;
+                                        border: 1px dashed ##ced4da;
+                                        border-radius: .375rem;
+                                        display: flex; align-items: center; justify-content: center;
+                                        overflow: hidden;">
+                                <bx:if len( logoUrl )>
+                                    <img src="#logoUrl#"
+                                         alt="OG image logo"
+                                         style="max-width: 100%; max-height: 100%; object-fit: contain;">
+                                <bx:else>
+                                    <i class="bi bi-image text-muted" style="font-size: 2rem;" aria-hidden="true"></i>
+                                </bx:if>
+                            </div>
+                            <div class="d-flex flex-column gap-2">
+                                <button type="button" class="btn btn-sm btn-primary"
+                                        wire:click="openMediaPicker">
+                                    <i class="bi bi-images" aria-hidden="true"></i>
+                                    <bx:if val( args.values.logo_media_id ?: 0 ) gt 0>Replace logo<bx:else>Pick from media library</bx:if>
+                                </button>
+                                <bx:if val( args.values.logo_media_id ?: 0 ) gt 0>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary"
+                                            wire:click="clearLogo">
+                                        <i class="bi bi-x-circle" aria-hidden="true"></i> Use default
+                                    </button>
+                                    <bx:if len( logoName )>
+                                        <small class="text-muted text-truncate" style="max-width: 18rem;">
+                                            #encodeForHTML( logoName )#
+                                        </small>
+                                    </bx:if>
+                                </bx:if>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Colors -->
+            <div class="col-12">
+                <div class="card stat-card stat-card-info">
+                    <div class="card-header card-header-soft card-header-soft-info">
+                        <span class="h6 mb-0">Colors</span>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted small mb-3">
+                            Six-digit hex codes. The color picker emits
+                            <code>##rrggbb</code>; the paired text input lets you paste
+                            an exact value if you have a brand swatch handy.
+                        </p>
+
+                        <div class="row g-3">
+                            <bx:loop array="#[
+                                { key: 'color_background', label: 'Background',                  caption: 'Canvas fill color behind everything else.' },
+                                { key: 'color_highlight',  label: 'Highlight bar &amp; author', caption: 'Bottom 12px accent bar and the &ldquo;by {author}&rdquo; line.' },
+                                { key: 'color_title',      label: 'Title text',                  caption: 'Post title typography.' },
+                                { key: 'color_synopsis',   label: 'Synopsis &amp; meta text',    caption: 'Excerpt, email, and URL line.' }
+                            ]#" item="c">
+                                <div class="col-12 col-md-6 col-xl-3">
+                                    <label for="og-#c.key#" class="form-label">#c.label#</label>
+                                    <div class="input-group" style="max-width: 16rem;">
+                                        <input type="color"
+                                               class="form-control form-control-color"
+                                               id="og-#c.key#"
+                                               wire:model.blur="values.#c.key#"
+                                               value="#encodeForHTMLAttribute( colorInputValue( args.values[ c.key ] ?: '' ) )#">
+                                        <input type="text"
+                                               class="form-control"
+                                               aria-label="Hex value"
+                                               wire:model.blur="values.#c.key#"
+                                               pattern="##[0-9a-fA-F]{6}"
+                                               placeholder="##000000">
+                                    </div>
+                                    <div class="form-text small">#c.caption#</div>
+                                </div>
+                            </bx:loop>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Save row + regen note -->
+            <div class="col-12">
+                <div class="alert alert-secondary small mb-3">
+                    <strong>About existing share cards.</strong>
+                    Saving these settings only affects OG images generated <em>after</em>
+                    the change. Existing cards stay frozen at their previous look until
+                    you open a post and click the <strong>Regenerate OG image</strong>
+                    button on the editor.
+                </div>
+                <div class="d-flex gap-2">
+                    <button type="submit" class="btn btn-primary">Save settings</button>
+                    <button type="button"
+                            class="btn btn-outline-danger"
+                            wire:click="resetToDefaults"
+                            wire:confirm="Reset every OG image setting back to its bundled default?">
+                        Reset to defaults
+                    </button>
+                </div>
+            </div>
+
+        </div>
+    </form>
+
+    <!-- Media-library picker modal -->
+    <bx:if args.showMediaPicker>
+        <div class="modal show d-block" tabindex="-1" role="dialog"
+             style="background: rgba(0,0,0,.5);">
+            <div class="modal-dialog modal-xl modal-dialog-scrollable" role="document">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Pick logo from media library</h5>
+                        <button type="button" class="btn-close"
+                                wire:click="closeMediaPicker"
+                                aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <input type="search"
+                               class="form-control mb-3"
+                               placeholder="Search filename, alt text, or title…"
+                               wire:model.live.debounce.300ms="pickerSearch">
+                        <bx:script>
+                            rows = pickerRows();
+                        </bx:script>
+                        <bx:if !rows.len()>
+                            <p class="text-muted text-center py-4 mb-0">No matching media found.</p>
+                        <bx:else>
+                            <div class="row g-3">
+                                <bx:loop array="#rows#" item="m">
+                                    <div class="col-6 col-md-4 col-lg-3">
+                                        <button type="button"
+                                                class="btn btn-light w-100 p-2 border"
+                                                wire:click="selectMedia(#m.id#)"
+                                                style="height: 200px; overflow: hidden;">
+                                            <bx:script>
+                                                mediaUrl = "";
+                                                try {
+                                                    mediaEnt = wirebox.getInstance( "Media" ).find( m.id );
+                                                    if ( !isNull( mediaEnt ) ) mediaUrl = wirebox.getInstance( "MediaService" ).urlFor( mediaEnt );
+                                                } catch ( any e ) { mediaUrl = ""; }
+                                            </bx:script>
+                                            <div style="height: 130px; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+                                                <bx:if len( mediaUrl )>
+                                                    <img src="#mediaUrl#"
+                                                         alt="#encodeForHTMLAttribute( m.alt_text ?: '' )#"
+                                                         style="max-width: 100%; max-height: 100%; object-fit: contain;">
+                                                </bx:if>
+                                            </div>
+                                            <small class="d-block text-truncate text-muted mt-2"
+                                                   style="font-size: .75rem;">
+                                                #encodeForHTML( m.original_filename )#
+                                            </small>
+                                        </button>
+                                    </div>
+                                </bx:loop>
+                            </div>
+                        </bx:if>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-outline-secondary"
+                                wire:click="closeMediaPicker">Cancel</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </bx:if>
+</div>
+</bx:output>

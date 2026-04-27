@@ -36,6 +36,12 @@ class {
         // sidebar links to and what we want operators to bookmark.
         route( "ai-prompts" ).to( "AiPrompts.index" );
 
+        // Same hyphenation reason: /admin/settings/og-image needs an
+        // explicit route to reach Settings.ogImage. The all-lowercase
+        // /admin/settings/ogimage works conventionally too, but the
+        // hyphenated URL is what the sidebar uses.
+        route( "settings/og-image" ).to( "Settings.ogImage" );
+
         // Phase UX — self-service account lives inside the admin shell
         // (previously /account at the app root). Specific sub-routes
         // first so the base /admin/account GET/POST pair doesn't

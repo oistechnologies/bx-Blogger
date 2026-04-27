@@ -10,25 +10,32 @@
  *
  * Composition (1200×630):
  *
- *   Top-left   — site logo (when /includes/public/branding/
- *                logo-mark-light.png exists)
- *   Top-right  — site name (text)
+ *   Top-left   — site logo (configurable via `og.logo_media_id`;
+ *                falls back to /includes/public/branding/
+ *                logo-mark-light.png when unset or media missing)
+ *   Top-right  — QR code linking to the post URL (only when both
+ *                the global `og.qr_enabled` setting and the author's
+ *                `ogIncludeSocialsAndUrl` are on)
  *   Center     — title (bold, wrapped to 2 lines, ellipsized on
- *                overflow)
+ *                overflow), with optional excerpt below
  *   Bottom-left — author block:
- *                   * profile photo (64×64, only when
- *                     ogIncludeProfilePhoto is on AND the user has
- *                     a photo on file)
+ *                   * profile photo (74×74, top-aligned to the name
+ *                     line; only when both the global
+ *                     `og.author_photo_enabled` setting and the
+ *                     author's `ogIncludeProfilePhoto` are on AND
+ *                     the user has a photo on file)
  *                   * "by {display_name}"
  *                   * email line (only when ogIncludeEmail is on)
- *   Bottom-right — post URL text + QR code pair (only when
- *                  ogIncludeSocialsAndUrl is on; QR comes in 4b)
+ *                   * URL text below (only when QR is showing)
  *   Bottom edge  — accent bar (12px, full width)
  *
  * Each "include …" toggle is a per-author preference set on
  * /admin/account; an author with all three off ships a clean
- * title-card render. The toggles ALSO govern what shows on the
- * public author page — same set of switches, two surfaces.
+ * title-card render. The QR + author-photo toggles are gated by
+ * site-wide master switches in /admin/settings/og-image so an admin
+ * can suppress them across the board regardless of author choice.
+ * The author preferences ALSO govern what shows on the public
+ * author page — same set of switches, two surfaces.
  *
  * Service is a WireBox singleton. Renders happen on the cbq worker
  * thread (via OgImageJob) so HTTP threads never wait on Java2D.
@@ -47,21 +54,28 @@ class accessors="true" singleton {
     variables.logoMaxWidth   = 96;
     variables.logoMaxHeight  = 96;
     variables.titleMaxChars  = 160;
+    // Default colors used when the matching `og.*` setting is empty
+    // or unset. Each draw call pulls the live value from the render
+    // context — these constants exist so the seed migration and any
+    // "reset to defaults" path have a single source of truth.
     variables.bgColorHex     = "##1B1E2C";
     variables.fgColorHex     = "##FFFFFF";
     variables.fgMutedHex     = "##B0B6C8";
     variables.accentColorHex = "##00DBFF";
-    variables.authorPhotoSize = 64;
+    // ~15% bigger than the prior 64×64. The author block lays out
+    // the photo top-aligned with the top of the name line, so the
+    // larger size still fits the bottom safe zone cleanly.
+    variables.authorPhotoSize = 74;
     // Vertical gap between the email line and the name line above
     // it when both are drawn. Pure visual breathing room.
     variables.authorLineGap   = 12;
 
-    // QR (bottom-right) — only drawn when the author's
-    // ogIncludeSocialsAndUrl preference is on. Pixel-per-module +
-    // quiet-zone tuned to land roughly 25% smaller than the original
-    // (6 px / 12 px) sizing while still being phone-scannable from
-    // typical share-card viewing distance.
-    variables.qrModulePixels  = 5;     // pixel width per QR module
+    // QR (top-right) — only drawn when both `og.qr_enabled` and the
+    // author's `ogIncludeSocialsAndUrl` preference are on. Module
+    // size auto-scales to land within `qrTargetSize` regardless of
+    // URL length so the visual footprint is consistent across posts.
+    variables.qrTargetSize    = 140;   // outer block size in px (incl. quiet zone)
+    variables.qrTopGap        = 32;    // breathing room from QR bottom to title top
     variables.qrQuietZonePx   = 8;     // white border around the QR
 
     // URL text (bottom-left) — sits BELOW the author block, left-
@@ -172,18 +186,20 @@ class accessors="true" singleton {
             g.setRenderingHint( RenderingHints.KEY_RENDERING,         RenderingHints.VALUE_RENDER_QUALITY    );
 
             // Background
-            g.setColor( decodeColor( Color, variables.bgColorHex ) );
+            g.setColor( decodeColor( Color, ctx.bgHex ) );
             g.fillRect( 0, 0, variables.canvasWidth, variables.canvasHeight );
 
-            // Bottom accent bar (cyan, 12px)
-            g.setColor( decodeColor( Color, variables.accentColorHex ) );
+            // Bottom accent / highlight bar (12px)
+            g.setColor( decodeColor( Color, ctx.highlightHex ) );
             g.fillRect( 0, variables.canvasHeight - 12, variables.canvasWidth, 12 );
 
-            drawTitle(    g, Font, Color, ctx );
-            drawSiteName( g, Font, Color, ctx );
-            drawLogo(     g, ImageIO );
+            // QR drawn before title so the title's safe-zone math can
+            // assume the QR's vertical footprint is reserved.
+            drawQr(          g, Color, ctx );
+            drawTitle(       g, Font, Color, ctx );
+            drawLogo(        g, ImageIO, ctx );
             drawAuthorBlock( g, Font, Color, ImageIO, ctx );
-            drawUrlAndQr(    g, Font, Color, ctx );
+            drawUrlText(     g, Font, Color, ctx );
 
             var baos = BAOS.init();
             ImageIO.write( img, "png", baos );
@@ -203,14 +219,29 @@ class accessors="true" singleton {
         var author     = arguments.post.getAuthor();
         var hasAuthor  = !isNull( author );
 
-        var siteName   = trim( settingService.get( "site_name", "" ) );
-        if ( !len( siteName ) ) siteName = trim( settingService.get( "AppName", "" ) );
+        // Site-wide OG image settings. Master switches AND-combine
+        // with the per-author preferences below so an admin can
+        // suppress QR / photo across the board regardless of author
+        // choice. Color settings fall back to the bundled defaults
+        // when empty, so an out-of-the-box install renders the same
+        // dark navy + cyan card it always has.
+        var globalQrEnabled    = !!settingService.get( "og.qr_enabled",           true  );
+        var globalPhotoEnabled = !!settingService.get( "og.author_photo_enabled", true  );
+        var logoMediaId        = val( settingService.get( "og.logo_media_id",     0     ) );
+        var bgHex              = trim( settingService.get( "og.color_background", "" ) );
+        var highlightHex       = trim( settingService.get( "og.color_highlight",  "" ) );
+        var titleHex           = trim( settingService.get( "og.color_title",      "" ) );
+        var synopsisHex        = trim( settingService.get( "og.color_synopsis",   "" ) );
+        if ( !len( bgHex        ) ) bgHex        = variables.bgColorHex;
+        if ( !len( highlightHex ) ) highlightHex = variables.accentColorHex;
+        if ( !len( titleHex     ) ) titleHex     = variables.fgColorHex;
+        if ( !len( synopsisHex  ) ) synopsisHex  = variables.fgMutedHex;
 
         // Author preferences with safe defaults — a post with a
         // deleted/missing author still renders a clean title card.
-        var includePhoto    = hasAuthor && !!author.getOgIncludeProfilePhoto();
+        var includePhoto    = globalPhotoEnabled && hasAuthor && !!author.getOgIncludeProfilePhoto();
         var includeEmail    = hasAuthor && !!author.getOgIncludeEmail();
-        var includeSocials  = hasAuthor && !!author.getOgIncludeSocialsAndUrl();
+        var includeSocials  = globalQrEnabled    && hasAuthor && !!author.getOgIncludeSocialsAndUrl();
 
         // Decide whether to attempt a profile-photo read. We don't
         // resolve bytes here — that happens in drawAuthorBlock
@@ -223,7 +254,6 @@ class accessors="true" singleton {
             "post"             : arguments.post,
             "title"            : arguments.post.getTitle() ?: "",
             "excerpt"          : trim( arguments.post.getExcerpt() ?: "" ),
-            "siteName"         : siteName,
             "author"           : hasAuthor ? author : javaCast( "null", "" ),
             "authorName"       : hasAuthor ? ( author.getDisplayName() ?: "" ) : "",
             "authorEmail"      : hasAuthor ? ( author.getEmail() ?: "" ) : "",
@@ -232,7 +262,12 @@ class accessors="true" singleton {
             "includeSocials"   : includeSocials,
             "hasUsablePhoto"   : hasUsablePhoto,
             "profilePhotoKey"  : hasUsablePhoto ? author.getProfilePhotoPath() : "",
-            "postUrl"          : buildPostUrl( arguments.post )
+            "postUrl"          : buildPostUrl( arguments.post ),
+            "logoMediaId"      : logoMediaId,
+            "bgHex"            : bgHex,
+            "highlightHex"     : highlightHex,
+            "titleHex"         : titleHex,
+            "synopsisHex"      : synopsisHex
         };
     }
 
@@ -257,17 +292,16 @@ class accessors="true" singleton {
 
     /**
      * Title (bold, 64 pt, up to 2 lines) — and an optional excerpt
-     * line block (regular, 22 pt, muted color, up to 2 lines) drawn
-     * directly below when the post has one.
+     * line block (regular, 22 pt, synopsis color, up to 2 lines)
+     * drawn directly below when the post has one.
      *
      * Vertical layout: the combined title-+-excerpt block is centered
      * within a SAFE ZONE between the top of the canvas (clear of the
-     * logo + site name) and the top of the bottom row (clear of the
-     * author block + URL + QR). Centering against the whole canvas
-     * pushed long excerpts down into the bottom row; this keeps the
-     * combined block firmly in the middle band regardless of length.
-     * When no excerpt is present, the prior canvas-centered geometry
-     * is preserved.
+     * logo on the left and the QR on the right, whichever is taller)
+     * and the top of the bottom row (clear of the author block + URL
+     * line). The QR-zone reservation only kicks in when QR is
+     * actually drawn so a card without QR uses the smaller logo-only
+     * top reservation and centers higher.
      */
     private void function drawTitle( required any g, required any Font, required any Color, required struct ctx ) {
         var titleText = left( arguments.ctx.title, variables.titleMaxChars );
@@ -296,25 +330,25 @@ class accessors="true" singleton {
         }
 
         var combinedHeight = titleBlockH + ( hasExcerpt ? ( excerptGap + excerptBlockH ) : 0 );
-        var blockTopY      = 0;
-        if ( hasExcerpt ) {
-            // Center within the safe zone — top reserved for logo +
-            // site name, bottom reserved for author/URL/QR row.
-            var topReserved    = variables.paddingY + variables.logoMaxHeight + 16;
-            var bottomReserved = variables.paddingY + variables.urlLineReserve + variables.authorPhotoSize + 24;
-            var safeZoneTop    = topReserved;
-            var safeZoneBot    = variables.canvasHeight - bottomReserved;
-            var safeHeight     = safeZoneBot - safeZoneTop;
-            blockTopY          = safeZoneTop + int( ( safeHeight - combinedHeight ) / 2 );
-        } else {
-            // No excerpt — preserve the original canvas-centered title
-            // geometry pixel-for-pixel.
-            blockTopY = int( ( variables.canvasHeight - combinedHeight ) / 2 );
-        }
+
+        // Safe zone: top reserved for whichever of logo / QR is
+        // taller (plus a comfortable gap), bottom reserved for the
+        // author / URL row. The QR-zone reservation only kicks in
+        // when QR is actually drawn so a card without QR uses the
+        // smaller logo-only top reservation and centers higher.
+        var qrZoneHeight   = ( arguments.ctx.includeSocials && len( arguments.ctx.postUrl ) )
+            ? variables.qrTargetSize : 0;
+        var topZoneHeight  = max( variables.logoMaxHeight, qrZoneHeight );
+        var topReserved    = variables.paddingY + topZoneHeight + variables.qrTopGap;
+        var bottomReserved = variables.paddingY + variables.urlLineReserve + variables.authorPhotoSize + 24;
+        var safeZoneTop    = topReserved;
+        var safeZoneBot    = variables.canvasHeight - bottomReserved;
+        var safeHeight     = safeZoneBot - safeZoneTop;
+        var blockTopY      = safeZoneTop + int( ( safeHeight - combinedHeight ) / 2 );
 
         // Draw title.
         arguments.g.setFont( titleFont );
-        arguments.g.setColor( decodeColor( arguments.Color, variables.fgColorHex ) );
+        arguments.g.setColor( decodeColor( arguments.Color, arguments.ctx.titleHex ) );
         var titleBaseY = blockTopY + titleFm.getAscent();
         for ( var i = 1; i <= arrayLen( titleLines ); i++ ) {
             arguments.g.drawString(
@@ -328,7 +362,7 @@ class accessors="true" singleton {
 
         // Draw excerpt block below the title.
         arguments.g.setFont( excerptFont );
-        arguments.g.setColor( decodeColor( arguments.Color, variables.fgMutedHex ) );
+        arguments.g.setColor( decodeColor( arguments.Color, arguments.ctx.synopsisHex ) );
         var excerptBaseY = blockTopY + titleBlockH + excerptGap + arguments.g.getFontMetrics().getAscent();
         for ( var j = 1; j <= arrayLen( excerptLines ); j++ ) {
             arguments.g.drawString(
@@ -339,26 +373,50 @@ class accessors="true" singleton {
         }
     }
 
-    private void function drawSiteName( required any g, required any Font, required any Color, required struct ctx ) {
-        if ( !len( arguments.ctx.siteName ) ) return;
-        var siteFont = arguments.Font.init( "SansSerif", arguments.Font.PLAIN, 28 );
-        arguments.g.setFont( siteFont );
-        arguments.g.setColor( decodeColor( arguments.Color, variables.fgColorHex ) );
-        var fm = arguments.g.getFontMetrics();
-        var w  = fm.stringWidth( arguments.ctx.siteName );
-        arguments.g.drawString(
-            arguments.ctx.siteName,
-            variables.canvasWidth - variables.paddingX - w,
-            variables.paddingY + fm.getAscent()
-        );
-    }
-
-    private void function drawLogo( required any g, required any ImageIO ) {
+    /**
+     * Top-left logo. When `og.logo_media_id` is set, load that media
+     * row's bytes from the `media` cbfs disk (works for both Local
+     * and S3-backed installs via the same readPhotoBytes helper used
+     * for author photos). Falls back silently to the bundled
+     * bx-Blogger mark on any failure — missing row, deleted file,
+     * unreadable bytes — so a misconfigured logo never blocks
+     * rendering.
+     */
+    private void function drawLogo( required any g, required any ImageIO, required struct ctx ) {
         try {
-            var logoPath = expandPath( "/includes/public/branding/logo-mark-light.png" );
-            if ( !fileExists( logoPath ) ) return;
-            var logoImg = arguments.ImageIO.read( createObject( "java", "java.io.File" ).init( logoPath ) );
-            if ( isNull( logoImg ) ) return;
+            var logoImg = "";
+
+            // 1) Try the configured media row, if any.
+            var mediaId = val( arguments.ctx.logoMediaId ?: 0 );
+            if ( mediaId > 0 ) {
+                try {
+                    var mediaPath = wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "media" )
+                        .where( "id", mediaId )
+                        .whereNull( "deleted_at" )
+                        .value( "path" );
+                    if ( !isNull( mediaPath ) && len( mediaPath ) ) {
+                        var mediaBytes = readPhotoBytes( mediaPath );
+                        if ( !isNull( mediaBytes ) && isBinary( mediaBytes ) ) {
+                            var bais = createObject( "java", "java.io.ByteArrayInputStream" ).init( mediaBytes );
+                            logoImg = arguments.ImageIO.read( bais );
+                            bais.close();
+                        }
+                    }
+                }
+                catch ( any inner ) {
+                    log.debug( "OgImageService: configured logo media id=" & mediaId & " unreadable — " & inner.message );
+                }
+            }
+
+            // 2) Bundled default fallback.
+            if ( isSimpleValue( logoImg ) || isNull( logoImg ) ) {
+                var logoPath = expandPath( "/includes/public/branding/logo-mark-light.png" );
+                if ( !fileExists( logoPath ) ) return;
+                logoImg = arguments.ImageIO.read( createObject( "java", "java.io.File" ).init( logoPath ) );
+                if ( isNull( logoImg ) ) return;
+            }
+
             var lw = logoImg.getWidth();
             var lh = logoImg.getHeight();
             var scale = min(
@@ -402,6 +460,23 @@ class accessors="true" singleton {
             - ( willDrawUrl ? variables.urlLineReserve : 0 );
         var nameX       = variables.paddingX;
 
+        // Compute the name-line baseline UPFRONT so we can top-align
+        // the optional profile photo with the top of the name line.
+        // The current font's ascent (set on g below) tells us how far
+        // above the baseline glyph caps reach — that's where the
+        // photo's top edge should sit.
+        var nameBaseline = baselineY;
+        if ( arguments.ctx.includeEmail && len( arguments.ctx.authorEmail ) ) {
+            arguments.g.setFont( emailFont );
+            var efmPre = arguments.g.getFontMetrics();
+            // Email line will sit at baselineY; push name up by one
+            // email-line height plus the configured gap.
+            nameBaseline = baselineY - efmPre.getHeight() - variables.authorLineGap;
+        }
+        arguments.g.setFont( nameFont );
+        var nameFm     = arguments.g.getFontMetrics();
+        var nameAscent = nameFm.getAscent();
+
         // Optional profile photo — sits to the LEFT of the text block,
         // shifts text rightward by photoSize + gap. Photo bytes are
         // fetched via `readPhotoBytes()` rather than cbfs.getAsBinary
@@ -422,7 +497,8 @@ class accessors="true" singleton {
                     bais.close();
                     if ( !isNull( photoImg ) ) {
                         var photoSize = variables.authorPhotoSize;
-                        var photoY    = baselineY - photoSize + 8;
+                        // Top of photo aligns with top of name glyph cap.
+                        var photoY    = nameBaseline - nameAscent;
                         arguments.g.drawImage(
                             photoImg,
                             variables.paddingX,
@@ -440,61 +516,51 @@ class accessors="true" singleton {
             }
         }
 
-        // Email line first when enabled, drawn BELOW the name baseline.
-        var nameBaseline = baselineY;
+        // Email line in synopsis color, drawn first (below the name).
         if ( arguments.ctx.includeEmail && len( arguments.ctx.authorEmail ) ) {
             arguments.g.setFont( emailFont );
-            arguments.g.setColor( decodeColor( arguments.Color, variables.fgMutedHex ) );
-            var efm = arguments.g.getFontMetrics();
+            arguments.g.setColor( decodeColor( arguments.Color, arguments.ctx.synopsisHex ) );
             arguments.g.drawString( arguments.ctx.authorEmail, nameX, baselineY );
-            // Push the name baseline up by one full email-line height
-            // PLUS the configured gap so the two lines breathe.
-            nameBaseline = baselineY - efm.getHeight() - variables.authorLineGap;
         }
 
-        // Name line in cyan accent.
+        // Name line in highlight color (accent).
         if ( len( arguments.ctx.authorName ) ) {
             arguments.g.setFont( nameFont );
-            arguments.g.setColor( decodeColor( arguments.Color, variables.accentColorHex ) );
+            arguments.g.setColor( decodeColor( arguments.Color, arguments.ctx.highlightHex ) );
             arguments.g.drawString( "by " & arguments.ctx.authorName, nameX, nameBaseline );
         }
     }
 
     /**
-     * QR code (bottom-right) + URL text (bottom-left, below the
-     * author block). Drawn only when the author has
-     * `ogIncludeSocialsAndUrl` on AND the post URL resolved.
-     *
-     * Layout decisions:
-     *   - QR sits in the bottom-right corner with a quiet-zone white
-     *     background for high contrast + phone-scan reliability.
-     *   - URL text is left-aligned with the photo (or the author
-     *     name when no photo) and lives BELOW the author block at
-     *     y = canvasHeight - paddingY. drawAuthorBlock has already
-     *     shifted itself up by `urlLineReserve` so the two stack.
-     *   - Long URLs ellipsize before they would hit the QR's left
-     *     edge.
+     * Top-right QR code. Drawn only when both `og.qr_enabled` and the
+     * author's `ogIncludeSocialsAndUrl` are on AND the post URL
+     * resolved. Module size auto-scales so the visible block stays
+     * within `qrTargetSize` regardless of URL length — short URLs
+     * yield bigger modules, long ones yield smaller, but the box
+     * footprint stays consistent across cards.
      */
-    private void function drawUrlAndQr( required any g, required any Font, required any Color, required struct ctx ) {
+    private void function drawQr( required any g, required any Color, required struct ctx ) {
         if ( !arguments.ctx.includeSocials ) return;
         if ( !len( arguments.ctx.postUrl ) ) return;
 
         try {
-            // ---- QR code, bottom-right ----
-            var QrCode    = createObject( "java", "io.nayuki.qrcodegen.QrCode" );
-            var Ecc       = createObject( "java", "io.nayuki.qrcodegen.QrCode$Ecc" );
-            var qr        = QrCode.encodeText( arguments.ctx.postUrl, Ecc.MEDIUM );
+            var QrCode = createObject( "java", "io.nayuki.qrcodegen.QrCode" );
+            var Ecc    = createObject( "java", "io.nayuki.qrcodegen.QrCode$Ecc" );
+            var qr     = QrCode.encodeText( arguments.ctx.postUrl, Ecc.MEDIUM );
 
-            var modules    = qr.size;
-            var modulePx   = variables.qrModulePixels;
-            var quiet      = variables.qrQuietZonePx;
-            var qrPixels   = modules * modulePx;
-            var blockSize  = qrPixels + ( 2 * quiet );
+            var modules = qr.size;
+            var quiet   = variables.qrQuietZonePx;
+            // Pick the largest module pixel count that still fits the
+            // target box (incl. quiet zone). Floor-divide; min 2 px so
+            // a giant URL doesn't degenerate into 0-px modules.
+            var availForModules = variables.qrTargetSize - ( 2 * quiet );
+            var modulePx        = max( 2, int( availForModules / modules ) );
+            var qrPixels        = modules * modulePx;
+            var blockSize       = qrPixels + ( 2 * quiet );
 
-            var blockRight  = variables.canvasWidth  - variables.paddingX;
-            var blockBottom = variables.canvasHeight - variables.paddingY;
-            var blockLeft   = blockRight  - blockSize;
-            var blockTop    = blockBottom - blockSize;
+            var blockRight  = variables.canvasWidth - variables.paddingX;
+            var blockTop    = variables.paddingY;
+            var blockLeft   = blockRight - blockSize;
 
             arguments.g.setColor( decodeColor( arguments.Color, "##FFFFFF" ) );
             arguments.g.fillRoundRect(
@@ -518,17 +584,32 @@ class accessors="true" singleton {
                     }
                 }
             }
+        }
+        catch ( any e ) {
+            log.warn( "OgImageService.drawQr: skipped — " & e.message );
+        }
+    }
 
-            // ---- URL text, bottom-left, below the author block ----
+    /**
+     * URL text in the bottom-left, directly below the author block.
+     * Drawn under the same gating as the QR — they're conceptually
+     * one "share me" pair even though they no longer share a corner.
+     * QR moved to the top-right, so the URL line gets the full
+     * width between the left padding and the right padding to play
+     * with; long URLs still ellipsize when the rendered string
+     * width exceeds the available space.
+     */
+    private void function drawUrlText( required any g, required any Font, required any Color, required struct ctx ) {
+        if ( !arguments.ctx.includeSocials ) return;
+        if ( !len( arguments.ctx.postUrl ) ) return;
+
+        try {
             var urlFont = arguments.Font.init( "SansSerif", arguments.Font.PLAIN, 22 );
             arguments.g.setFont( urlFont );
-            arguments.g.setColor( decodeColor( arguments.Color, variables.fgMutedHex ) );
+            arguments.g.setColor( decodeColor( arguments.Color, arguments.ctx.synopsisHex ) );
             var fm = arguments.g.getFontMetrics();
 
-            // Available width: from paddingX on the left, up to a
-            // small gap before the QR's left edge on the right.
-            var urlSideGap   = 24;
-            var maxTextWidth = blockLeft - urlSideGap - variables.paddingX;
+            var maxTextWidth = variables.canvasWidth - ( 2 * variables.paddingX );
             var displayUrl   = stripUrlScheme( arguments.ctx.postUrl );
             var fitted       = clipToWidth( fm, displayUrl, maxTextWidth );
             if ( len( fitted ) < len( displayUrl ) ) {
@@ -542,7 +623,7 @@ class accessors="true" singleton {
             );
         }
         catch ( any e ) {
-            log.warn( "OgImageService.drawUrlAndQr: skipped — " & e.message );
+            log.warn( "OgImageService.drawUrlText: skipped — " & e.message );
         }
     }
 

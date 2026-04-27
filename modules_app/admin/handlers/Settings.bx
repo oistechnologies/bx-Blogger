@@ -43,4 +43,9 @@ class extends="coldbox.system.EventHandler" {
         event.setView( view = "settings/seo" );
     }
 
+    function ogImage( event, rc, prc ) {
+        prc.pageTitle = "OG Image Settings";
+        event.setView( view = "settings/og-image" );
+    }
+
 }

@@ -1,0 +1,5 @@
+<bx:output>
+#view( view = "partials/heading", args = { "title" : "OG Image Settings" } )#
+
+#wire( name = "settings.ogImage" )#
+</bx:output>
