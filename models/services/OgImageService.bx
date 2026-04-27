@@ -12,7 +12,7 @@
  *
  *   Top-left   — site logo (configurable via `og.logo_media_id`;
  *                falls back to /includes/public/branding/
- *                logo-mark-light.png when unset or media missing)
+ *                logo-mark-light@2x.png when unset or media missing)
  *   Top-right  — QR code linking to the post URL (only when both
  *                the global `og.qr_enabled` setting and the author's
  *                `ogIncludeSocialsAndUrl` are on)
@@ -51,9 +51,15 @@ class accessors="true" singleton {
     variables.canvasHeight   = 630;
     variables.paddingX       = 72;
     variables.paddingY       = 72;
-    variables.logoMaxWidth   = 96;
-    variables.logoMaxHeight  = 96;
     variables.titleMaxChars  = 160;
+    // Logo bounding box. The image renders at native pixel size by
+    // default — admins are responsible for uploading a logo at the
+    // size they want. The only time we scale DOWN (preserving aspect
+    // ratio) is when the native size would extend past the right
+    // edge of the card / into the QR area / past the height cap that
+    // protects the title's safe zone. Logo never scales UP.
+    variables.logoMaxBoundHeight = 200;  // hard cap on rendered logo height
+    variables.logoToQrGap        = 24;   // horizontal gap from logo's right edge to the QR's left edge (when QR is on)
     // Default colors used when the matching `og.*` setting is empty
     // or unset. Each draw call pulls the live value from the render
     // context — these constants exist so the seed migration and any
@@ -205,7 +211,7 @@ class accessors="true" singleton {
             // assume the QR's vertical footprint is reserved.
             drawQr(          g, Color, ctx );
             drawTitle(       g, Font, Color, ctx );
-            drawLogo(        g, ImageIO, ctx );
+            drawLogo(        g, ctx );
             drawAuthorBlock( g, Font, Color, ImageIO, ctx );
             drawUrlText(     g, Font, Color, ctx );
 
@@ -258,6 +264,15 @@ class accessors="true" singleton {
         // anything else cbfs supports) stays inside the provider.
         var hasUsablePhoto = includePhoto && hasAuthor && author.hasProfilePhoto();
 
+        var postUrl    = buildPostUrl( arguments.post );
+        var willDrawQr = includeSocials && len( postUrl );
+
+        // Resolve the logo's BufferedImage + the dimensions it will
+        // render at, so drawTitle can read the actual logo height
+        // when computing its top safe zone (otherwise the title can
+        // overlap a tall custom logo).
+        var logoInfo = resolveLogo( logoMediaId, willDrawQr );
+
         return {
             "post"             : arguments.post,
             "title"            : arguments.post.getTitle() ?: "",
@@ -270,13 +285,103 @@ class accessors="true" singleton {
             "includeSocials"   : includeSocials,
             "hasUsablePhoto"   : hasUsablePhoto,
             "profilePhotoKey"  : hasUsablePhoto ? author.getProfilePhotoPath() : "",
-            "postUrl"          : buildPostUrl( arguments.post ),
+            "postUrl"          : postUrl,
+            "willDrawQr"       : willDrawQr,
             "logoMediaId"      : logoMediaId,
+            "logoImg"          : logoInfo.image,
+            "logoDrawWidth"    : logoInfo.drawWidth,
+            "logoDrawHeight"   : logoInfo.drawHeight,
             "bgHex"            : bgHex,
             "highlightHex"     : highlightHex,
             "titleHex"         : titleHex,
             "synopsisHex"      : synopsisHex
         };
+    }
+
+    /**
+     * Resolve the logo BufferedImage + the dimensions it will render
+     * at, given the current `og.logo_media_id` setting and whether
+     * the QR will draw on this card.
+     *
+     * Render-size policy: image goes out at native pixel dimensions
+     * unless that would push past the bounding box, in which case it
+     * scales DOWN preserving aspect ratio. Never scales UP — admins
+     * who want a bigger logo upload a bigger source file. The
+     * bounding box's right edge respects QR position + a comfortable
+     * gap; the bottom edge is a hard `logoMaxBoundHeight` cap so
+     * even a giant square logo can't crowd the title off the card.
+     *
+     * Returns `{ image, drawWidth, drawHeight }`. `image` is the Java
+     * null-pointer when no logo could be loaded (drawLogo skips).
+     */
+    private struct function resolveLogo( required numeric mediaId, required boolean qrEnabled ) {
+        var ImageIO = createObject( "java", "javax.imageio.ImageIO" );
+        var img     = "";
+
+        // 1) Try the configured media row, if any.
+        if ( arguments.mediaId > 0 ) {
+            try {
+                var mediaPath = wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+                    .from( "media" )
+                    .where( "id", arguments.mediaId )
+                    .whereNull( "deleted_at" )
+                    .value( "path" );
+                if ( !isNull( mediaPath ) && len( mediaPath ) ) {
+                    var mediaBytes = readPhotoBytes( mediaPath );
+                    if ( !isNull( mediaBytes ) && isBinary( mediaBytes ) ) {
+                        var bais = createObject( "java", "java.io.ByteArrayInputStream" ).init( mediaBytes );
+                        img = ImageIO.read( bais );
+                        bais.close();
+                    }
+                }
+            }
+            catch ( any e ) {
+                log.debug( "OgImageService: configured logo media id=" & arguments.mediaId & " unreadable — " & e.message );
+            }
+        }
+
+        // 2) Bundled default fallback. Use the @2x mark (128×128
+        // native) so the out-of-the-box render is crisp on retina
+        // social previews — `resolveLogo` won't upscale it, so it
+        // lands at native 128×128 within the bounding box.
+        if ( isSimpleValue( img ) || isNull( img ) ) {
+            try {
+                var logoPath = expandPath( "/includes/public/branding/logo-mark-light@2x.png" );
+                if ( fileExists( logoPath ) ) {
+                    img = ImageIO.read( createObject( "java", "java.io.File" ).init( logoPath ) );
+                }
+            }
+            catch ( any e ) {
+                log.debug( "OgImageService: bundled logo unreadable — " & e.message );
+            }
+        }
+
+        if ( isSimpleValue( img ) || isNull( img ) ) {
+            return { "image" : javaCast( "null", "" ), "drawWidth" : 0, "drawHeight" : 0 };
+        }
+
+        var nativeW = img.getWidth();
+        var nativeH = img.getHeight();
+
+        // Bounding box: right edge stops short of the QR (when on)
+        // by `logoToQrGap`, otherwise just respects the right padding.
+        // Bottom edge is the hard height cap.
+        var qrLeft   = variables.canvasWidth - variables.paddingX - variables.qrTargetSize;
+        var maxWidth = arguments.qrEnabled
+            ? ( qrLeft - variables.logoToQrGap - variables.paddingX )
+            : ( variables.canvasWidth - ( 2 * variables.paddingX ) );
+        if ( maxWidth < 1 ) maxWidth = 1;
+        var maxHeight = variables.logoMaxBoundHeight;
+
+        var drawW = nativeW;
+        var drawH = nativeH;
+        if ( nativeW > maxWidth || nativeH > maxHeight ) {
+            var scale = min( maxWidth / nativeW, maxHeight / nativeH );
+            drawW = int( nativeW * scale );
+            drawH = int( nativeH * scale );
+        }
+
+        return { "image" : img, "drawWidth" : drawW, "drawHeight" : drawH };
     }
 
     /**
@@ -341,12 +446,13 @@ class accessors="true" singleton {
 
         // Safe zone: top reserved for whichever of logo / QR is
         // taller (plus a comfortable gap), bottom reserved for the
-        // author / URL row. The QR-zone reservation only kicks in
-        // when QR is actually drawn so a card without QR uses the
-        // smaller logo-only top reservation and centers higher.
-        var qrZoneHeight   = ( arguments.ctx.includeSocials && len( arguments.ctx.postUrl ) )
-            ? variables.qrTargetSize : 0;
-        var topZoneHeight  = max( variables.logoMaxHeight, qrZoneHeight );
+        // author / URL row. Both zone heights read the ACTUAL
+        // rendered dimensions so a tall custom logo pushes the
+        // title down (rather than overlapping it), and a card
+        // without QR centers the title higher.
+        var logoZoneHeight = val( arguments.ctx.logoDrawHeight ?: 0 );
+        var qrZoneHeight   = arguments.ctx.willDrawQr ? variables.qrTargetSize : 0;
+        var topZoneHeight  = max( logoZoneHeight, qrZoneHeight );
         var topReserved    = variables.paddingY + topZoneHeight + variables.qrTopGap;
         var bottomReserved = variables.paddingY + variables.urlLineReserve + variables.authorPhotoSize + 24;
         var safeZoneTop    = topReserved;
@@ -382,61 +488,23 @@ class accessors="true" singleton {
     }
 
     /**
-     * Top-left logo. When `og.logo_media_id` is set, load that media
-     * row's bytes from the `media` cbfs disk (works for both Local
-     * and S3-backed installs via the same readPhotoBytes helper used
-     * for author photos). Falls back silently to the bundled
-     * bx-Blogger mark on any failure — missing row, deleted file,
-     * unreadable bytes — so a misconfigured logo never blocks
-     * rendering.
+     * Top-left logo. The image + its render dimensions were already
+     * resolved by `resolveLogo()` during context build (so `drawTitle`
+     * could see the actual rendered height when laying out its safe
+     * zone). This function just blits the BufferedImage at the
+     * pre-computed size. Skips silently when no logo loaded.
      */
-    private void function drawLogo( required any g, required any ImageIO, required struct ctx ) {
+    private void function drawLogo( required any g, required struct ctx ) {
+        if ( isNull( arguments.ctx.logoImg ) ) return;
+        if ( val( arguments.ctx.logoDrawWidth  ) < 1 ) return;
+        if ( val( arguments.ctx.logoDrawHeight ) < 1 ) return;
         try {
-            var logoImg = "";
-
-            // 1) Try the configured media row, if any.
-            var mediaId = val( arguments.ctx.logoMediaId ?: 0 );
-            if ( mediaId > 0 ) {
-                try {
-                    var mediaPath = wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
-                        .from( "media" )
-                        .where( "id", mediaId )
-                        .whereNull( "deleted_at" )
-                        .value( "path" );
-                    if ( !isNull( mediaPath ) && len( mediaPath ) ) {
-                        var mediaBytes = readPhotoBytes( mediaPath );
-                        if ( !isNull( mediaBytes ) && isBinary( mediaBytes ) ) {
-                            var bais = createObject( "java", "java.io.ByteArrayInputStream" ).init( mediaBytes );
-                            logoImg = arguments.ImageIO.read( bais );
-                            bais.close();
-                        }
-                    }
-                }
-                catch ( any inner ) {
-                    log.debug( "OgImageService: configured logo media id=" & mediaId & " unreadable — " & inner.message );
-                }
-            }
-
-            // 2) Bundled default fallback.
-            if ( isSimpleValue( logoImg ) || isNull( logoImg ) ) {
-                var logoPath = expandPath( "/includes/public/branding/logo-mark-light.png" );
-                if ( !fileExists( logoPath ) ) return;
-                logoImg = arguments.ImageIO.read( createObject( "java", "java.io.File" ).init( logoPath ) );
-                if ( isNull( logoImg ) ) return;
-            }
-
-            var lw = logoImg.getWidth();
-            var lh = logoImg.getHeight();
-            var scale = min(
-                variables.logoMaxWidth  / lw,
-                variables.logoMaxHeight / lh
-            );
             arguments.g.drawImage(
-                logoImg,
-                variables.paddingX,
-                variables.paddingY,
-                int( lw * scale ),
-                int( lh * scale ),
+                arguments.ctx.logoImg,
+                javaCast( "int", variables.paddingX ),
+                javaCast( "int", variables.paddingY ),
+                javaCast( "int", arguments.ctx.logoDrawWidth ),
+                javaCast( "int", arguments.ctx.logoDrawHeight ),
                 javaCast( "null", "" )
             );
         }
