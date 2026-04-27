@@ -432,7 +432,7 @@ class accessors="true" singleton {
         var excerptLines  = [];
         var excerptLineH  = 0;
         var excerptBlockH = 0;
-        var excerptGap    = 20;
+        var excerptGap    = 12;
         var excerptFont   = arguments.Font.init( "SansSerif", arguments.Font.PLAIN, 22 );
         if ( hasExcerpt ) {
             arguments.g.setFont( excerptFont );
@@ -458,7 +458,12 @@ class accessors="true" singleton {
         var safeZoneTop    = topReserved;
         var safeZoneBot    = variables.canvasHeight - bottomReserved;
         var safeHeight     = safeZoneBot - safeZoneTop;
-        var blockTopY      = safeZoneTop + int( ( safeHeight - combinedHeight ) / 2 );
+        // Bias the title+excerpt block UP from dead-center so the
+        // excerpt has more breathing room before the author block
+        // below it. Clamped at safeZoneTop so a long block can't
+        // climb into the logo / QR zone above.
+        var blockTopY      = safeZoneTop + int( ( safeHeight - combinedHeight ) / 2 ) - 28;
+        if ( blockTopY < safeZoneTop ) blockTopY = safeZoneTop;
 
         // Draw title.
         arguments.g.setFont( titleFont );
