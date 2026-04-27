@@ -66,6 +66,14 @@ class accessors="true" singleton {
     // the photo top-aligned with the top of the name line, so the
     // larger size still fits the bottom safe zone cleanly.
     variables.authorPhotoSize = 74;
+    // Highlight-color stripe along the photo's left edge — a small
+    // visual link between the photo and the bottom highlight bar /
+    // author name color.
+    variables.authorPhotoBorderPx = 5;
+    // Slight rounding on the photo's top-right + bottom-right
+    // corners. Left side stays square so it sits flush against the
+    // highlight stripe.
+    variables.authorPhotoCornerRadius = 6;
     // Vertical gap between the email line and the name line above
     // it when both are drawn. Pure visual breathing room.
     variables.authorLineGap   = 12;
@@ -497,17 +505,82 @@ class accessors="true" singleton {
                     bais.close();
                     if ( !isNull( photoImg ) ) {
                         var photoSize = variables.authorPhotoSize;
+                        var borderPx  = variables.authorPhotoBorderPx;
+                        var radius    = variables.authorPhotoCornerRadius;
                         // Top of photo aligns with top of name glyph cap.
                         var photoY    = nameBaseline - nameAscent;
-                        arguments.g.drawImage(
-                            photoImg,
-                            variables.paddingX,
-                            photoY,
-                            photoSize,
-                            photoSize,
-                            javaCast( "null", "" )
+                        // Highlight-color stripe sits flush LEFT of
+                        // the photo (not overlapping it), so the
+                        // image is never clipped or covered.
+                        var photoX    = variables.paddingX + borderPx;
+                        arguments.g.setColor( decodeColor( arguments.Color, arguments.ctx.highlightHex ) );
+                        arguments.g.fillRect(
+                            javaCast( "int", variables.paddingX ),
+                            javaCast( "int", photoY ),
+                            javaCast( "int", borderPx ),
+                            javaCast( "int", photoSize )
                         );
-                        nameX = variables.paddingX + photoSize + 16;
+                        // Build a clip path: rectangle with rounded
+                        // top-right + bottom-right corners. Left
+                        // edge stays square so it sits flush against
+                        // the highlight stripe. Save the prior clip
+                        // and restore after drawing so subsequent
+                        // text isn't accidentally clipped.
+                        var Path2D   = createObject( "java", "java.awt.geom.Path2D$Double" );
+                        var clipPath = Path2D.init();
+                        clipPath.moveTo(
+                            javaCast( "double", photoX ),
+                            javaCast( "double", photoY )
+                        );
+                        clipPath.lineTo(
+                            javaCast( "double", photoX + photoSize - radius ),
+                            javaCast( "double", photoY )
+                        );
+                        clipPath.quadTo(
+                            javaCast( "double", photoX + photoSize ),
+                            javaCast( "double", photoY ),
+                            javaCast( "double", photoX + photoSize ),
+                            javaCast( "double", photoY + radius )
+                        );
+                        clipPath.lineTo(
+                            javaCast( "double", photoX + photoSize ),
+                            javaCast( "double", photoY + photoSize - radius )
+                        );
+                        clipPath.quadTo(
+                            javaCast( "double", photoX + photoSize ),
+                            javaCast( "double", photoY + photoSize ),
+                            javaCast( "double", photoX + photoSize - radius ),
+                            javaCast( "double", photoY + photoSize )
+                        );
+                        clipPath.lineTo(
+                            javaCast( "double", photoX ),
+                            javaCast( "double", photoY + photoSize )
+                        );
+                        clipPath.closePath();
+
+                        // Use a child Graphics with its own clip so
+                        // restoring the parent state can't go wrong
+                        // — dispose() drops the child entirely and
+                        // the parent `g` is untouched. (Calling
+                        // setClip(null) on the parent has BoxLang
+                        // null-passing quirks; this avoids them.)
+                        var gPhoto = arguments.g.create();
+                        try {
+                            gPhoto.setClip( clipPath );
+                            gPhoto.drawImage(
+                                photoImg,
+                                javaCast( "int", photoX ),
+                                javaCast( "int", photoY ),
+                                javaCast( "int", photoSize ),
+                                javaCast( "int", photoSize ),
+                                javaCast( "null", "" )
+                            );
+                        }
+                        finally {
+                            gPhoto.dispose();
+                        }
+
+                        nameX = photoX + photoSize + 16;
                     }
                 }
             }
