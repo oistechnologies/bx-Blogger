@@ -52,6 +52,14 @@ class accessors="true" singleton {
     variables.paddingX       = 72;
     variables.paddingY       = 72;
     variables.titleMaxChars  = 160;
+    // Title font-size ladder (largest -> smallest). drawTitle() walks
+    // this list and picks the LARGEST size whose wrapped title fits the
+    // available safe-zone height (with the excerpt's reservation
+    // pre-subtracted). Floor of 44pt still reads cleanly and stays
+    // visibly larger than the 32pt author name so hierarchy holds.
+    // Short titles still render at 64pt — only long titles that would
+    // wrap to two oversized lines drop down the ladder.
+    variables.titleFontSizes = [ 64, 56, 50, 44 ];
     // Logo bounding box. The image renders at native pixel size by
     // default — admins are responsible for uploading a logo at the
     // size they want. The only time we scale DOWN (preserving aspect
@@ -404,9 +412,11 @@ class accessors="true" singleton {
     }
 
     /**
-     * Title (bold, 64 pt, up to 2 lines) — and an optional excerpt
-     * line block (regular, 22 pt, synopsis color, up to 2 lines)
-     * drawn directly below when the post has one.
+     * Title (bold, dynamic size from `variables.titleFontSizes`,
+     * up to 2 lines) — and an optional excerpt line block (regular,
+     * 22 pt, synopsis color, up to 2 lines, collapsed to 1 line when
+     * the chosen title size still wraps to 2 lines) drawn directly
+     * below when the post has one.
      *
      * Vertical layout: the combined title-+-excerpt block is centered
      * within a SAFE ZONE between the top of the canvas (clear of the
@@ -415,41 +425,21 @@ class accessors="true" singleton {
      * line). The QR-zone reservation only kicks in when QR is
      * actually drawn so a card without QR uses the smaller logo-only
      * top reservation and centers higher.
+     *
+     * Title sizing walks `variables.titleFontSizes` from largest to
+     * smallest. The first rung whose wrapped title either fits on a
+     * single line OR fits the safe-zone height (with the appropriate
+     * excerpt budget) wins. The smallest rung is the graceful
+     * fallback if nothing fits — same as the prior fixed-size
+     * behavior, but at a font small enough that the overrun is
+     * minimized.
      */
     private void function drawTitle( required any g, required any Font, required any Color, required struct ctx ) {
-        var titleText = left( arguments.ctx.title, variables.titleMaxChars );
-        var titleFont = arguments.Font.init( "SansSerif", arguments.Font.BOLD, 64 );
-        arguments.g.setFont( titleFont );
-
+        var titleText    = left( arguments.ctx.title, variables.titleMaxChars );
         var maxTextWidth = variables.canvasWidth - ( 2 * variables.paddingX );
-        var titleLines   = wrapText( arguments.g, titleText, maxTextWidth, 2 );
-        var titleFm      = arguments.g.getFontMetrics();
-        var titleLineH   = titleFm.getHeight();
-        var titleBlockH  = arrayLen( titleLines ) * titleLineH;
 
-        // Optional excerpt — wrap with the excerpt font's metrics.
-        var hasExcerpt    = len( arguments.ctx.excerpt ?: "" ) > 0;
-        var excerptLines  = [];
-        var excerptLineH  = 0;
-        var excerptBlockH = 0;
-        var excerptGap    = 12;
-        var excerptFont   = arguments.Font.init( "SansSerif", arguments.Font.PLAIN, 22 );
-        if ( hasExcerpt ) {
-            arguments.g.setFont( excerptFont );
-            var excerptFm = arguments.g.getFontMetrics();
-            excerptLineH  = excerptFm.getHeight();
-            excerptLines  = wrapText( arguments.g, arguments.ctx.excerpt, maxTextWidth, 2 );
-            excerptBlockH = arrayLen( excerptLines ) * excerptLineH;
-        }
-
-        var combinedHeight = titleBlockH + ( hasExcerpt ? ( excerptGap + excerptBlockH ) : 0 );
-
-        // Safe zone: top reserved for whichever of logo / QR is
-        // taller (plus a comfortable gap), bottom reserved for the
-        // author / URL row. Both zone heights read the ACTUAL
-        // rendered dimensions so a tall custom logo pushes the
-        // title down (rather than overlapping it), and a card
-        // without QR centers the title higher.
+        // Safe zone is computed up front because the title-size
+        // ladder needs `safeHeight` to test each candidate rung.
         var logoZoneHeight = val( arguments.ctx.logoDrawHeight ?: 0 );
         var qrZoneHeight   = arguments.ctx.willDrawQr ? variables.qrTargetSize : 0;
         var topZoneHeight  = max( logoZoneHeight, qrZoneHeight );
@@ -458,22 +448,79 @@ class accessors="true" singleton {
         var safeZoneTop    = topReserved;
         var safeZoneBot    = variables.canvasHeight - bottomReserved;
         var safeHeight     = safeZoneBot - safeZoneTop;
+
+        // Excerpt font is fixed at 22pt — only the line-height is
+        // needed up front for the ladder's budget math. The actual
+        // wrap happens AFTER the ladder picks a title size, so we can
+        // collapse the excerpt to 1 line when the chosen title still
+        // wraps to 2 lines (avoids a 4-line vertical stack that would
+        // push into the author block).
+        var hasExcerpt   = len( arguments.ctx.excerpt ?: "" ) > 0;
+        var excerptGap   = 12;
+        var excerptFont  = arguments.Font.init( "SansSerif", arguments.Font.PLAIN, 22 );
+        var excerptLineH = 0;
+        if ( hasExcerpt ) {
+            arguments.g.setFont( excerptFont );
+            excerptLineH = arguments.g.getFontMetrics().getHeight();
+        }
+
+        // Walk the title-size ladder. Always assign chosen* inside
+        // the loop so the last iteration's values are the fallback if
+        // no rung satisfies the fit conditions.
+        var chosenTitleFont  = arguments.Font.init( "SansSerif", arguments.Font.BOLD, variables.titleFontSizes[ 1 ] );
+        var chosenTitleLines = [];
+        var chosenTitleLineH = 0;
+        for ( var sz in variables.titleFontSizes ) {
+            var candidateFont  = arguments.Font.init( "SansSerif", arguments.Font.BOLD, sz );
+            arguments.g.setFont( candidateFont );
+            var candidateLines = wrapText( arguments.g, titleText, maxTextWidth, 2 );
+            var candidateLineH = arguments.g.getFontMetrics().getHeight();
+
+            chosenTitleFont  = candidateFont;
+            chosenTitleLines = candidateLines;
+            chosenTitleLineH = candidateLineH;
+
+            var tBlockH        = arrayLen( candidateLines ) * candidateLineH;
+            var budgetLineCt   = hasExcerpt ? ( arrayLen( candidateLines ) == 2 ? 1 : 2 ) : 0;
+            var budgetExcerptH = budgetLineCt * excerptLineH;
+            var combinedBudget = tBlockH + ( budgetLineCt > 0 ? excerptGap + budgetExcerptH : 0 );
+
+            if ( arrayLen( candidateLines ) == 1 || combinedBudget <= safeHeight ) break;
+        }
+
+        // Wrap the excerpt for real. Collapse to 1 line when the
+        // chosen title size still produced 2 lines so the bottom of
+        // the text block stays clear of the author block below.
+        var titleLineCount = arrayLen( chosenTitleLines );
+        var excerptLines   = [];
+        var excerptBlockH  = 0;
+        if ( hasExcerpt ) {
+            var excerptMaxLines = ( titleLineCount == 2 ? 1 : 2 );
+            arguments.g.setFont( excerptFont );
+            excerptLines  = wrapText( arguments.g, arguments.ctx.excerpt, maxTextWidth, excerptMaxLines );
+            excerptBlockH = arrayLen( excerptLines ) * excerptLineH;
+        }
+
+        var titleBlockH    = titleLineCount * chosenTitleLineH;
+        var combinedHeight = titleBlockH + ( hasExcerpt ? ( excerptGap + excerptBlockH ) : 0 );
+
         // Bias the title+excerpt block UP from dead-center so the
         // excerpt has more breathing room before the author block
         // below it. Clamped at safeZoneTop so a long block can't
         // climb into the logo / QR zone above.
-        var blockTopY      = safeZoneTop + int( ( safeHeight - combinedHeight ) / 2 ) - 28;
+        var blockTopY = safeZoneTop + int( ( safeHeight - combinedHeight ) / 2 ) - 28;
         if ( blockTopY < safeZoneTop ) blockTopY = safeZoneTop;
 
         // Draw title.
-        arguments.g.setFont( titleFont );
+        arguments.g.setFont( chosenTitleFont );
         arguments.g.setColor( decodeColor( arguments.Color, arguments.ctx.titleHex ) );
+        var titleFm    = arguments.g.getFontMetrics();
         var titleBaseY = blockTopY + titleFm.getAscent();
-        for ( var i = 1; i <= arrayLen( titleLines ); i++ ) {
+        for ( var i = 1; i <= titleLineCount; i++ ) {
             arguments.g.drawString(
-                titleLines[ i ],
+                chosenTitleLines[ i ],
                 variables.paddingX,
-                titleBaseY + ( ( i - 1 ) * titleLineH )
+                titleBaseY + ( ( i - 1 ) * chosenTitleLineH )
             );
         }
 
