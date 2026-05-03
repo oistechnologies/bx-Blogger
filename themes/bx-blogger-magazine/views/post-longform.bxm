@@ -31,6 +31,7 @@
 
     #view( view = "bx-blogger-magazine/partials/post-taxonomy" )#
     #view( view = "bx-blogger-magazine/partials/related-posts" )#
+    #view( view = "bx-blogger-magazine/partials/post-author-block" )#
 <bx:else>
     <p class="text-secondary">Post unavailable.</p>
 </bx:if>

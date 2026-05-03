@@ -56,6 +56,7 @@ class extends="quick.models.BaseEntity" accessors="true" {
     property name="ogIncludeEmail"           column="og_include_email";
     property name="ogIncludeSocialsAndUrl"   column="og_include_socials_and_url";
     property name="publicAuthorPageEnabled"  column="public_author_page_enabled";
+    property name="showAuthorBlockOnPosts"   column="show_author_block_on_posts";
 
     property name="deletedAt"                    column="deleted_at";
     property name="createdAt"            column="created_at";
@@ -193,7 +194,8 @@ class extends="quick.models.BaseEntity" accessors="true" {
                     "profilePhotoPath", "profilePhotoMime",
                     "websiteUrl", "twitterUrl", "linkedinUrl", "githubUrl",
                     "gitlabUrl", "mastodonUrl", "blueskyUrl", "facebookUrl",
-                    "ogIncludeEmail", "publicAuthorPageEnabled"
+                    "ogIncludeEmail", "publicAuthorPageEnabled",
+                    "showAuthorBlockOnPosts"
                 ]
             },
             "admin": {
@@ -206,7 +208,8 @@ class extends="quick.models.BaseEntity" accessors="true" {
                     "websiteUrl", "twitterUrl", "linkedinUrl", "githubUrl",
                     "gitlabUrl", "mastodonUrl", "blueskyUrl", "facebookUrl",
                     "ogIncludeProfilePhoto", "ogIncludeEmail",
-                    "ogIncludeSocialsAndUrl", "publicAuthorPageEnabled"
+                    "ogIncludeSocialsAndUrl", "publicAuthorPageEnabled",
+                    "showAuthorBlockOnPosts"
                 ]
             }
         }

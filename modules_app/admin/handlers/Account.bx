@@ -265,6 +265,7 @@ class extends="coldbox.system.EventHandler" {
         user.setOgIncludeEmail(          ( rc.ogIncludeEmail          ?: 0 ) ? 1 : 0 );
         user.setOgIncludeSocialsAndUrl(  ( rc.ogIncludeSocialsAndUrl  ?: 0 ) ? 1 : 0 );
         user.setPublicAuthorPageEnabled( ( rc.publicAuthorPageEnabled ?: 0 ) ? 1 : 0 );
+        user.setShowAuthorBlockOnPosts(  ( rc.showAuthorBlockOnPosts  ?: 0 ) ? 1 : 0 );
         user.save();
 
         // If the user just opted into the public page, make sure

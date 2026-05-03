@@ -181,9 +181,9 @@
 				<form method="POST" action="#event.buildLink( 'admin/account/preferences' )#">
 					<div class="alert alert-info small mb-3">
 						<strong>Note:</strong> the three OG-inclusion toggles below govern
-						both the shareable OG image generated for your posts AND what appears
-						on your public author page. A social link you toggle off here is
-						hidden in both places.
+						the shareable OG image generated for your posts, what appears on your
+						public author page, and what appears in the on-post author block.
+						A social link you toggle off here is hidden everywhere.
 					</div>
 
 					<div class="form-check form-switch mb-3">
@@ -196,6 +196,7 @@
 						<label class="form-check-label" for="ogIncludeProfilePhoto">
 							Include my profile photo
 						</label>
+						<div class="form-text">Also controls whether your photo appears in the on-post author block.</div>
 					</div>
 
 					<div class="form-check form-switch mb-3">
@@ -208,9 +209,9 @@
 						<label class="form-check-label" for="ogIncludeEmail">
 							Include my email address
 						</label>
-						<div class="form-text">Off by default for privacy. Even when on,
-						your email is only rendered on the OG image — not on the
-						public author page.</div>
+						<div class="form-text">Off by default for privacy. When on, your
+						email is rendered on the OG image and as a mailto link inside
+						the on-post author block (still hidden on the public author page).</div>
 					</div>
 
 					<div class="form-check form-switch mb-3">
@@ -223,6 +224,7 @@
 						<label class="form-check-label" for="ogIncludeSocialsAndUrl">
 							Include my social links and the post URL (with QR code)
 						</label>
+						<div class="form-text">Also controls whether your social icons appear in the on-post author block.</div>
 					</div>
 
 					<hr>
@@ -241,6 +243,24 @@
 							When on, <code>/author/#encodeForHTML( prc.user.getAuthorSlug() ?: 'your-slug' )#</code>
 							renders your long bio, profile photo, social links (per the
 							toggles above), and a feed of your posts. Off = 404.
+						</div>
+					</div>
+
+					<div class="form-check form-switch mb-3">
+						<input class="form-check-input"
+						       type="checkbox"
+						       id="showAuthorBlockOnPosts"
+						       name="showAuthorBlockOnPosts"
+						       value="1"
+						       <bx:if prc.user.getShowAuthorBlockOnPosts()>checked</bx:if>>
+						<label class="form-check-label" for="showAuthorBlockOnPosts">
+							Show an author block at the bottom of every post I write
+						</label>
+						<div class="form-text">
+							Renders a compact "About the Author" block under each post body
+							with your photo, short bio, and social links (each subject to the
+							toggles above). When your public author page is also enabled, your
+							name in the block links to it.
 						</div>
 					</div>
 

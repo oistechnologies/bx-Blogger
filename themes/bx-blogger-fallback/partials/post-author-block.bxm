@@ -1,0 +1,32 @@
+<bx:output>
+<bx:if structKeyExists( prc, "authorBlock" ) && structKeyExists( prc.authorBlock, "name" )>
+	<bx:set authorBlock = prc.authorBlock>
+	<aside class="post-author-block border-top mt-5 pt-4" aria-label="About the author">
+		<p class="text-muted text-uppercase small mb-1">About the Author</p>
+		<h2 class="h5 mb-2">
+			<bx:if authorBlock.authorPageLinked>
+				<a href="#encodeForHTMLAttribute( authorBlock.authorPageUrl )#">#encodeForHTML( authorBlock.name )#</a>
+			<bx:else>
+				#encodeForHTML( authorBlock.name )#
+			</bx:if>
+		</h2>
+
+		<bx:if len( authorBlock.bioShort )>
+			<p class="text-muted mb-2">#encodeForHTML( authorBlock.bioShort )#</p>
+		</bx:if>
+
+		<bx:if len( authorBlock.email ) || !structIsEmpty( authorBlock.socials )>
+			<p class="small mb-0">
+				<bx:if len( authorBlock.email )>
+					<a href="mailto:#encodeForHTMLAttribute( authorBlock.email )#">#encodeForHTML( authorBlock.email )#</a>
+				</bx:if>
+				<bx:loop collection="#authorBlock.socials#" item="key">
+					<bx:set socialUrl = authorBlock.socials[ key ]>
+					&middot;
+					<a href="#encodeForHTMLAttribute( socialUrl )#" target="_blank" rel="me noopener">#encodeForHTML( key )#</a>
+				</bx:loop>
+			</p>
+		</bx:if>
+	</aside>
+</bx:if>
+</bx:output>

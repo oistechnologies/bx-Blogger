@@ -51,6 +51,7 @@
 
     #view( view = "bx-blogger-default/partials/post-taxonomy" )#
     #view( view = "bx-blogger-default/partials/related-posts" )#
+    #view( view = "bx-blogger-default/partials/post-author-block" )#
 
     <bx:if hasFeatured>
         #view( view = "bx-blogger-default/partials/featured-lightbox" )#

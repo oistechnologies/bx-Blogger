@@ -73,6 +73,32 @@ class extends="coldbox.system.EventHandler" {
             prc.authorBylineHtml = '<a href="' & encodeForHTMLAttribute( prc.authorPageUrl ) & '">'
                 & encodeForHTML( prc.authorName ) & '</a>';
         }
+
+        // Bottom-of-post "About the Author" block. Opt-in per author via
+        // the show_author_block_on_posts preference; sub-elements (photo,
+        // email, socials) honor the same og_include_* flags that govern
+        // the OG share card so authors configure their public identity in
+        // one place. Empty struct = partial no-ops in every theme.
+        prc.authorBlock = {};
+        if ( !isNull( author ) && author.getShowAuthorBlockOnPosts() ) {
+            var userService = getInstance( "UserService" );
+            prc.authorBlock = {
+                "name"             : prc.authorName,
+                "bioShort"         : author.getBioShort() ?: "",
+                "photoUrl"         : author.getOgIncludeProfilePhoto()
+                    ? userService.profilePhotoUrl( author )
+                    : "",
+                "email"            : author.getOgIncludeEmail()
+                    ? ( author.getEmail() ?: "" )
+                    : "",
+                "socials"          : author.getOgIncludeSocialsAndUrl()
+                    ? author.socialUrls()
+                    : [:],
+                "authorPageUrl"    : prc.authorPageUrl,
+                "authorPageLinked" : len( prc.authorPageUrl ) > 0
+            };
+        }
+
         prc.pageTitle  = post.getTitle() & " · " & getSetting( "AppName" );
         prc.pageDescription = post.getSeoDescription() ?: ( post.getExcerpt() ?: "" );
 

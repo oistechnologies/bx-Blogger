@@ -53,6 +53,7 @@
 
     #view( view = "bx-blogger-magazine/partials/post-taxonomy" )#
     #view( view = "bx-blogger-magazine/partials/related-posts" )#
+    #view( view = "bx-blogger-magazine/partials/post-author-block" )#
 
     <bx:if hasFeatured>
         #view( view = "bx-blogger-magazine/partials/featured-lightbox" )#
