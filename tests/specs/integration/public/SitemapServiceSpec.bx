@@ -51,7 +51,11 @@ class extends="tests.support.BaseIntegrationSpec" {
             it( "emits a valid sitemap envelope with absolute URLs", function() {
                 var xml = svc.forBaseUrl( "https://example.test" );
                 expect( xml ).toInclude( '<?xml version="1.0" encoding="UTF-8"?>' );
-                expect( xml ).toInclude( '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' );
+                // Match the leading namespace decl without the
+                // trailing `>` so additional namespaces (e.g.
+                // SEO Phase 9 added `xmlns:image="..."`) don't
+                // break the assertion.
+                expect( xml ).toInclude( '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"' );
                 expect( xml ).toInclude( "<loc>https://example.test/</loc>" );
                 expect( xml ).toInclude( "<loc>https://example.test/blog</loc>" );
             } );
