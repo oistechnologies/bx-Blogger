@@ -35,6 +35,10 @@ class extends="coldbox.system.EventHandler" {
         }
 
         prc.page           = page;
+        // Also expose under `prc.post` so SeoMetaInterceptor's single
+        // detection rule (prc.post → dispatch on post_type) finds the
+        // entity; themes still reference `prc.page` for view rendering.
+        prc.post           = page;
         prc.pageTitle      = page.getTitle() & " · " & getSetting( "AppName" );
         prc.pageDescription = page.getSeoDescription() ?: ( page.getExcerpt() ?: "" );
 

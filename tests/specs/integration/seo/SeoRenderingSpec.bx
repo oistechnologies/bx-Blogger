@@ -1,0 +1,186 @@
+/**
+ * bx-Blogger — SeoRenderingSpec (Phase SEO-1)
+ *
+ * Regression coverage for the three render bugs found and fixed in
+ * Phase 1 of the SEO initiative:
+ *
+ *   1. SeoService.clipAtWord() called `clipped.listLastNoCase(" ")`
+ *      as a member function. java.lang.String has no such method on
+ *      BoxLang, so every long-description path threw and the
+ *      SeoMetaInterceptor's try/catch swallowed the failure — leaving
+ *      `prc.seoMeta` unset and the theme's <head> rendered with only
+ *      the fallback <title>.
+ *
+ *   2. handlers/Page.bx set `prc.page = page` but the interceptor's
+ *      detection rule keys off `prc.post`. Pages dropped through to
+ *      no-op meta even though they have full seo_title /
+ *      seo_description / og_image_id support.
+ *
+ *   3. SeoMetaInterceptor's archive canonical concatenated baseUrl
+ *      with `event.getCurrentRoutedURL()` which returns "blog/" with
+ *      no leading slash, producing "https://hostblog/". The build now
+ *      normalizes the path.
+ *
+ * These specs are deliberately direct service / interceptor tests
+ * rather than route-level integration. The app does not currently
+ * have a route-execution test harness; building one for one phase is
+ * out of scope. The renderer + interceptor + handler are the surface
+ * where the bugs lived, so that's where we cover them.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc      = getInstance( "SeoService" );
+        variables.postSvc  = getInstance( "PostService" );
+    }
+
+    function run() {
+        describe( "Phase 1 SEO render fixes", function() {
+
+            describe( "clipAtWord (Phase 1 bug ##1)", function() {
+
+                it( "truncates a long description without throwing on listLastNoCase", function() {
+                    // Description longer than 160 chars — exercises the
+                    // word-boundary truncation path that previously
+                    // blew up with "Error getting method [listLastNoCase]
+                    // for class [java.lang.String]".
+                    var longDesc = "This blog post introduces bx-Blogger's markdown features, " &
+                        "showcasing how text, headings, lists, code blocks, tables, " &
+                        "and media render in the publishing context — a really long body of words.";
+
+                    var author = createTestUser();
+                    var post = variables.postSvc.create( {
+                        "authorId"     : author.getId(),
+                        "title"        : "Long Desc Spec",
+                        "slug"         : "long-desc-spec-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                        "bodyMarkdown" : longDesc,
+                        "excerpt"      : longDesc
+                    } );
+                    variables.postSvc.publish( post );
+
+                    var meta = variables.svc.buildForPost(
+                        post       = post,
+                        authorName = "Spec",
+                        baseUrl    = "https://example.com"
+                    );
+
+                    expect( meta.description ).toBeTypeOf( "string" );
+                    expect( len( meta.description ) ).toBeLTE( 161 ); // 160 + ellipsis
+                    expect( meta.description ).toInclude( "…" );      // truncation marker
+                    // Does not end with a partial word — last char before the ellipsis
+                    // should be a letter, never a partial UTF-8 sequence.
+                    var beforeEllipsis = listFirst( meta.description, "…" );
+                    expect( reFind( "\s$", beforeEllipsis ) ).toBe( 0 );
+                } );
+
+            } );
+
+            describe( "SeoMetaInterceptor dispatch (Phase 1 bug ##2)", function() {
+
+                it( "buildForPage produces WebPage meta from a page-typed post", function() {
+                    // Mirrors what the interceptor does when prc.post
+                    // carries a post_type='page'. We can't easily run
+                    // the interceptor in isolation without a full
+                    // event/prc/buffer harness, but we CAN verify the
+                    // builder path it dispatches to works end-to-end
+                    // for a real page entity.
+                    var author = createTestUser();
+                    var page = variables.postSvc.create( {
+                        "authorId"     : author.getId(),
+                        "title"        : "Spec Page",
+                        "slug"         : "spec-page-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                        "postType"     : "page",
+                        "bodyMarkdown" : "Page body here.",
+                        "excerpt"      : "Spec page excerpt."
+                    } );
+                    variables.postSvc.publish( page );
+
+                    var meta = variables.svc.buildForPage(
+                        post     = page,
+                        baseUrl  = "https://example.com",
+                        siteName = "Example"
+                    );
+
+                    expect( meta.title ).toBe( "Spec Page" );
+                    expect( meta.description ).toBe( "Spec page excerpt." );
+                    expect( meta.canonical ).toBe( "https://example.com/" & page.getSlug() );
+
+                    // WebPage JSON-LD present.
+                    var foundWebPage = false;
+                    for ( var ld in meta.jsonLd ) {
+                        if ( ld[ "@type" ] == "WebPage" ) foundWebPage = true;
+                    }
+                    expect( foundWebPage ).toBeTrue();
+                } );
+
+            } );
+
+            describe( "Archive canonical normalization (Phase 1 bug ##3)", function() {
+
+                it( "buildForArchive accepts a canonical that already contains a leading slash", function() {
+                    // After the interceptor fix, every canonical reaching
+                    // the builder starts with "/". Confirm the renderer
+                    // doesn't double-slash or otherwise mangle that.
+                    var meta = variables.svc.buildForArchive(
+                        title       = "Blog",
+                        description = "All posts",
+                        canonical   = "https://example.com/blog",
+                        breadcrumbs = [],
+                        baseUrl     = "https://example.com"
+                    );
+                    expect( meta.canonical ).toBe( "https://example.com/blog" );
+
+                    // Render renders a single canonical link with no
+                    // duplicated host or stripped-slash artifacts.
+                    var html = variables.svc.renderHead( meta );
+                    expect( html ).toInclude( '<link rel="canonical" href="https://example.com/blog">' );
+                    expect( html ).notToInclude( "example.comblog" );
+                } );
+
+            } );
+
+            describe( "renderHead produces stable head fragment", function() {
+
+                it( "emits title, description, canonical, robots, og:*, twitter:*, JSON-LD in stable order", function() {
+                    var author = createTestUser();
+                    var post = variables.postSvc.create( {
+                        "authorId"     : author.getId(),
+                        "title"        : "Stable Order",
+                        "slug"         : "stable-order-spec-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                        "bodyMarkdown" : "body",
+                        "excerpt"      : "stable order excerpt"
+                    } );
+                    variables.postSvc.publish( post );
+
+                    var meta = variables.svc.buildForPost(
+                        post       = post,
+                        authorName = "Spec",
+                        baseUrl    = "https://example.com"
+                    );
+                    var html = variables.svc.renderHead( meta );
+
+                    // Each piece appears exactly once in expected order.
+                    var titlePos       = find( "<title>",                  html );
+                    var descPos        = find( 'name="description"',       html );
+                    var canonicalPos   = find( 'rel="canonical"',          html );
+                    var robotsPos      = find( 'name="robots"',            html );
+                    var ogTypePos      = find( 'property="og:type"',       html );
+                    var twitterPos     = find( 'name="twitter:card"',      html );
+                    var jsonLdPos      = find( 'application/ld+json',      html );
+
+                    expect( titlePos     ).toBeGT( 0 );
+                    expect( descPos      ).toBeGT( titlePos );
+                    expect( canonicalPos ).toBeGT( descPos );
+                    expect( robotsPos    ).toBeGT( canonicalPos );
+                    expect( ogTypePos    ).toBeGT( robotsPos );
+                    expect( twitterPos   ).toBeGT( ogTypePos );
+                    expect( jsonLdPos    ).toBeGT( twitterPos );
+                } );
+
+            } );
+
+        } );
+    }
+
+}

@@ -620,7 +620,10 @@ class accessors="true" singleton {
         var t = trim( arguments.text );
         if ( len( t ) <= arguments.max ) return t;
         var clipped = left( t, arguments.max );
-        var lastSpace = clipped.listLastNoCase( " " );
+        // Use the BIF form — `clipped.listLastNoCase(" ")` is not a
+        // valid member call in BoxLang (java.lang.String has no such
+        // method) and silently aborted the whole interceptor.
+        var lastSpace = listLast( clipped, " " );
         if ( len( lastSpace ) && len( clipped ) > len( lastSpace ) + 10 ) {
             // Only step back to the last space if doing so doesn't
             // lose more than 10 trailing characters.

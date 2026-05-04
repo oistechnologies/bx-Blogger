@@ -101,10 +101,15 @@ class extends="coldbox.system.Interceptor" {
 
             // --- Archive pages (blog index, category, tag, author, date) --- //
             if ( isArchivePage( arguments.prc, ev ) ) {
+                // getCurrentRoutedURL() returns "blog/" without a leading
+                // slash; concatenating to a baseUrl without a trailing
+                // slash produces "https://hostblog/". Normalize.
+                var routed = arguments.event.getCurrentRoutedURL();
+                if ( !len( routed ) || left( routed, 1 ) != "/" ) routed = "/" & routed;
                 arguments.prc.seoMeta = svc.buildForArchive(
                     title       = stripAppSuffix( arguments.prc.pageTitle ?: "", siteName ),
                     description = arguments.prc.pageDescription ?: "",
-                    canonical   = baseUrl & arguments.event.getCurrentRoutedURL(),
+                    canonical   = baseUrl & routed,
                     breadcrumbs = arguments.prc.breadcrumbs ?: [],
                     baseUrl     = baseUrl,
                     siteName    = siteName,
