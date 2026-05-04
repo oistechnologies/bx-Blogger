@@ -1,0 +1,641 @@
+/**
+ * bx-Blogger — SeoAuditService (SEO Phase 5.1)
+ *
+ * Deterministic, no-AI, no-network on-page SEO audit. Returns a
+ * single struct of named checks the editor's live audit panel
+ * renders as red/amber/green dots, each click-to-expandable for
+ * the suggestion text.
+ *
+ *   var audit = seoAuditService.audit( post );
+ *   audit.score                    // 0-100 weighted average
+ *   audit.checks.titleLength.status // "pass" | "warn" | "fail"
+ *   audit.checks.titleLength.message
+ *   audit.checks.titleLength.suggestion
+ *
+ * 11 checks, organized as four groups:
+ *   meta:    titleLength, descriptionLength
+ *   keyword: focusKeywordInTitle, focusKeywordInFirstParagraph,
+ *            focusKeywordInUrl, focusKeywordDensity
+ *   content: headingHierarchy, imagesWithoutAlt, internalLinks,
+ *            externalLinks, readabilityScore, wordCount
+ *   slug:    slugQuality
+ *
+ * The service is pure — it doesn't read settings, it doesn't write
+ * the DB, it doesn't talk to the AI provider. That keeps it cheap
+ * enough to run live on every wire:model.blur in the editor and
+ * keeps the audit cache simple (it's just a function of post state).
+ *
+ * For an LLM-driven prose audit see SeoAuditAgentService (Phase 5.2);
+ * the agent calls THIS service's audit() via a tool so both audits
+ * stay in sync.
+ */
+class accessors="true" singleton {
+
+    // Weights applied when computing the headline 0-100 score. Tuned
+    // so the high-impact checks (focus keyword in title, headings,
+    // alt text) move the dial more than nice-to-haves (slug quality).
+    variables.weights = {
+        "titleLength"                   : 8,
+        "descriptionLength"             : 6,
+        "focusKeywordInTitle"           : 12,
+        "focusKeywordInFirstParagraph"  : 10,
+        "focusKeywordInUrl"             : 6,
+        "focusKeywordDensity"           : 8,
+        "headingHierarchy"              : 10,
+        "imagesWithoutAlt"              : 10,
+        "internalLinks"                 : 6,
+        "externalLinks"                 : 4,
+        "readabilityScore"              : 10,
+        "wordCount"                     : 6,
+        "slugQuality"                   : 4
+    };
+
+    // --------------------------------------------------------------------
+    // Public API
+    // --------------------------------------------------------------------
+
+    /**
+     * Run every check against a post entity and return the structured
+     * result + a 0-100 headline score. Caller (editor wire) decides
+     * how to render — this method does no I/O.
+     */
+    struct function audit( required any post ) {
+        var ctx = extractContext( arguments.post );
+        var checks = {
+            "titleLength"                  : checkTitleLength( ctx ),
+            "descriptionLength"            : checkDescriptionLength( ctx ),
+            "focusKeywordInTitle"          : checkFocusKeywordInTitle( ctx ),
+            "focusKeywordInFirstParagraph" : checkFocusKeywordInFirstParagraph( ctx ),
+            "focusKeywordInUrl"            : checkFocusKeywordInUrl( ctx ),
+            "focusKeywordDensity"          : checkFocusKeywordDensity( ctx ),
+            "headingHierarchy"             : checkHeadingHierarchy( ctx ),
+            "imagesWithoutAlt"             : checkImagesWithoutAlt( ctx ),
+            "internalLinks"                : checkInternalLinks( ctx ),
+            "externalLinks"                : checkExternalLinks( ctx ),
+            "readabilityScore"             : checkReadabilityScore( ctx ),
+            "wordCount"                    : checkWordCount( ctx ),
+            "slugQuality"                  : checkSlugQuality( ctx )
+        };
+        return {
+            "score"   : computeScore( checks ),
+            "checks"  : checks,
+            "summary" : summarize( checks ),
+            "context" : {
+                "wordCount"       : ctx.wordCount,
+                "hasFocusKeyword" : len( ctx.focusKeyword ) > 0
+            }
+        };
+    }
+
+    /**
+     * Lightweight overload — accept the raw fields the editor wire
+     * already has (no Quick entity round-trip), so the live panel
+     * doesn't have to persist between keystrokes. Translates into
+     * a fake-post struct and dispatches to audit().
+     */
+    struct function auditDraft(
+                 string title          = "",
+                 string slug           = "",
+                 string seoTitle       = "",
+                 string seoDescription = "",
+                 string focusKeyword   = "",
+                 string bodyMarkdown   = "",
+                 string bodyHtml       = ""
+    ) {
+        return audit( {
+            "_isDraftStruct"  : true,
+            "title"           : arguments.title,
+            "slug"            : arguments.slug,
+            "seoTitle"        : arguments.seoTitle,
+            "seoDescription"  : arguments.seoDescription,
+            "focusKeyword"    : arguments.focusKeyword,
+            "bodyMarkdown"    : arguments.bodyMarkdown,
+            "bodyHtml"        : arguments.bodyHtml
+        } );
+    }
+
+    // --------------------------------------------------------------------
+    // Context extraction (one-shot, shared by every check)
+    // --------------------------------------------------------------------
+
+    private struct function extractContext( required any post ) {
+        var p = arguments.post;
+        var isDraft = isStruct( p ) && structKeyExists( p, "_isDraftStruct" );
+
+        var title          = isDraft ? ( p.title ?: "" )          : ( p.getTitle()          ?: "" );
+        var slug           = isDraft ? ( p.slug ?: "" )           : ( p.getSlug()           ?: "" );
+        var seoTitle       = isDraft ? ( p.seoTitle ?: "" )       : ( p.getSeoTitle()       ?: "" );
+        var seoDescription = isDraft ? ( p.seoDescription ?: "" ) : ( p.getSeoDescription() ?: "" );
+        var focusKeyword   = isDraft ? ( p.focusKeyword ?: "" )   : ( p.getFocusKeyword()   ?: "" );
+        var bodyMarkdown   = isDraft ? ( p.bodyMarkdown ?: "" )   : ( p.getBodyMarkdown()   ?: "" );
+        var bodyHtml       = isDraft ? ( p.bodyHtml ?: "" )       : ( p.getBodyHtml()       ?: "" );
+
+        // Effective title / description — the same fallback chain
+        // SeoService.buildForPost uses, so the audit reflects what
+        // crawlers actually see.
+        var effectiveTitle = len( seoTitle ) ? seoTitle : title;
+        var effectiveDesc  = len( seoDescription ) ? seoDescription : "";
+
+        // Plain-text body for word counting + density math. Strip the
+        // HTML version when present (preferred, already rendered)
+        // otherwise strip markdown.
+        var plainBody = "";
+        if ( len( bodyHtml ) ) {
+            plainBody = stripHtml( bodyHtml );
+        }
+        else if ( len( bodyMarkdown ) ) {
+            plainBody = stripMarkdown( bodyMarkdown );
+        }
+
+        var words      = wordsInText( plainBody );
+        var wordCount  = words.len();
+        var keyword    = trim( lCase( focusKeyword ) );
+
+        return {
+            "title"            : title,
+            "slug"             : slug,
+            "seoTitle"         : seoTitle,
+            "seoDescription"   : seoDescription,
+            "effectiveTitle"   : effectiveTitle,
+            "effectiveDesc"    : effectiveDesc,
+            "focusKeyword"     : keyword,
+            "bodyMarkdown"     : bodyMarkdown,
+            "bodyHtml"         : bodyHtml,
+            "plainBody"        : plainBody,
+            "words"            : words,
+            "wordCount"        : wordCount
+        };
+    }
+
+    // --------------------------------------------------------------------
+    // Individual checks
+    // --------------------------------------------------------------------
+
+    private struct function checkTitleLength( required struct ctx ) {
+        var t = arguments.ctx.effectiveTitle;
+        var n = len( t );
+        if ( n == 0 ) return result( "fail", "Title is missing.", "Add a clear title — Google uses it as the primary headline in SERPs." );
+        if ( n < 30 ) return result( "warn", "Title is short (" & n & " chars).", "Aim for 50-60 characters; short titles may not communicate enough context." );
+        if ( n > 60 ) return result( "warn", "Title is long (" & n & " chars).", "Google truncates titles around 60 characters in desktop SERPs. Trim or use seo_title to shorten just the SERP version." );
+        return result( "pass", "Title length is in the ideal 30-60 char range.", "" );
+    }
+
+    private struct function checkDescriptionLength( required struct ctx ) {
+        var d = arguments.ctx.effectiveDesc;
+        var n = len( d );
+        if ( n == 0 ) return result( "warn", "SEO description is missing.", "Add an seo_description (or excerpt) so Google has something to render in the SERP snippet." );
+        if ( n < 70 ) return result( "warn", "Description is short (" & n & " chars).", "Aim for 140-160 characters. Short descriptions get auto-rewritten by Google." );
+        if ( n > 320 ) return result( "fail", "Description exceeds the 320-char column cap.", "Trim to under 320." );
+        if ( n > 165 ) return result( "warn", "Description is long (" & n & " chars).", "Google truncates around 160 chars on desktop. Keep the key message in the first 150." );
+        return result( "pass", "Description length is in the ideal 70-160 char range.", "" );
+    }
+
+    private struct function checkFocusKeywordInTitle( required struct ctx ) {
+        var fk = arguments.ctx.focusKeyword;
+        if ( !len( fk ) ) return result( "warn", "No focus keyword set.", "Set a focus keyword to enable keyword-specific checks." );
+        if ( findNoCase( fk, arguments.ctx.effectiveTitle ) > 0 ) {
+            return result( "pass", "Focus keyword appears in the title.", "" );
+        }
+        return result( "fail", "Focus keyword is missing from the title.", "Add the focus keyword '" & fk & "' to the title or seo_title — ideally near the start." );
+    }
+
+    private struct function checkFocusKeywordInFirstParagraph( required struct ctx ) {
+        var fk = arguments.ctx.focusKeyword;
+        if ( !len( fk ) ) return result( "warn", "No focus keyword set.", "" );
+        var firstPara = firstParagraph( arguments.ctx.plainBody );
+        if ( !len( firstPara ) ) return result( "warn", "Body is empty.", "Write the post body before auditing keyword placement." );
+        if ( findNoCase( fk, firstPara ) > 0 ) {
+            return result( "pass", "Focus keyword appears in the first paragraph.", "" );
+        }
+        return result( "warn", "Focus keyword not in the first paragraph.", "Mention '" & fk & "' in the opening so readers (and Google) confirm topic immediately." );
+    }
+
+    private struct function checkFocusKeywordInUrl( required struct ctx ) {
+        var fk = arguments.ctx.focusKeyword;
+        if ( !len( fk ) ) return result( "warn", "No focus keyword set.", "" );
+        var slug = lCase( arguments.ctx.slug );
+        if ( !len( slug ) ) return result( "warn", "Slug is empty.", "Set a slug." );
+        // Compare the keyword's hyphenated form to slug fragments.
+        var fkHyph = reReplace( reReplace( fk, "[\s]+", "-", "all" ), "[^a-z0-9\-]+", "", "all" );
+        if ( !len( fkHyph ) ) return result( "warn", "Focus keyword has no slug-able characters.", "" );
+        if ( findNoCase( fkHyph, slug ) > 0 ) {
+            return result( "pass", "Focus keyword appears in the URL slug.", "" );
+        }
+        return result( "warn", "Focus keyword not in the URL slug.", "Include '" & fkHyph & "' (or a fragment of it) in the slug for an extra ranking signal." );
+    }
+
+    private struct function checkFocusKeywordDensity( required struct ctx ) {
+        var fk = arguments.ctx.focusKeyword;
+        if ( !len( fk ) ) return result( "warn", "No focus keyword set.", "" );
+        if ( arguments.ctx.wordCount == 0 ) return result( "warn", "Body is empty.", "" );
+        var occurrences = countOccurrences( arguments.ctx.plainBody, fk );
+        var density = occurrences / arguments.ctx.wordCount * 100;
+        var pct     = numberFormat( density, "0.0" );
+        if ( density < 0.5 ) return result( "warn", "Focus keyword density is " & pct & "%.", "Aim for 0.5-2.5%. Currently '" & fk & "' appears " & occurrences & " time" & ( occurrences == 1 ? "" : "s" ) & " in " & arguments.ctx.wordCount & " words." );
+        if ( density > 2.5 ) return result( "fail", "Focus keyword density is " & pct & "%.", "Over 2.5% reads as keyword-stuffing. Replace some occurrences with synonyms." );
+        return result( "pass", "Keyword density is healthy at " & pct & "%.", "" );
+    }
+
+    private struct function checkHeadingHierarchy( required struct ctx ) {
+        var html = arguments.ctx.bodyHtml;
+        if ( !len( html ) && !len( arguments.ctx.bodyMarkdown ) ) {
+            return result( "warn", "Body is empty.", "" );
+        }
+        var levels = extractHeadingLevels( html, arguments.ctx.bodyMarkdown );
+        var h1Count = 0;
+        for ( var l in levels ) if ( l == 1 ) h1Count++;
+
+        // The post's own <h1> is rendered by the theme from title — the
+        // body should NOT include another h1. Multiple h1s confuse
+        // crawlers about which is the page's true heading.
+        if ( h1Count > 0 ) {
+            return result( "fail", "Body contains " & h1Count & " H1 heading(s).", "Demote body H1s to H2 — the theme already renders the post title as the page H1." );
+        }
+        if ( !levels.len() ) {
+            return result( "warn", "No headings in the body.", "Break long posts up with H2 / H3 subheadings — readers and Google both scan structure." );
+        }
+        // Walk levels; flag a skip from 2 → 4 (skipping H3) etc.
+        var prev = 1; // assume theme h1
+        for ( var l in levels ) {
+            if ( l > prev + 1 ) {
+                return result( "warn", "Heading hierarchy skips a level (jumps to H" & l & ").", "Don't skip levels — go from H2 to H3, not H2 to H4. Helps screen readers + Google's outline parser." );
+            }
+            prev = l;
+        }
+        return result( "pass", "Heading hierarchy is well-formed.", "" );
+    }
+
+    private struct function checkImagesWithoutAlt( required struct ctx ) {
+        var html = arguments.ctx.bodyHtml;
+        var md   = arguments.ctx.bodyMarkdown;
+        var missingHtml = countImgsMissingAlt( html );
+        var missingMd   = countMarkdownImgsMissingAlt( md );
+        var total = missingHtml + missingMd;
+        if ( total == 0 ) return result( "pass", "Every image has alt text.", "" );
+        return result( "fail", total & " image" & ( total == 1 ? "" : "s" ) & " missing alt text.", "Add descriptive alt text to every image — accessibility standard + ranking signal. Use the AI alt-text generator in the media picker." );
+    }
+
+    private struct function checkInternalLinks( required struct ctx ) {
+        var n = countInternalLinks( arguments.ctx.bodyHtml, arguments.ctx.bodyMarkdown );
+        if ( n >= 2 ) return result( "pass", n & " internal links found.", "" );
+        if ( n == 1 ) return result( "warn", "Only 1 internal link.", "Aim for at least 2 internal links. Use the AI internal-link suggester (Phase 10) once it lands." );
+        return result( "warn", "No internal links.", "Link to at least 2 related posts so search engines understand the site's structure and readers can dive deeper." );
+    }
+
+    private struct function checkExternalLinks( required struct ctx ) {
+        var n = countExternalLinks( arguments.ctx.bodyHtml, arguments.ctx.bodyMarkdown );
+        if ( n >= 1 ) return result( "pass", n & " external link" & ( n == 1 ? "" : "s" ) & " found.", "" );
+        return result( "warn", "No external links.", "Citing a relevant external source signals topical authority. Add at least one." );
+    }
+
+    private struct function checkReadabilityScore( required struct ctx ) {
+        if ( arguments.ctx.wordCount < 50 ) return result( "warn", "Body too short to score readability.", "" );
+        var score = fleschReadingEase( arguments.ctx.plainBody, arguments.ctx.wordCount );
+        var rounded = numberFormat( score, "0" );
+        if ( score >= 60 ) return result( "pass", "Readability score: " & rounded & " (plain English).", "" );
+        if ( score >= 30 ) return result( "warn", "Readability score: " & rounded & " (college level).", "Shorten sentences and prefer common words. Aim for 60+." );
+        return result( "fail", "Readability score: " & rounded & " (very hard to read).", "Significantly shorten sentences and simplify vocabulary." );
+    }
+
+    private struct function checkWordCount( required struct ctx ) {
+        var n = arguments.ctx.wordCount;
+        if ( n == 0 )   return result( "fail", "Body is empty.", "Write the post." );
+        if ( n < 300 )  return result( "warn", n & " words.", "Aim for 300+ words. Thin content underperforms in search." );
+        if ( n > 3000 ) return result( "pass", n & " words (long-form).", "" );
+        return result( "pass", n & " words.", "" );
+    }
+
+    private struct function checkSlugQuality( required struct ctx ) {
+        var slug = arguments.ctx.slug;
+        if ( !len( slug ) ) return result( "fail", "Slug is empty.", "Slugs are part of the URL — required." );
+        // BoxLang's `!=` is case-insensitive; use compare() for a
+        // case-sensitive check.
+        if ( compare( slug, lCase( slug ) ) != 0 ) return result( "warn", "Slug has uppercase characters.", "Lowercase only for URL consistency." );
+        if ( find( "_", slug ) > 0 ) return result( "warn", "Slug uses underscores.", "Use hyphens instead — Google parses hyphens as word separators, underscores as joiners." );
+        if ( len( slug ) > 80 ) return result( "warn", "Slug is long (" & len( slug ) & " chars).", "Keep slugs under 80 chars — easier to share and remember." );
+        return result( "pass", "Slug is clean.", "" );
+    }
+
+    // --------------------------------------------------------------------
+    // Helpers
+    // --------------------------------------------------------------------
+
+    private struct function result( required string status, required string message, required string suggestion ) {
+        return {
+            "status"     : arguments.status,
+            "message"    : arguments.message,
+            "suggestion" : arguments.suggestion
+        };
+    }
+
+    private numeric function computeScore( required struct checks ) {
+        var totalWeight  = 0;
+        var earnedWeight = 0;
+        for ( var key in arguments.checks ) {
+            var w = variables.weights[ key ] ?: 0;
+            if ( w == 0 ) continue;
+            totalWeight += w;
+            switch ( arguments.checks[ key ].status ) {
+                case "pass": earnedWeight += w;            break;
+                case "warn": earnedWeight += int( w / 2 ); break;
+                // fail = 0
+            }
+        }
+        if ( totalWeight == 0 ) return 0;
+        return int( ( earnedWeight / totalWeight ) * 100 );
+    }
+
+    private struct function summarize( required struct checks ) {
+        var pass = 0; var warn = 0; var fail = 0;
+        for ( var key in arguments.checks ) {
+            var s = arguments.checks[ key ].status;
+            if ( s == "pass" ) pass++;
+            else if ( s == "warn" ) warn++;
+            else if ( s == "fail" ) fail++;
+        }
+        return { "pass" : pass, "warn" : warn, "fail" : fail };
+    }
+
+    private array function wordsInText( required string text ) {
+        if ( !len( arguments.text ) ) return [];
+        var clean = reReplace( arguments.text, "[^a-zA-Z0-9'\s]+", " ", "all" );
+        var arr = listToArray( clean, " " & char( 9 ) & char( 10 ) & char( 13 ), false );
+        var out = [];
+        for ( var w in arr ) {
+            var t = trim( w );
+            if ( len( t ) ) out.append( t );
+        }
+        return out;
+    }
+
+    private numeric function countOccurrences( required string haystack, required string needle ) {
+        if ( !len( arguments.haystack ) || !len( arguments.needle ) ) return 0;
+        var count = 0;
+        var pos = 1;
+        while ( true ) {
+            var found = findNoCase( arguments.needle, arguments.haystack, pos );
+            if ( found == 0 ) break;
+            count++;
+            pos = found + len( arguments.needle );
+        }
+        return count;
+    }
+
+    private string function firstParagraph( required string plainBody ) {
+        if ( !len( arguments.plainBody ) ) return "";
+        // Split on double-newline to get paragraphs.
+        var parts = listToArray( arguments.plainBody, char( 10 ), false );
+        for ( var p in parts ) {
+            var t = trim( p );
+            if ( len( t ) >= 30 ) return t;   // skip leading short fragments
+        }
+        return trim( arguments.plainBody );
+    }
+
+    private string function stripMarkdown( required string md ) {
+        var s = arguments.md;
+        // Remove fenced code blocks
+        s = reReplace( s, "(?ms)```[\s\S]*?```", " ", "all" );
+        // Remove inline code
+        s = reReplace( s, "`[^`]*`", " ", "all" );
+        // Remove image markdown — keep alt text via a different path
+        s = reReplace( s, "!\[[^\]]*\]\([^)]*\)", " ", "all" );
+        // Replace [text](url) with just `text`
+        s = reReplace( s, "\[([^\]]*)\]\([^)]*\)", "\1", "all" );
+        // Strip headings markers
+        s = reReplace( s, "(?m)^[##]+\s*", "", "all" );
+        // Strip emphasis / bold
+        s = reReplace( s, "[\*_]{1,3}", "", "all" );
+        // Strip block quotes
+        s = reReplace( s, "(?m)^>\s*", "", "all" );
+        // Strip list markers
+        s = reReplace( s, "(?m)^[\-\*\+]\s+", "", "all" );
+        s = reReplace( s, "(?m)^\d+\.\s+", "", "all" );
+        return trim( s );
+    }
+
+    private string function stripHtml( required string html ) {
+        // Strip script / style blocks first.
+        var s = reReplace( arguments.html, "(?si)<script[\s\S]*?</script>", " ", "all" );
+        s = reReplace( s, "(?si)<style[\s\S]*?</style>", " ", "all" );
+        // Replace tags with a space so words don't run together.
+        s = reReplace( s, "<[^>]+>", " ", "all" );
+        // Decode common HTML entities.
+        s = replace( s, "&nbsp;", " ", "all" );
+        s = replace( s, "&amp;",  "&", "all" );
+        s = replace( s, "&lt;",   "<", "all" );
+        s = replace( s, "&gt;",   ">", "all" );
+        // Collapse runs of whitespace.
+        s = reReplace( s, "[\s]+", " ", "all" );
+        return trim( s );
+    }
+
+    private array function extractHeadingLevels( required string html, required string md ) {
+        var levels = [];
+        if ( len( arguments.html ) ) {
+            // Scan for <h1>..<h6> (HTML body wins when present).
+            var matches = reMatchNoCase( "<h[1-6][^>]*>", arguments.html );
+            for ( var m in matches ) {
+                var lvl = val( mid( m, 3, 1 ) );
+                if ( lvl > 0 ) levels.append( lvl );
+            }
+            return levels;
+        }
+        // Markdown fallback — parse `# heading` style.
+        var nl    = char( 10 );
+        var lines = listToArray( arguments.md, nl, false );
+        for ( var line in lines ) {
+            // Match leading 1-6 hash chars + space.
+            var m = reFind( "^[##]{1,6}\s+\S", line, 1, true );
+            if ( m.pos[ 1 ] > 0 ) {
+                // Count leading hashes.
+                var i = 1;
+                while ( i <= len( line ) && mid( line, i, 1 ) == "##" ) i++;
+                levels.append( i - 1 );
+            }
+        }
+        return levels;
+    }
+
+    private numeric function countImgsMissingAlt( required string html ) {
+        if ( !len( arguments.html ) ) return 0;
+        var imgs = reMatchNoCase( "<img\s[^>]*>", arguments.html );
+        var n = 0;
+        for ( var i in imgs ) {
+            // alt="..." present AND non-empty?
+            var hasAlt = reFindNoCase( "\salt\s*=\s*['" & '"' & "][^'" & '"' & "]+['" & '"' & "]", i );
+            if ( hasAlt == 0 ) n++;
+        }
+        return n;
+    }
+
+    private numeric function countMarkdownImgsMissingAlt( required string md ) {
+        if ( !len( arguments.md ) ) return 0;
+        // Markdown image syntax: ![alt](url)
+        var imgs = reMatch( "!\[([^\]]*)\]\(([^)]+)\)", arguments.md );
+        var n = 0;
+        for ( var i in imgs ) {
+            // Extract the alt-text portion.
+            var alt = reReplace( i, "!\[([^\]]*)\]\([^)]+\)", "\1", "one" );
+            if ( !len( trim( alt ) ) ) n++;
+        }
+        return n;
+    }
+
+    private numeric function countInternalLinks( required string html, required string md ) {
+        var count = 0;
+        for ( var foundLink in extractUrls( arguments.html, arguments.md ) ) {
+            if ( isInternalUrl( foundLink ) ) count++;
+        }
+        return count;
+    }
+
+    private numeric function countExternalLinks( required string html, required string md ) {
+        var count = 0;
+        for ( var foundLink in extractUrls( arguments.html, arguments.md ) ) {
+            if ( isExternalUrl( foundLink ) ) count++;
+        }
+        return count;
+    }
+
+    /**
+     * Extract every link URL from either HTML body or markdown body.
+     * BoxLang's reReplace with backref capture (`\1`) returns a
+     * struct on this version, so we do the extraction with simple
+     * string-trim ops rather than regex backrefs.
+     */
+    /**
+     * Scan a string for URLs without the regex/match-array indirection
+     * that's been throwing struct/string coercion errors. Works on
+     * either an HTML body (looks for href="..." or href='...') or a
+     * markdown body (looks for ](...)). Returns an array of plain
+     * String instances pulled via Java's String API so there's no
+     * doubt about the type.
+     */
+    private array function extractUrls( required string html, required string md ) {
+        if ( len( arguments.html ) ) return scanHtmlHrefs( arguments.html );
+        if ( len( arguments.md ) )   return scanMarkdownLinks( arguments.md );
+        return [];
+    }
+
+    /**
+     * Use Java's String API directly so BoxLang's regex/match-array
+     * struct/string coercion can't bite. java.lang.String.indexOf
+     * is well-defined integer return and substring is well-defined
+     * string return — both transparent across BoxLang versions.
+     */
+    private array function scanHtmlHrefs( required string html ) {
+        // `var url` collides with the URL scope (CLAUDE.md gotcha) so
+        // every link gets named `foundLink` here.
+        var out  = [];
+        var jSrc = javaCast( "string", arguments.html );
+        var jLc  = javaCast( "string", lCase( arguments.html ) );
+        var pos  = 0;   // 0-based for Java
+        var n    = jSrc.length();
+        while ( pos < n ) {
+            var idx = jLc.indexOf( "href", pos );
+            if ( idx == -1 ) break;
+            var p = idx + 4;
+            while ( p < n && isJavaWhitespace( jSrc.codePointAt( p ) ) ) p++;
+            if ( p >= n || jSrc.codePointAt( p ) != 61 ) { pos = idx + 1; continue; }   // 61 = '='
+            p++;
+            while ( p < n && isJavaWhitespace( jSrc.codePointAt( p ) ) ) p++;
+            if ( p >= n ) break;
+            var quoteCh = jSrc.codePointAt( p );
+            if ( quoteCh != 34 && quoteCh != 39 ) { pos = idx + 1; continue; }   // 34 = ", 39 = '
+            p++;
+            var endPos = jSrc.indexOf( javaCast( "string", char( quoteCh ) ), p );
+            if ( endPos == -1 ) break;
+            var foundLink = jSrc.substring( p, endPos );
+            if ( foundLink.length() > 0 ) out.append( foundLink );
+            pos = endPos + 1;
+        }
+        return out;
+    }
+
+    private array function scanMarkdownLinks( required string md ) {
+        var out  = [];
+        var jSrc = javaCast( "string", arguments.md );
+        var pos  = 0;
+        var n    = jSrc.length();
+        while ( pos < n ) {
+            var idx = jSrc.indexOf( "](", pos );
+            if ( idx == -1 ) break;
+            var startUrl = idx + 2;
+            var endUrl   = jSrc.indexOf( ")", startUrl );
+            if ( endUrl == -1 ) break;
+            var foundLink = jSrc.substring( startUrl, endUrl );
+            foundLink = foundLink.trim();
+            // Drop any " title" suffix Markdown allows: ](url "title")
+            var spaceIdx = foundLink.indexOf( " " );
+            if ( spaceIdx >= 0 ) foundLink = foundLink.substring( 0, spaceIdx );
+            if ( foundLink.length() > 0 ) out.append( foundLink );
+            pos = endUrl + 1;
+        }
+        return out;
+    }
+
+    private boolean function isJavaWhitespace( required numeric ch ) {
+        return arguments.ch == 32 || arguments.ch == 9 || arguments.ch == 10 || arguments.ch == 13;
+    }
+
+    private boolean function isInternalUrl( required string href ) {
+        var u = trim( arguments.href );
+        if ( !len( u ) ) return false;
+        // Skip anchors-only and mailto/tel.
+        if ( left( u, 1 ) == "##" ) return false;
+        if ( reFindNoCase( "^(mailto|tel):", u ) > 0 ) return false;
+        // Same-origin: relative paths or absolute paths starting with /
+        if ( left( u, 1 ) == "/" ) return true;
+        if ( reFindNoCase( "^https?://", u ) == 0 ) return true;
+        return false;
+    }
+
+    private boolean function isExternalUrl( required string href ) {
+        var u = trim( arguments.href );
+        if ( !len( u ) ) return false;
+        return reFindNoCase( "^https?://", u ) > 0;
+    }
+
+    /**
+     * Flesch Reading Ease — 206.835 - 1.015 * (words/sentences) -
+     * 84.6 * (syllables/words). Higher = easier. Approximate
+     * syllable count (vowel groups) is good enough for editorial
+     * scoring without a dictionary lookup.
+     */
+    private numeric function fleschReadingEase( required string text, required numeric wordCount ) {
+        if ( arguments.wordCount == 0 ) return 0;
+        var sentences = max( 1, sentenceCount( arguments.text ) );
+        var syllables = approxSyllableCount( arguments.text );
+        var avgSentLen   = arguments.wordCount / sentences;
+        var avgSyllables = syllables / arguments.wordCount;
+        var score = 206.835 - ( 1.015 * avgSentLen ) - ( 84.6 * avgSyllables );
+        if ( score < 0 ) score = 0;
+        if ( score > 100 ) score = 100;
+        return score;
+    }
+
+    private numeric function sentenceCount( required string text ) {
+        // Crude — count terminal . / ! / ? characters.
+        var matches = reMatch( "[\.\!\?]+\s", arguments.text & " " );
+        return matches.len();
+    }
+
+    private numeric function approxSyllableCount( required string text ) {
+        var clean = lCase( reReplace( arguments.text, "[^a-z\s]+", " ", "all" ) );
+        var words = listToArray( clean, " " & char( 9 ) & char( 10 ) & char( 13 ), false );
+        var total = 0;
+        for ( var w in words ) {
+            if ( !len( w ) ) continue;
+            // Count vowel groups; 1 minimum.
+            var groups = reMatch( "[aeiouy]+", w );
+            var n = groups.len();
+            // Silent terminal e.
+            if ( right( w, 1 ) == "e" && n > 1 ) n--;
+            if ( n == 0 ) n = 1;
+            total += n;
+        }
+        return total;
+    }
+
+}

@@ -23,6 +23,8 @@
 property name="postService"         inject="PostService";
 property name="draftPreviewService"  inject="DraftPreviewService";
 property name="aiService"            inject="AiAssistantService";
+property name="auditService"         inject="SeoAuditService";
+property name="auditAgentService"    inject="SeoAuditAgentService";
 property name="aiImageService"       inject="AiImageService";
 property name="themeService"         inject="ThemeService";
 property name="cbauth"               inject="AuthenticationService@cbauth";
@@ -39,6 +41,7 @@ data = {
     "visibility"     : "public",
     "seoTitle"       : "",
     "seoDescription" : "",
+    "focusKeyword"   : "",
     "allowIndexing"  : true,
     "templateOverride" : "",
     "scheduledAt"    : "",
@@ -67,6 +70,13 @@ data = {
     // SEO Phase 4 — CTR-variants modal state
     "showCtrModal"    : false,
     "ctrVariants"     : [],
+    // SEO Phase 5.2 — AI audit panel state
+    "showAuditPanel"  : false,
+    "currentAuditId"  : 0,
+    "auditMarkdown"   : "",
+    "auditTokens"     : 0,
+    "auditError"      : "",
+    "auditFollowUpQ"  : "",
     // 2.I AI image-gen state
     "showImageModal"  : false,
     "imagePrompt"     : "",
@@ -124,6 +134,7 @@ private function loadFromDb( required id ) {
     data.visibility     = post.getVisibility() ?: "public";
     data.seoTitle       = post.getSeoTitle() ?: "";
     data.seoDescription = post.getSeoDescription() ?: "";
+    data.focusKeyword   = post.getFocusKeyword() ?: "";
     data.allowIndexing  = !!( post.getAllowIndexing() ?: 1 );
     data.templateOverride = post.getTemplateOverride() ?: "";
     data.scheduledAt    = len( post.getScheduledAt() ?: "" )
@@ -630,6 +641,32 @@ function aiSuggestCtrTitleVariants() {
     catch ( any e )                         { data.aiError = "Unexpected failure: " & e.message; }
 }
 
+/**
+ * SEO Phase 5.1 — live audit helper for the sidebar panel. Pure
+ * function of the wire's data — no DB hit, no cache. The template
+ * calls this on every render so the panel reacts to wire:model.blur
+ * on title / body / seoTitle / seoDescription / focusKeyword.
+ */
+struct function liveAudit() {
+    return auditService.auditDraft(
+        title          = data.title          ?: "",
+        slug           = data.slug           ?: "",
+        seoTitle       = data.seoTitle       ?: "",
+        seoDescription = data.seoDescription ?: "",
+        focusKeyword   = data.focusKeyword   ?: "",
+        bodyMarkdown   = data.bodyMarkdown   ?: ""
+    );
+}
+
+/**
+ * Humanize a camelCase audit check key for the live panel labels.
+ * "focusKeywordInTitle" → "Focus Keyword In Title"
+ */
+string function humanizeCheckKey( required string key ) {
+    var spaced = reReplace( arguments.key, "([a-z])([A-Z])", "\1 \2", "all" );
+    return uCase( left( spaced, 1 ) ) & right( spaced, len( spaced ) - 1 );
+}
+
 function applyCtrVariant( required numeric index ) {
     var idx     = int( arguments.index ?: 0 );
     var variants = data.ctrVariants ?: [];
@@ -644,6 +681,130 @@ function applyCtrVariant( required numeric index ) {
 function closeCtrModal() {
     data.showCtrModal = false;
     data.ctrVariants  = [];
+}
+
+// --------------------------------------------------------------------
+// SEO Phase 5.2 — AI Audit Agent
+// --------------------------------------------------------------------
+
+function openAuditPanel() {
+    data.showAuditPanel = true;
+    data.auditError     = "";
+    data.auditFollowUpQ = "";
+    // Surface the most-recent saved audit on first open so the user
+    // doesn't have to re-run if one already exists.
+    if ( ( data.postId ?: 0 ) > 0 ) {
+        var prior = auditAgentService.listReports( postId = data.postId, limit = 1 );
+        if ( prior.len() && structKeyExists( prior[ 1 ], "id" ) ) {
+            data.currentAuditId = val( prior[ 1 ].id );
+            data.auditMarkdown  = prior[ 1 ].report_markdown ?: "";
+            data.auditTokens    = val( prior[ 1 ].tokens_used ?: 0 );
+        }
+    }
+}
+
+function closeAuditPanel() {
+    data.showAuditPanel = false;
+    data.auditError     = "";
+}
+
+function runAiAudit() {
+    data.auditError = "";
+    if ( ( data.postId ?: 0 ) <= 0 ) {
+        data.auditError = "Save the post first — the AI audit needs a persisted post.";
+        return;
+    }
+    try {
+        // Pull a fresh entity (the wire's data may have unsaved
+        // edits — the audit reflects the saved state).
+        var post = getInstance( "Post" ).find( data.postId );
+        if ( isNull( post ) ) {
+            data.auditError = "Post not found.";
+            return;
+        }
+        var result = auditAgentService.runAudit( post = post, userId = cbauth.getUser().getId() );
+        data.currentAuditId = val( result.reportId );
+        data.auditMarkdown  = result.reportMarkdown;
+        data.auditTokens    = val( result.tokensUsed );
+        data.flashOk        = "AI audit complete.";
+    }
+    catch ( bxBlogger.AiUnavailable e )    { data.auditError = e.message; }
+    catch ( bxBlogger.AiBudgetExceeded e ) { data.auditError = e.message; }
+    catch ( bxBlogger.SeoAuditFailed e )   { data.auditError = e.message; }
+    catch ( any e )                         { data.auditError = "Unexpected failure: " & e.message; }
+}
+
+function askAuditFollowUp() {
+    data.auditError = "";
+    if ( ( data.currentAuditId ?: 0 ) <= 0 ) {
+        data.auditError = "Run an audit first before asking a follow-up.";
+        return;
+    }
+    var q = trim( data.auditFollowUpQ ?: "" );
+    if ( !len( q ) ) {
+        data.auditError = "Type a follow-up question first.";
+        return;
+    }
+    try {
+        var result = auditAgentService.askFollowUp(
+            reportId = data.currentAuditId,
+            question = q,
+            userId   = cbauth.getUser().getId()
+        );
+        data.auditMarkdown  = result.reportMarkdown;
+        data.auditTokens    = val( data.auditTokens ) + val( result.tokensUsed );
+        data.auditFollowUpQ = "";
+    }
+    catch ( bxBlogger.AiUnavailable e )    { data.auditError = e.message; }
+    catch ( bxBlogger.AiBudgetExceeded e ) { data.auditError = e.message; }
+    catch ( bxBlogger.SeoAuditFailed e )   { data.auditError = e.message; }
+    catch ( any e )                         { data.auditError = "Unexpected failure: " & e.message; }
+}
+
+function loadAuditReport( required numeric reportId ) {
+    var rid = val( arguments.reportId ?: 0 );
+    if ( rid <= 0 ) return;
+    var row = auditAgentService.getReport( rid );
+    if ( !row.len() ) return;
+    data.currentAuditId = rid;
+    data.auditMarkdown  = row.report_markdown ?: "";
+    data.auditTokens    = val( row.tokens_used ?: 0 );
+    data.auditError     = "";
+}
+
+/**
+ * Markdown → sanitized HTML for the report panel. bx-markdown's
+ * markdown() BIF + cbantisamy's clean() — same chain PostService
+ * uses for body compilation.
+ */
+string function renderAuditMarkdown() {
+    var md = data.auditMarkdown ?: "";
+    if ( !len( md ) ) return "";
+    try {
+        var html = markdown( md );
+        return html;
+    }
+    catch ( any e ) {
+        return "<pre>" & encodeForHTML( md ) & "</pre>";
+    }
+}
+
+/**
+ * Reports list for the History dropdown. Only returns rows that
+ * actually have a saved report to load — pending / failed rows
+ * would render as empty when picked.
+ */
+array function auditHistory() {
+    if ( ( data.postId ?: 0 ) <= 0 ) return [];
+    var rows = auditAgentService.listReports( postId = data.postId, limit = 20 );
+    var out = [];
+    for ( var r in rows ) {
+        if ( ( r.status ?: "" ) == "complete" && len( r.report_markdown ?: "" ) ) {
+            out.append( r );
+        }
+        if ( out.len() >= 10 ) break;
+    }
+    return out;
 }
 
 // --------------------------------------------------------------------
@@ -776,6 +937,7 @@ private struct function collectAttrs() {
         "visibility"     : data.visibility,
         "seoTitle"       : data.seoTitle,
         "seoDescription" : data.seoDescription,
+        "focusKeyword"   : trim( data.focusKeyword ?: "" ),
         "allowIndexing"  : data.allowIndexing ? 1 : 0,
         // 4.C — Theme.templateView() treats empty and the literal
         // "default" interchangeably as "render the base view", so we
@@ -1727,12 +1889,65 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 							          maxlength="320" wire:model.blur="seoDescription"></textarea>
 						</div>
 
+						<div class="mb-2">
+							<label for="postFocusKeyword" class="form-label small">Focus keyword</label>
+							<input type="text" id="postFocusKeyword" class="form-control form-control-sm"
+							       wire:model.blur="focusKeyword" maxlength="120"
+							       placeholder="e.g. BoxLang adoption">
+							<div class="form-text small">Drives the keyword-specific audit checks below + AI generators.</div>
+						</div>
+
 						<div class="form-check">
 							<input class="form-check-input" type="checkbox" id="postAllowIndexing"
 							       wire:model.live="allowIndexing">
 							<label class="form-check-label small" for="postAllowIndexing">
 								Allow search indexing
 							</label>
+						</div>
+
+						<!--- SEO Phase 5.1 - Live Audit Panel --->
+						<bx:set audit = liveAudit()>
+						<hr class="my-3">
+						<div class="d-flex justify-content-between align-items-center mb-2">
+							<span class="h6 mb-0">SEO audit</span>
+							<button type="button"
+							        class="btn btn-sm btn-outline-primary"
+							        wire:click="openAuditPanel"
+							        title="Open the AI SEO Audit panel">
+								<i class="bi bi-robot me-1"></i> AI Audit
+							</button>
+						</div>
+						<div class="d-flex justify-content-between align-items-center mb-2">
+							<span class="text-muted small">Live deterministic score</span>
+							<bx:set scoreClass = audit.score gte 80 ? "bg-success" : ( audit.score gte 60 ? "bg-warning text-dark" : "bg-danger" )>
+							<span class="badge #scoreClass#" title="Live SEO audit score (0-100)">
+								#audit.score#/100
+							</span>
+						</div>
+						<div class="small text-muted mb-2">
+							<i class="bi bi-circle-fill text-success"></i> #audit.summary.pass# pass
+							&nbsp;<i class="bi bi-circle-fill text-warning"></i> #audit.summary.warn# warn
+							&nbsp;<i class="bi bi-circle-fill text-danger"></i> #audit.summary.fail# fail
+						</div>
+						<div class="seo-audit-list small" style="max-height: 320px; overflow-y: auto;">
+							<bx:loop array="#structKeyArray( audit.checks )#" item="checkKey">
+								<bx:set ck = audit.checks[ checkKey ]>
+								<bx:set dotClass = ck.status == "pass" ? "text-success" : ( ck.status == "warn" ? "text-warning" : "text-danger" )>
+								<details class="mb-1">
+									<summary class="d-flex align-items-start gap-2" style="cursor: pointer;">
+										<i class="bi bi-circle-fill #dotClass# mt-1" style="font-size: .55rem;"></i>
+										<span class="flex-grow-1">
+											<strong>#humanizeCheckKey( checkKey )#:</strong>
+											#encodeForHTML( ck.message )#
+										</span>
+									</summary>
+									<bx:if len( ck.suggestion ?: "" )>
+										<div class="ps-3 ms-1 mt-1 text-muted">
+											#encodeForHTML( ck.suggestion )#
+										</div>
+									</bx:if>
+								</details>
+							</bx:loop>
 						</div>
 					</div>
 				</div>
@@ -1896,6 +2111,114 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 					</div>
 					<div class="modal-footer">
 						<button type="button" class="btn btn-outline-secondary" wire:click="closeCtrModal">Cancel</button>
+					</div>
+				</div>
+			</div>
+		</div>
+	</bx:if>
+
+	<!--- SEO Phase 5.2 — AI SEO Audit panel (modal) ------------------ --->
+	<bx:if args.showAuditPanel>
+		<div class="modal show d-block" tabindex="-1" style="background:rgba(0,0,0,.35);">
+			<div class="modal-dialog modal-xl modal-dialog-scrollable">
+				<div class="modal-content" style="min-height: 70vh;">
+					<div class="modal-header">
+						<h5 class="modal-title">
+							<i class="bi bi-robot me-1"></i> AI SEO Audit
+						</h5>
+						<button type="button" class="btn-close" wire:click="closeAuditPanel"></button>
+					</div>
+					<div class="modal-body" style="min-height: 60vh;">
+						<bx:if len( args.auditError )>
+							<div class="alert alert-warning small">
+								<i class="bi bi-exclamation-triangle me-1"></i>#encodeForHTML( args.auditError )#
+							</div>
+						</bx:if>
+
+						<div class="d-flex justify-content-between align-items-center mb-3">
+							<div>
+								<button type="button"
+								        class="btn btn-primary btn-sm"
+								        wire:click="runAiAudit"
+								        wire:target="runAiAudit"
+								        wire:loading.attr="disabled"
+								        title="Run a fresh AI audit against the saved post">
+									<i class="bi bi-magic me-1" wire:loading.remove wire:target="runAiAudit"></i>
+									<span class="spinner-border spinner-border-sm me-1" wire:loading wire:target="runAiAudit"></span>
+									#( ( args.currentAuditId ?: 0 ) > 0 ) ? "Re-run audit" : "Run audit"#
+								</button>
+								<bx:if val( args.auditTokens ) gt 0>
+									<span class="ms-2 text-muted small">
+										#numberFormat( args.auditTokens )# tokens
+									</span>
+								</bx:if>
+							</div>
+
+							<bx:set history = auditHistory()>
+							<bx:if history.len() gt 1>
+								<div class="dropdown">
+									<button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+										History (#history.len()#)
+									</button>
+									<ul class="dropdown-menu dropdown-menu-end">
+										<bx:loop array="#history#" item="h">
+											<li>
+												<button type="button"
+												        class="dropdown-item small"
+												        wire:click="loadAuditReport(#h.id#)">
+													<bx:if h.id == args.currentAuditId><strong></bx:if>
+													#dateTimeFormat( h.generated_at, "yyyy-mm-dd HH:nn" )#
+													— score #h.deterministic_score#
+													<bx:if h.id == args.currentAuditId></strong></bx:if>
+												</button>
+											</li>
+										</bx:loop>
+									</ul>
+								</div>
+							</bx:if>
+						</div>
+
+						<div wire:loading wire:target="runAiAudit" class="text-muted py-4 text-center">
+							<span class="spinner-border spinner-border-sm me-2 align-middle"></span>
+							<span class="small align-middle">Running tools and producing the audit &mdash; this can take 10&ndash;60 seconds.</span>
+						</div>
+
+						<div wire:loading.remove wire:target="runAiAudit">
+							<bx:if len( args.auditMarkdown )>
+								<div class="audit-report-body">
+									#renderAuditMarkdown()#
+								</div>
+
+								<hr class="my-4">
+
+								<form wire:submit.prevent="askAuditFollowUp">
+									<label for="auditFollowUpQ" class="form-label small">Ask a follow-up</label>
+									<div class="input-group">
+										<input id="auditFollowUpQ"
+										       type="text"
+										       class="form-control"
+										       wire:model.blur="auditFollowUpQ"
+										       placeholder="e.g. Expand on the keyword density issue">
+										<button type="submit"
+										        class="btn btn-outline-primary"
+										        wire:target="askAuditFollowUp"
+										        wire:loading.attr="disabled">
+											<i class="bi bi-send"
+											   wire:loading.remove wire:target="askAuditFollowUp"></i>
+											<span class="spinner-border spinner-border-sm"
+											      wire:loading wire:target="askAuditFollowUp"></span>
+											Ask
+										</button>
+									</div>
+									<div class="form-text small">The agent retains the original audit in memory so the follow-up is contextual.</div>
+								</form>
+							<bx:else>
+								<p class="text-muted small mb-0">No audit yet. Click <strong>Run audit</strong> to generate one.</p>
+							</bx:if>
+						</div>
+					</div>
+					<div class="modal-footer">
+						<button type="button" class="btn btn-outline-secondary" wire:click="closeAuditPanel">Close</button>
 					</div>
 				</div>
 			</div>

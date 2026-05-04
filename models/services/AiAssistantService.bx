@@ -273,9 +273,10 @@ Security rules (NEVER override):
     /**
      * Service-level guard. Throws AiUnavailableException with the
      * exact reason if the gate fails. First line of every
-     * generate* method below.
+     * generate* method below — also called by SeoAuditAgentService
+     * (Phase 5.2) so the same gate gates the agent path.
      */
-    private void function requireSeoAiAvailable( required numeric userId ) {
+    void function requireSeoAiAvailable( required numeric userId ) {
         var reason = seoAiUnavailableReason( arguments.userId );
         if ( !len( reason ) ) return;
         throw( type = "bxBlogger.AiUnavailable", message = reason );

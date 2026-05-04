@@ -1,0 +1,226 @@
+/**
+ * bx-Blogger — SeoAuditAgentServiceSpec (SEO Phase 5.2)
+ *
+ * Tests the persistence + tool implementations + the gate. The live
+ * aiAgent.run() path requires a real provider, so it's covered via
+ * manual smoke-test in the editor rather than spec — these specs
+ * verify everything *around* the agent call so a regression in the
+ * tool plumbing surfaces here.
+ *
+ * Covers:
+ *   - requireGate: AiUnavailable thrown when env is wrong
+ *   - listReports / getReport: pagination + ordering
+ *   - tool implementations: getPostSummary, getDeterministicAudit,
+ *     getFocusKeywordMetrics, getOutboundLinkHealth all return
+ *     well-shaped data for a real persisted post.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        try {
+            var qb = getInstance( "QueryBuilder@qb" );
+            if ( arrayLen( variables.createdIds.users ?: [] ) ) {
+                qb.newQuery().from( "ai_usage" ).whereIn( "user_id", variables.createdIds.users ).delete();
+            }
+        } catch ( any e ) {}
+
+        // Clear leaked AI_* system properties (see SeoAiGenerationSpec).
+        clearSystemProp( "AI_ENABLED"  );
+        clearSystemProp( "AI_PROVIDER" );
+        clearSystemProp( "AI_MODEL"    );
+        clearSystemProp( "AI_API_KEY"  );
+
+        super.afterAll();
+    }
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.createdIds = { "users" : [] };
+        variables.svc        = getInstance( "SeoAuditAgentService" );
+        variables.postSvc    = getInstance( "PostService" );
+        variables.settingSvc = getInstance( "SettingService" );
+
+        variables.savedSeoEnabled = variables.settingSvc.get( "ai.seo.enabled", true );
+    }
+
+    function run() {
+        describe( "SeoAuditAgentService", function() {
+
+            beforeEach( function() {
+                setEnv( "AI_ENABLED",  "true"            );
+                setEnv( "AI_PROVIDER", "openrouter"      );
+                setEnv( "AI_MODEL",    "qwen/qwen-turbo" );
+                setEnv( "AI_API_KEY",  "sk-test-key"     );
+                variables.settingSvc.set( key = "ai.seo.enabled", value = "true", type = "bool" );
+            } );
+
+            afterEach( function() {
+                variables.settingSvc.set( key = "ai.seo.enabled", value = variables.savedSeoEnabled, type = "bool" );
+            } );
+
+            describe( "gate", function() {
+
+                it( "throws AiUnavailable when AI_API_KEY is blank", function() {
+                    setEnv( "AI_API_KEY", "" );
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    var post = makePostFor( u );
+
+                    var threw = false;
+                    try { variables.svc.runAudit( post = post, userId = u.getId() ); }
+                    catch ( bxBlogger.AiUnavailable e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+            } );
+
+            describe( "tool implementations", function() {
+
+                it( "toolGetPostSummary returns the canonical fields", function() {
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    var post = makePostFor( u, {
+                        "title"        : "Adopting BoxLang in CFML shops",
+                        "slug"         : "adopting-boxlang-spec-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                        "focusKeyword" : "BoxLang"
+                    } );
+
+                    var summary = variables.svc.toolGetPostSummary( post.getId() );
+                    expect( summary.title ).toBe( "Adopting BoxLang in CFML shops" );
+                    expect( summary.focusKeyword ).toBe( "BoxLang" );
+                } );
+
+                it( "toolGetDeterministicAudit returns the same shape as SeoAuditService.audit", function() {
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    var post = makePostFor( u, { "focusKeyword" : "BoxLang" } );
+
+                    var auditResult = variables.svc.toolGetDeterministicAudit( post.getId() );
+                    expect( auditResult ).toHaveKey( "score" );
+                    expect( auditResult ).toHaveKey( "checks" );
+                    expect( auditResult ).toHaveKey( "summary" );
+                } );
+
+                it( "toolGetFocusKeywordMetrics returns set:false when keyword blank", function() {
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    var post = makePostFor( u, { "focusKeyword" : "" } );
+
+                    var metrics = variables.svc.toolGetFocusKeywordMetrics( post.getId() );
+                    expect( metrics.set ).toBeFalse();
+                } );
+
+                it( "toolGetFocusKeywordMetrics returns set:true + check booleans when set", function() {
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    var post = makePostFor( u, {
+                        "title"        : "BoxLang adoption guide",
+                        "focusKeyword" : "BoxLang"
+                    } );
+
+                    var metrics = variables.svc.toolGetFocusKeywordMetrics( post.getId() );
+                    expect( metrics.set ).toBeTrue();
+                    expect( metrics ).toHaveKey( "inTitle" );
+                    expect( metrics.inTitle ).toBeTrue();
+                } );
+
+                it( "toolGetOutboundLinkHealth returns empty array when no rows exist", function() {
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    var post = makePostFor( u );
+
+                    var rows = variables.svc.toolGetOutboundLinkHealth( post.getId() );
+                    expect( rows.len() ).toBe( 0 );
+                } );
+
+            } );
+
+            describe( "listReports + getReport", function() {
+
+                it( "listReports returns rows newest-first", function() {
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    var post = makePostFor( u );
+
+                    var qb = getInstance( "QueryBuilder@qb" );
+                    qb.newQuery().from( "seo_audit_reports" ).insert( {
+                        "post_id"             : post.getId(),
+                        "generated_by_user_id": u.getId(),
+                        "generated_at"        : "2026-05-01 10:00:00",
+                        "deterministic_score" : 50,
+                        "report_markdown"     : "Older report",
+                        "status"              : "complete",
+                        "tokens_used"         : 100
+                    } );
+                    qb.newQuery().from( "seo_audit_reports" ).insert( {
+                        "post_id"             : post.getId(),
+                        "generated_by_user_id": u.getId(),
+                        "generated_at"        : "2026-05-03 12:00:00",
+                        "deterministic_score" : 75,
+                        "report_markdown"     : "Newer report",
+                        "status"              : "complete",
+                        "tokens_used"         : 150
+                    } );
+
+                    var rows = variables.svc.listReports( post.getId() );
+                    expect( rows.len() ).toBe( 2 );
+                    expect( rows[ 1 ].report_markdown ).toBe( "Newer report" );
+                    expect( rows[ 2 ].report_markdown ).toBe( "Older report" );
+                } );
+
+                it( "getReport returns a row by id", function() {
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    var post = makePostFor( u );
+
+                    var qb = getInstance( "QueryBuilder@qb" );
+                    qb.newQuery().from( "seo_audit_reports" ).insert( {
+                        "post_id"             : post.getId(),
+                        "generated_by_user_id": u.getId(),
+                        "generated_at"        : "2026-05-03 12:00:00",
+                        "deterministic_score" : 75,
+                        "report_markdown"     : "spec report",
+                        "status"              : "complete",
+                        "tokens_used"         : 200
+                    } );
+                    var rows = variables.svc.listReports( post.getId() );
+                    expect( rows.len() ).toBeGTE( 1 );
+                    var rid = val( rows[ 1 ].id );
+
+                    var row = variables.svc.getReport( rid );
+                    expect( row ).toHaveKey( "id" );
+                    expect( row.report_markdown ).toBe( "spec report" );
+                } );
+
+                it( "getReport returns empty struct when missing", function() {
+                    var row = variables.svc.getReport( 999999999 );
+                    expect( structIsEmpty( row ) ).toBeTrue();
+                } );
+
+            } );
+
+        } );
+    }
+
+    private any function makePostFor( required any user, struct overrides = {} ) {
+        var defaults = {
+            "authorId"     : arguments.user.getId(),
+            "title"        : "Spec audit-agent post",
+            "slug"         : "audit-agent-spec-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+            "bodyMarkdown" : "Body content. BoxLang is fast. The migration is simple."
+        };
+        structAppend( defaults, arguments.overrides, true );
+        var post = variables.postSvc.create( defaults );
+        variables.postSvc.publish( post );
+        return post;
+    }
+
+    private any function trackUser( required any user ) {
+        variables.createdIds.users.append( arguments.user.getId() );
+        return arguments.user;
+    }
+
+    private void function setEnv( required string key, required string value ) {
+        createObject( "java", "java.lang.System" ).setProperty( arguments.key, arguments.value );
+    }
+
+    private void function clearSystemProp( required string key ) {
+        try {
+            createObject( "java", "java.lang.System" ).clearProperty( arguments.key );
+        }
+        catch ( any e ) {}
+    }
+
+}

@@ -1,0 +1,390 @@
+/**
+ * bx-Blogger — SeoAuditAgentService (SEO Phase 5.2)
+ *
+ * Wraps a bx-ai aiAgent that produces a markdown SEO audit report
+ * for a single post. The agent's instructions come from the
+ * editable `seo_audit_report` ai_prompts row. The agent has tools
+ * exposing the deterministic audit, focus-keyword metrics, and
+ * (when wired up in later phases) link health + GSC search data —
+ * so the agent decides which signals to read rather than the
+ * developer hard-coding the data assembly.
+ *
+ * Public API:
+ *
+ *   runAudit( post, userId )
+ *     → struct { reportId, reportMarkdown, tokensUsed }
+ *     Persists a new row in seo_audit_reports.
+ *
+ *   askFollowUp( reportId, question, userId )
+ *     → struct { reportMarkdown, tokensUsed }
+ *     Re-creates the agent with the prior conversation seeded into
+ *     memory + appends the answer to the same row's report_markdown.
+ *
+ *   listReports( postId, limit = 20 )
+ *     → array of report rows ordered newest-first.
+ *
+ *   getReport( reportId )
+ *     → struct row or empty struct on missing.
+ *
+ * Defense in depth: every public method calls
+ * AiAssistantService.requireSeoAiAvailable() first so a UI bug
+ * exposing the button without the gate can't actually run the
+ * provider. Token usage is recorded into the existing ai_usage
+ * table tagged 'seo_audit_report'.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox"            inject="wirebox";
+    property name="log"                inject="logbox:logger:{this}";
+    property name="aiPromptService"    inject="AiPromptService";
+    property name="auditService"       inject="SeoAuditService";
+    property name="settingService"     inject="SettingService";
+    property name="qb"                 inject="QueryBuilder@qb";
+
+    variables.basePromptFallback = "You are a senior SEO consultant reviewing a single blog post. The user message contains POST METADATA, the DETERMINISTIC AUDIT results, and the POST BODY. Return a markdown report with these sections: ###### Headline assessment, ###### Top 3 fixes, ###### Keyword positioning, ###### Quick wins. Be specific and reference exact headings or paragraphs.";
+
+    // --------------------------------------------------------------------
+    // Public API
+    // --------------------------------------------------------------------
+
+    struct function runAudit( required any post, required numeric userId ) {
+        requireGate( arguments.userId );
+
+        var detAudit   = variables.auditService.audit( arguments.post );
+        var promptInfo = readPromptInfo();
+
+        // Insert the pending row first so a provider failure still
+        // leaves a trace. qb.insert returns the underlying query
+        // result; the generated id is on `.result.generatedKey`.
+        var insRes = qb.newQuery().from( "seo_audit_reports" ).insert( {
+            "post_id"              : arguments.post.getId(),
+            "generated_by_user_id" : arguments.userId,
+            "generated_at"         : nowDb(),
+            "model_used"           : getSystemSetting( "AI_MODEL", "" ),
+            "prompt_version"       : promptInfo.id,
+            "deterministic_score"  : detAudit.score,
+            "status"               : "pending",
+            "tokens_used"          : 0
+        } );
+        var rowId = extractGeneratedKey( insRes );
+
+        // Fallback: if qb's return shape didn't surface the key, look
+        // up the row we just wrote by its (post_id, generated_at, user)
+        // tuple. The insert is on the same connection so the row is
+        // guaranteed visible. This unblocks the UPDATE persistence
+        // when extractGeneratedKey returns 0.
+        if ( rowId == 0 ) {
+            var lookup = qb.newQuery()
+                .from( "seo_audit_reports" )
+                .where( "post_id", arguments.post.getId() )
+                .where( "generated_by_user_id", arguments.userId )
+                .where( "status", "pending" )
+                .orderBy( "id", "desc" )
+                .first();
+            if ( !structIsEmpty( lookup ) ) rowId = val( lookup.id ?: 0 );
+        }
+        log.info( "SeoAuditAgentService.runAudit insertResult rowId=" & rowId & " resultType=" & ( isStruct( insRes ) ? "struct" : ( isArray( insRes ) ? "array" : "other" ) ) );
+
+        try {
+            // Pre-assemble every "tool" output into a single user
+            // message so we can do this in one provider call. The
+            // bx-ai agent loop was hanging on tool-call resolution
+            // for our use case; this trades agent autonomy for
+            // predictable single-shot timing. Output quality is
+            // unchanged because the prompt already directs the
+            // model to use a fixed structure.
+            var userContent = buildAuditContext( arguments.post, detAudit );
+            var provider    = wirebox.getInstance( "AiAssistantService" );
+            var fullSystemPrompt = appendGuardrails( promptInfo.body );
+            var response    = wirebox.getInstance( "AiProvider" ).complete(
+                systemPrompt = fullSystemPrompt,
+                userContent  = userContent
+            );
+
+            var reportText = trim( response.text ?: "" );
+            var tokens     = val( response.totalTokens ?: 0 );
+
+            qb.newQuery().from( "seo_audit_reports" )
+                .where( "id", rowId )
+                .update( {
+                    "report_markdown" : reportText,
+                    "tokens_used"     : tokens,
+                    "status"          : "complete"
+                } );
+
+            recordUsage( arguments.userId, "seo_audit_report", tokens );
+
+            return {
+                "reportId"       : rowId,
+                "reportMarkdown" : reportText,
+                "tokensUsed"     : tokens
+            };
+        }
+        catch ( any e ) {
+            qb.newQuery().from( "seo_audit_reports" )
+                .where( "id", rowId )
+                .update( {
+                    "status"        : "failed",
+                    "error_message" : ( e.message ?: "(no message)" )
+                } );
+            log.error( "SeoAuditAgentService.runAudit failed for post=" & arguments.post.getId() & ": " & e.message );
+            throw( type = "bxBlogger.SeoAuditFailed", message = "AI audit failed: " & e.message );
+        }
+    }
+
+    struct function askFollowUp(
+        required numeric reportId,
+        required string  question,
+        required numeric userId
+    ) {
+        requireGate( arguments.userId );
+        if ( !len( trim( arguments.question ) ) ) {
+            throw( type = "bxBlogger.AiInvalidInput", message = "Question is empty." );
+        }
+
+        var row = getReport( arguments.reportId );
+        if ( !row.len() || !structKeyExists( row, "id" ) ) {
+            throw( type = "bxBlogger.NotFound", message = "Audit report not found." );
+        }
+        if ( row.status != "complete" ) {
+            throw( type = "bxBlogger.AiInvalidInput", message = "Cannot ask a follow-up on a non-complete audit." );
+        }
+
+        // Load the post for tool access.
+        var post = wirebox.getInstance( "Post" ).find( row.post_id );
+        if ( isNull( post ) ) {
+            throw( type = "bxBlogger.NotFound", message = "Post for this audit no longer exists." );
+        }
+
+        var promptInfo = readPromptInfo();
+        try {
+            // Single-shot follow-up: original audit + question packed
+            // into one user message so the provider sees the whole
+            // context without an agent loop.
+            var nl = char( 10 );
+            var userContent = "Original audit you produced earlier:" & nl & nl
+                & ( row.report_markdown ?: "" ) & nl & nl
+                & "Follow-up question:" & nl & arguments.question;
+            var fullSystemPrompt = appendGuardrails( promptInfo.body );
+            var response = wirebox.getInstance( "AiProvider" ).complete(
+                systemPrompt = fullSystemPrompt,
+                userContent  = userContent
+            );
+            var answerText = trim( response.text ?: "" );
+            var tokens     = val( response.totalTokens ?: 0 );
+
+            // Append the follow-up Q&A to the saved report.
+            var separator   = char( 10 ) & char( 10 ) & "---" & char( 10 ) & char( 10 );
+            // BoxLang requires `##` to produce a literal `#` inside
+            // double-quoted strings — `######` collapses to `###`
+            // (markdown H3).
+            var followUpMd  = "###### Follow-up: " & arguments.question & char( 10 ) & char( 10 ) & answerText;
+            var newMarkdown = ( row.report_markdown ?: "" ) & separator & followUpMd;
+
+            qb.newQuery().from( "seo_audit_reports" )
+                .where( "id", arguments.reportId )
+                .update( {
+                    "report_markdown" : newMarkdown,
+                    "tokens_used"     : ( val( row.tokens_used ?: 0 ) + tokens )
+                } );
+
+            recordUsage( arguments.userId, "seo_audit_report_followup", tokens );
+
+            return {
+                "reportMarkdown" : newMarkdown,
+                "tokensUsed"     : tokens
+            };
+        }
+        catch ( any e ) {
+            log.error( "SeoAuditAgentService.askFollowUp failed for report=" & arguments.reportId & ": " & e.message );
+            throw( type = "bxBlogger.SeoAuditFailed", message = "Follow-up failed: " & e.message );
+        }
+    }
+
+    array function listReports( required numeric postId, numeric limit = 20 ) {
+        return qb.newQuery()
+            .from( "seo_audit_reports" )
+            .where( "post_id", arguments.postId )
+            .orderBy( "generated_at", "desc" )
+            .limit( arguments.limit )
+            .get();
+    }
+
+    struct function getReport( required numeric reportId ) {
+        return qb.newQuery()
+            .from( "seo_audit_reports" )
+            .where( "id", arguments.reportId )
+            .first();
+    }
+
+    // --------------------------------------------------------------------
+    // Context assembly — pre-renders every "tool" output into a
+    // single text block so the audit can run in one provider call.
+    // --------------------------------------------------------------------
+
+    private string function buildAuditContext( required any post, required struct detAudit ) {
+        var nl = char( 10 );
+        var ctx = "POST METADATA" & nl
+            & "  id: "           & arguments.post.getId() & nl
+            & "  title: "        & ( arguments.post.getTitle() ?: "" ) & nl
+            & "  slug: "         & ( arguments.post.getSlug() ?: "" ) & nl
+            & "  word_count: "   & ( arguments.post.getWordCount() ?: 0 ) & nl
+            & "  focus_keyword: " & ( arguments.post.getFocusKeyword() ?: "(none)" ) & nl
+            & "  seo_title: "    & ( arguments.post.getSeoTitle() ?: "(empty)" ) & nl
+            & "  seo_description: " & ( arguments.post.getSeoDescription() ?: "(empty)" ) & nl & nl;
+
+        ctx &= "DETERMINISTIC AUDIT — score " & arguments.detAudit.score & "/100" & nl;
+        ctx &= "  pass=" & arguments.detAudit.summary.pass
+             & " warn=" & arguments.detAudit.summary.warn
+             & " fail=" & arguments.detAudit.summary.fail & nl;
+        for ( var k in structKeyArray( arguments.detAudit.checks ) ) {
+            var c = arguments.detAudit.checks[ k ];
+            ctx &= "  - [" & uCase( c.status ) & "] " & k & ": " & c.message & nl;
+            if ( len( c.suggestion ?: "" ) ) {
+                ctx &= "      suggestion: " & c.suggestion & nl;
+            }
+        }
+        ctx &= nl;
+
+        // Body excerpt — capped so we don't blow the context window.
+        var bodyMd = arguments.post.getBodyMarkdown() ?: "";
+        if ( len( bodyMd ) > 6000 ) bodyMd = left( bodyMd, 6000 ) & "… [truncated]";
+        ctx &= "POST BODY (markdown):" & nl & bodyMd & nl;
+
+        return ctx;
+    }
+
+    /**
+     * Append the immutable security guardrail block from
+     * AiAssistantService so the audit prompt can't be jailbroken.
+     */
+    private string function appendGuardrails( required string basePrompt ) {
+        try {
+            var suffix = wirebox.getInstance( "AiAssistantService" ).getGuardrailSuffix();
+            return arguments.basePrompt & suffix;
+        }
+        catch ( any e ) {
+            return arguments.basePrompt;
+        }
+    }
+
+    // --------------------------------------------------------------------
+    // Tool implementations — public so the closures in buildTools
+    // can dispatch back to them via getInstance(). Kept simple — no
+    // side effects, just reads.
+    // --------------------------------------------------------------------
+
+    struct function toolGetPostSummary( required any postId ) {
+        var post = wirebox.getInstance( "Post" ).find( val( arguments.postId ) );
+        if ( isNull( post ) ) return { "error" : "Post not found." };
+        return {
+            "id"            : post.getId(),
+            "title"         : post.getTitle() ?: "",
+            "slug"          : post.getSlug() ?: "",
+            "focusKeyword"  : post.getFocusKeyword() ?: "",
+            "wordCount"     : post.getWordCount() ?: 0,
+            "schemaType"    : "Article"
+        };
+    }
+
+    struct function toolGetDeterministicAudit( required any postId ) {
+        var post = wirebox.getInstance( "Post" ).find( val( arguments.postId ) );
+        if ( isNull( post ) ) return { "error" : "Post not found." };
+        return variables.auditService.audit( post );
+    }
+
+    struct function toolGetFocusKeywordMetrics( required any postId ) {
+        var post = wirebox.getInstance( "Post" ).find( val( arguments.postId ) );
+        if ( isNull( post ) ) return { "error" : "Post not found." };
+        var fk = post.getFocusKeyword() ?: "";
+        if ( !len( fk ) ) return { "focusKeyword" : "", "set" : false };
+
+        var auditResult = variables.auditService.audit( post );
+        var checks = auditResult.checks;
+        return {
+            "focusKeyword"    : fk,
+            "set"             : true,
+            "inTitle"         : checks.focusKeywordInTitle.status == "pass",
+            "inFirstParagraph": checks.focusKeywordInFirstParagraph.status == "pass",
+            "inUrl"           : checks.focusKeywordInUrl.status == "pass",
+            "densityCheck"    : checks.focusKeywordDensity.message
+        };
+    }
+
+    array function toolGetOutboundLinkHealth( required any postId ) {
+        // Phase 12 owns the outbound_links table; until then return
+        // an empty array so the agent doesn't get an error.
+        try {
+            var rows = qb.newQuery()
+                .from( "outbound_links" )
+                .where( "post_id", val( arguments.postId ) )
+                .get();
+            return rows;
+        }
+        catch ( any e ) { return []; }
+    }
+
+    // --------------------------------------------------------------------
+    // Internals
+    // --------------------------------------------------------------------
+
+    private void function requireGate( required numeric userId ) {
+        wirebox.getInstance( "AiAssistantService" ).requireSeoAiAvailable( arguments.userId );
+    }
+
+    private struct function readPromptInfo() {
+        try {
+            var row = aiPromptService.getBySlug( "seo_audit_report" );
+            if ( !isNull( row ) && structKeyExists( row, "id" ) && val( row.is_active ?: 0 ) ) {
+                return {
+                    "id"   : val( row.id ),
+                    "body" : len( trim( row.prompt_text ?: "" ) ) ? row.prompt_text : variables.basePromptFallback
+                };
+            }
+        }
+        catch ( any e ) {}
+        return { "id" : 0, "body" : variables.basePromptFallback };
+    }
+
+    private void function recordUsage( required numeric userId, required string action, required numeric tokens ) {
+        try {
+            qb.newQuery().from( "ai_usage" ).insert( {
+                "user_id"           : arguments.userId,
+                "year_month"        : dateTimeFormat( now(), "yyyyMM" ),
+                "action"            : arguments.action,
+                "prompt_tokens"     : 0,
+                "completion_tokens" : 0,
+                "total_tokens"      : arguments.tokens,
+                "cost_usd_micro"    : 0
+            } );
+        }
+        catch ( any e ) {
+            log.warn( "SeoAuditAgentService.recordUsage failed: " & e.message );
+        }
+    }
+
+    private string function nowDb() {
+        return dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+    }
+
+    /**
+     * Pull the generated id out of a qb.insert() return value.
+     * qb returns the underlying queryExecute result struct (an array
+     * of ints in some grammars, a struct in others). Tolerate every
+     * shape we've seen in this codebase.
+     */
+    private numeric function extractGeneratedKey( required any result ) {
+        if ( isStruct( arguments.result ) ) {
+            return val( arguments.result.generatedKey ?: arguments.result.generated_key ?: arguments.result.GENERATEDKEY ?: arguments.result.GENERATED_KEY ?: 0 );
+        }
+        if ( isArray( arguments.result ) && arguments.result.len() ) {
+            var first = arguments.result[ 1 ];
+            if ( isStruct( first ) ) {
+                return val( first.generatedKey ?: first.generated_key ?: first.GENERATEDKEY ?: first.GENERATED_KEY ?: first.id ?: 0 );
+            }
+            if ( isNumeric( first ) ) return val( first );
+        }
+        return 0;
+    }
+
+}

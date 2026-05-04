@@ -1,0 +1,267 @@
+/**
+ * bx-Blogger — SeoAuditServiceSpec (SEO Phase 5.1)
+ *
+ * Validates SeoAuditService produces the expected status (pass/warn/
+ * fail) for each of the 13 deterministic checks against fixture
+ * inputs. Uses the auditDraft( ... ) overload so we don't have to
+ * persist a Post entity per check — keeps tests fast + isolated.
+ *
+ * Score-weighting checks at the end pin the headline 0-100 score
+ * for the canonical "all-pass" + "all-fail" cases.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc = getInstance( "SeoAuditService" );
+    }
+
+    function run() {
+        describe( "SeoAuditService", function() {
+
+            describe( "titleLength", function() {
+
+                it( "fails when title is empty", function() {
+                    var r = variables.svc.auditDraft( title = "" ).checks.titleLength;
+                    expect( r.status ).toBe( "fail" );
+                } );
+
+                it( "warns on a 20-char title", function() {
+                    var r = variables.svc.auditDraft( title = "Short title here yes" ).checks.titleLength;
+                    expect( r.status ).toBe( "warn" );
+                } );
+
+                it( "passes on a 50-char title", function() {
+                    var t = "A perfectly sized fifty character title goes here.";
+                    var r = variables.svc.auditDraft( title = t ).checks.titleLength;
+                    expect( r.status ).toBe( "pass" );
+                } );
+
+                it( "warns on a 70-char title", function() {
+                    var t = repeatString( "abcdefgh ", 9 ) & "x"; // ~73 chars
+                    var r = variables.svc.auditDraft( title = t ).checks.titleLength;
+                    expect( r.status ).toBe( "warn" );
+                } );
+
+            } );
+
+            describe( "descriptionLength", function() {
+
+                it( "warns when seo description is missing", function() {
+                    var r = variables.svc.auditDraft( title = "x" ).checks.descriptionLength;
+                    expect( r.status ).toBe( "warn" );
+                } );
+
+                it( "passes on a 150-char description", function() {
+                    var d = repeatString( "abcdefghij ", 14 ); // ~154 chars
+                    var r = variables.svc.auditDraft( seoDescription = d ).checks.descriptionLength;
+                    expect( r.status ).toBe( "pass" );
+                } );
+
+            } );
+
+            describe( "focus keyword checks", function() {
+
+                it( "passes focusKeywordInTitle when keyword is in title", function() {
+                    var r = variables.svc.auditDraft(
+                        title        = "How to adopt BoxLang in a CFML shop",
+                        focusKeyword = "BoxLang"
+                    ).checks.focusKeywordInTitle;
+                    expect( r.status ).toBe( "pass" );
+                } );
+
+                it( "fails focusKeywordInTitle when keyword missing from title", function() {
+                    var r = variables.svc.auditDraft(
+                        title        = "Some unrelated post title",
+                        focusKeyword = "BoxLang"
+                    ).checks.focusKeywordInTitle;
+                    expect( r.status ).toBe( "fail" );
+                } );
+
+                it( "warns focusKeywordInTitle when no focus keyword set", function() {
+                    var r = variables.svc.auditDraft( title = "Anything" ).checks.focusKeywordInTitle;
+                    expect( r.status ).toBe( "warn" );
+                } );
+
+                it( "passes focusKeywordInUrl when slug contains hyphenated keyword", function() {
+                    var r = variables.svc.auditDraft(
+                        slug         = "adopting-boxlang-in-cfml",
+                        focusKeyword = "BoxLang"
+                    ).checks.focusKeywordInUrl;
+                    expect( r.status ).toBe( "pass" );
+                } );
+
+                it( "warns focusKeywordInUrl when slug doesn't contain keyword", function() {
+                    var r = variables.svc.auditDraft(
+                        slug         = "some-other-slug",
+                        focusKeyword = "BoxLang"
+                    ).checks.focusKeywordInUrl;
+                    expect( r.status ).toBe( "warn" );
+                } );
+
+                it( "passes focusKeywordDensity around 1%", function() {
+                    var body = "BoxLang is a modern programming language. " & repeatString( "Other words filler content. ", 25 );
+                    var r = variables.svc.auditDraft(
+                        bodyMarkdown = body,
+                        focusKeyword = "BoxLang"
+                    ).checks.focusKeywordDensity;
+                    expect( r.status ).toBe( "pass" );
+                } );
+
+                it( "fails focusKeywordDensity over 2.5%", function() {
+                    var body = repeatString( "BoxLang BoxLang BoxLang BoxLang ", 5 ) & "filler";
+                    var r = variables.svc.auditDraft(
+                        bodyMarkdown = body,
+                        focusKeyword = "BoxLang"
+                    ).checks.focusKeywordDensity;
+                    expect( r.status ).toBe( "fail" );
+                } );
+
+            } );
+
+            describe( "headingHierarchy", function() {
+
+                it( "fails when body contains an H1", function() {
+                    var r = variables.svc.auditDraft(
+                        bodyHtml = "<h1>Body H1 should not be here</h1><p>Para</p>"
+                    ).checks.headingHierarchy;
+                    expect( r.status ).toBe( "fail" );
+                } );
+
+                it( "warns when body has no headings at all", function() {
+                    var r = variables.svc.auditDraft(
+                        bodyHtml = "<p>Just one paragraph, no structure.</p>"
+                    ).checks.headingHierarchy;
+                    expect( r.status ).toBe( "warn" );
+                } );
+
+                it( "passes on H2 → H3 hierarchy", function() {
+                    var r = variables.svc.auditDraft(
+                        bodyHtml = "<h2>One</h2><p>p</p><h3>Two</h3><p>p</p><h2>Three</h2>"
+                    ).checks.headingHierarchy;
+                    expect( r.status ).toBe( "pass" );
+                } );
+
+                it( "warns on a skipped level (H2 → H4)", function() {
+                    var r = variables.svc.auditDraft(
+                        bodyHtml = "<h2>One</h2><h4>Skipped H3</h4>"
+                    ).checks.headingHierarchy;
+                    expect( r.status ).toBe( "warn" );
+                } );
+
+            } );
+
+            describe( "imagesWithoutAlt", function() {
+
+                it( "passes when every image has alt text", function() {
+                    var r = variables.svc.auditDraft(
+                        bodyHtml = '<p><img src="x.jpg" alt="A duck"><img src="y.jpg" alt="A pond"></p>'
+                    ).checks.imagesWithoutAlt;
+                    expect( r.status ).toBe( "pass" );
+                } );
+
+                it( "fails when an image has no alt", function() {
+                    var r = variables.svc.auditDraft(
+                        bodyHtml = '<img src="x.jpg"><img src="y.jpg" alt="ok">'
+                    ).checks.imagesWithoutAlt;
+                    expect( r.status ).toBe( "fail" );
+                } );
+
+                it( "fails on markdown image with empty alt", function() {
+                    var r = variables.svc.auditDraft(
+                        bodyMarkdown = "Check this: ![](missing.jpg) and ![ok](good.jpg)"
+                    ).checks.imagesWithoutAlt;
+                    expect( r.status ).toBe( "fail" );
+                } );
+
+            } );
+
+            describe( "internalLinks / externalLinks", function() {
+
+                it( "passes internalLinks with 2+ relative links", function() {
+                    var r = variables.svc.auditDraft(
+                        bodyHtml = '<a href="/blog/a">a</a><a href="/blog/b">b</a>'
+                    ).checks.internalLinks;
+                    expect( r.status ).toBe( "pass" );
+                } );
+
+                it( "warns internalLinks with no links", function() {
+                    var r = variables.svc.auditDraft(
+                        bodyHtml = "<p>No links</p>"
+                    ).checks.internalLinks;
+                    expect( r.status ).toBe( "warn" );
+                } );
+
+                it( "passes externalLinks when at least one https link present", function() {
+                    var r = variables.svc.auditDraft(
+                        bodyHtml = '<a href="https://example.com">e</a>'
+                    ).checks.externalLinks;
+                    expect( r.status ).toBe( "pass" );
+                } );
+
+            } );
+
+            describe( "wordCount + slugQuality", function() {
+
+                it( "warns on body under 300 words", function() {
+                    var r = variables.svc.auditDraft( bodyMarkdown = "Just a few words here." ).checks.wordCount;
+                    expect( r.status ).toBe( "warn" );
+                } );
+
+                it( "passes on a clean lowercase-hyphen slug", function() {
+                    var r = variables.svc.auditDraft( slug = "this-is-clean" ).checks.slugQuality;
+                    expect( r.status ).toBe( "pass" );
+                } );
+
+                it( "warns on uppercase slug", function() {
+                    var r = variables.svc.auditDraft( slug = "Mixed-Case-Slug" ).checks.slugQuality;
+                    expect( r.status ).toBe( "warn" );
+                } );
+
+                it( "warns on underscore slug", function() {
+                    var r = variables.svc.auditDraft( slug = "uses_underscores" ).checks.slugQuality;
+                    expect( r.status ).toBe( "warn" );
+                } );
+
+            } );
+
+            describe( "score + summary", function() {
+
+                it( "high score + heavy passes for a high-quality post", function() {
+                    // Short sentences for good Flesch score, focus
+                    // keyword 4 times across 250+ words for ~1.5%
+                    // density, headings + alts + 2 internal + 1
+                    // external link.
+                    var body = "BoxLang is fast. It runs on the JVM. CFML shops can adopt BoxLang quickly. " &
+                        "The migration is simple. Most code runs unchanged. Test suites pass on day one. " &
+                        repeatString( "Teams adopt new tools fastest when the path is clear. The runtime is well documented. The community helps. ", 6 ) &
+                        " BoxLang ships modern features. The JIT is fast. ";
+                    var html = "<h2>Why BoxLang</h2><p>" & body & "</p><h3>Migration steps</h3><p>" & body & "</p>" &
+                        '<a href="/blog/related-1">related</a><a href="/blog/related-2">also</a>' &
+                        '<a href="https://boxlang.io">official</a>' &
+                        '<img src="x.jpg" alt="BoxLang logo">';
+                    var result = variables.svc.auditDraft(
+                        title          = "Adopting BoxLang in a CFML shop",
+                        slug           = "adopting-boxlang-in-cfml",
+                        seoDescription = "A 150-character description that touches the focus keyword BoxLang and pitches the migration journey to readers searching for adoption advice.",
+                        focusKeyword   = "BoxLang",
+                        bodyMarkdown   = body,
+                        bodyHtml       = html
+                    );
+                    expect( result.score ).toBeGTE( 70 );
+                    expect( result.summary.fail ).toBeLTE( 1 );
+                } );
+
+                it( "low score for a content-thin post with no SEO fields", function() {
+                    var result = variables.svc.auditDraft( title = "x" );
+                    // No-FK warns dominate; expect at most ~half score.
+                    expect( result.score ).toBeLTE( 55 );
+                    expect( result.summary.fail ).toBeGTE( 1 );
+                } );
+
+            } );
+
+        } );
+    }
+
+}
