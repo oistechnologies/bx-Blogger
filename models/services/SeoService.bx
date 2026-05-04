@@ -586,6 +586,23 @@ class accessors="true" singleton {
             }
         }
 
+        // SEO Phase 10 — hreflang alternates. The handler / interceptor
+        // populates `meta.alternateLanguages` as `[{ lang, url }, ...]`
+        // when the page has translated counterparts. Spec recommends an
+        // explicit x-default entry too, so the hook lets callers pass
+        // either a literal `{ lang: "x-default", url }` or just the
+        // localized entries (we don't fabricate x-default — leaving
+        // that explicit avoids surprising behavior).
+        if ( isArray( arguments.meta.alternateLanguages ?: "" ) ) {
+            for ( var alt in arguments.meta.alternateLanguages ) {
+                if ( !isStruct( alt ) ) continue;
+                var altLang = trim( alt.lang ?: "" );
+                var altUrl  = trim( alt.url ?: "" );
+                if ( !len( altLang ) || !len( altUrl ) ) continue;
+                b.append( '<link rel="alternate" hreflang="' & attrSafe( altLang ) & '" href="' & attrSafe( altUrl ) & '">' & nl );
+            }
+        }
+
         // JSON-LD — one <script> tag per item.
         if ( isArray( arguments.meta.jsonLd ?: "" ) ) {
             for ( var ld in arguments.meta.jsonLd ) {

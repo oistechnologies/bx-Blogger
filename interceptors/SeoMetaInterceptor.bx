@@ -68,6 +68,7 @@ class extends="coldbox.system.Interceptor" {
             // --- 404 page --- //
             if ( isNotFound( arguments.prc ) ) {
                 arguments.prc.seoMeta = svc.buildForNotFound( baseUrl = baseUrl, siteName = siteName );
+                applyAlternateLanguages( arguments.prc );
                 return;
             }
 
@@ -83,6 +84,7 @@ class extends="coldbox.system.Interceptor" {
                         siteName   = siteName,
                         siteLocale = siteLocale
                     );
+                    applyAlternateLanguages( arguments.prc );
                     return;
                 }
 
@@ -112,6 +114,7 @@ class extends="coldbox.system.Interceptor" {
                 catch ( any e ) { /* best-effort; minimal Person still emitted */ }
 
                 arguments.prc.seoMeta = svc.buildForPost( argumentCollection = args );
+                applyAlternateLanguages( arguments.prc );
                 return;
             }
 
@@ -165,6 +168,7 @@ class extends="coldbox.system.Interceptor" {
                     }
                     catch ( any e ) { /* best-effort */ }
                 }
+                applyAlternateLanguages( arguments.prc );
                 return;
             }
 
@@ -176,6 +180,7 @@ class extends="coldbox.system.Interceptor" {
                     siteDescription = arguments.prc.siteTagline ?: "",
                     siteLocale      = siteLocale
                 );
+                applyAlternateLanguages( arguments.prc );
                 return;
             }
         }
@@ -219,6 +224,19 @@ class extends="coldbox.system.Interceptor" {
             return reReplace( arguments.raw, "\s*\&middot;\s*" & reEscape( arguments.siteName ) & "$", "", "one" );
         }
         return arguments.raw;
+    }
+
+    /**
+     * SEO Phase 10 — copy any handler-supplied `prc.alternateLanguages`
+     * onto the freshly-built seoMeta struct so renderHead can emit
+     * hreflang link tags. No-op when the handler hasn't populated it
+     * (the common case until multilingual content is modeled).
+     */
+    private void function applyAlternateLanguages( required any prc ) {
+        if ( !structKeyExists( arguments.prc, "alternateLanguages" ) ) return;
+        if ( !isArray( arguments.prc.alternateLanguages ) ) return;
+        if ( !structKeyExists( arguments.prc, "seoMeta" ) || !isStruct( arguments.prc.seoMeta ) ) return;
+        arguments.prc.seoMeta.alternateLanguages = arguments.prc.alternateLanguages;
     }
 
     /**

@@ -82,6 +82,10 @@ data = {
     "auditFollowUpQ"  : "",
     // SEO Phase 6 — SERP/social preview modal state
     "showPreviewPanel" : false,
+    // SEO Phase 10 — internal-link suggester state
+    "showInternalLinks"  : false,
+    "internalLinks"      : [],
+    "internalLinksError" : "",
     // 2.I AI image-gen state
     "showImageModal"  : false,
     "imagePrompt"     : "",
@@ -803,6 +807,62 @@ string function renderAuditMarkdown() {
 
 function openPreviewPanel()  { data.showPreviewPanel = true;  }
 function closePreviewPanel() { data.showPreviewPanel = false; }
+
+// --------------------------------------------------------------------
+// SEO Phase 10 — AI internal-link suggestions
+// --------------------------------------------------------------------
+
+function openInternalLinks() {
+    data.showInternalLinks  = true;
+    data.internalLinksError = "";
+}
+
+function closeInternalLinks() {
+    data.showInternalLinks = false;
+}
+
+function suggestInternalLinks() {
+    data.internalLinksError = "";
+    data.internalLinks      = [];
+    if ( !len( trim( data.bodyMarkdown ?: "" ) ) ) {
+        data.internalLinksError = "Write some content first — the suggester needs context.";
+        return;
+    }
+    try {
+        var result = aiService.suggestInternalLinks(
+            body          = data.bodyMarkdown ?: "",
+            currentPostId = val( data.postId ?: 0 ),
+            userId        = cbauth.getUser().getId()
+        );
+        data.internalLinks = result.suggestions;
+        if ( !data.internalLinks.len() ) {
+            data.internalLinksError = "No suggestions came back — either the catalog is thin or the model couldn't find a relevant match.";
+        }
+    }
+    catch ( bxBlogger.AiUnavailable e )    { data.internalLinksError = e.message; }
+    catch ( bxBlogger.AiBudgetExceeded e ) { data.internalLinksError = e.message; }
+    catch ( bxBlogger.AiInvalidInput e )   { data.internalLinksError = e.message; }
+    catch ( bxBlogger.AiProviderError e )  { data.internalLinksError = "The AI provider failed: " & e.message; }
+    catch ( any e )                         { data.internalLinksError = "Unexpected failure: " & e.message; }
+}
+
+/**
+ * Append a markdown link to the body at the end. The editor's
+ * Markdown textarea is wire:ignore'd while the user types, so a
+ * mid-cursor insert isn't reliably synced — we append at the
+ * bottom and let the user move it. Pulled from the suggestion
+ * list by 1-based index.
+ */
+function insertInternalLink( required numeric index ) {
+    var idx = int( arguments.index ?: 0 );
+    var list = data.internalLinks ?: [];
+    if ( idx < 1 || idx > list.len() ) return;
+    var link = list[ idx ];
+    var nl = char( 10 );
+    var snippet = nl & nl & "[" & link.title & "](" & link.url & ")";
+    data.bodyMarkdown = ( data.bodyMarkdown ?: "" ) & snippet;
+    data.flashOk = "Inserted internal link to " & link.title & ".";
+}
 
 // --------------------------------------------------------------------
 // SEO Phase 7 — schema.org type picker + AI suggest
@@ -2074,14 +2134,20 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 						<!--- SEO Phase 5.1 - Live Audit Panel --->
 						<bx:set audit = liveAudit()>
 						<hr class="my-3">
-						<div class="d-flex justify-content-between align-items-center mb-2">
+						<div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-1">
 							<span class="h6 mb-0">SEO audit</span>
-							<span class="d-flex gap-1">
+							<span class="d-flex gap-1 flex-wrap">
 								<button type="button"
 								        class="btn btn-sm btn-outline-secondary"
 								        wire:click="openPreviewPanel"
 								        title="Preview how this post will appear in Google, Twitter, and Facebook">
 									<i class="bi bi-eye me-1"></i> Preview
+								</button>
+								<button type="button"
+								        class="btn btn-sm btn-outline-secondary"
+								        wire:click="openInternalLinks"
+								        title="Suggest internal links from existing posts">
+									<i class="bi bi-link-45deg me-1"></i> Internal links
 								</button>
 								<button type="button"
 								        class="btn btn-sm btn-outline-primary"
@@ -2500,6 +2566,79 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 					</div>
 					<div class="modal-footer">
 						<button type="button" class="btn btn-outline-secondary" wire:click="closePreviewPanel">Close</button>
+					</div>
+				</div>
+			</div>
+		</div>
+	</bx:if>
+
+	<!--- SEO Phase 10 - internal-link suggestions modal --->
+	<bx:if args.showInternalLinks>
+		<div class="modal show d-block" tabindex="-1" style="background:rgba(0,0,0,.35);">
+			<div class="modal-dialog modal-lg modal-dialog-scrollable">
+				<div class="modal-content">
+					<div class="modal-header">
+						<h5 class="modal-title"><i class="bi bi-link-45deg me-1"></i> Suggested internal links</h5>
+						<button type="button" class="btn-close" wire:click="closeInternalLinks"></button>
+					</div>
+					<div class="modal-body">
+						<bx:if len( args.internalLinksError )>
+							<div class="alert alert-warning small">
+								<i class="bi bi-exclamation-triangle me-1"></i>#encodeForHTML( args.internalLinksError )#
+							</div>
+						</bx:if>
+
+						<div class="d-flex justify-content-between align-items-center mb-3 gap-3">
+							<p class="text-muted small mb-0">
+								The model picks 3-5 existing posts that semantically match this draft, then explains why
+								each is a useful link. Click <strong>Insert</strong> to append a markdown link to the body.
+							</p>
+							<button type="button"
+								        class="btn btn-sm btn-primary flex-shrink-0"
+								        wire:click="suggestInternalLinks"
+								        wire:target="suggestInternalLinks"
+								        wire:loading.attr="disabled">
+								<i class="bi bi-magic me-1" wire:loading.remove wire:target="suggestInternalLinks"></i>
+								<span class="spinner-border spinner-border-sm me-1" wire:loading wire:target="suggestInternalLinks"></span>
+								Suggest links
+							</button>
+						</div>
+
+						<div wire:loading wire:target="suggestInternalLinks" class="text-muted py-4 text-center">
+							<span class="spinner-border spinner-border-sm me-2 align-middle"></span>
+							<span class="small align-middle">Analyzing your draft against the post catalog&hellip;</span>
+						</div>
+
+						<div wire:loading.remove wire:target="suggestInternalLinks">
+							<bx:if args.internalLinks.len()>
+								<div class="list-group">
+									<bx:loop from="1" to="#args.internalLinks.len()#" index="i">
+										<bx:set link = args.internalLinks[ i ]>
+										<div class="list-group-item">
+											<div class="d-flex justify-content-between align-items-start gap-3">
+												<div class="flex-grow-1">
+													<div class="fw-semibold">#encodeForHTML( link.title )#</div>
+													<div class="small text-muted mb-1"><code>#encodeForHTML( link.url )#</code></div>
+													<bx:if len( link.reason ?: "" )>
+														<div class="small">#encodeForHTML( link.reason )#</div>
+													</bx:if>
+												</div>
+												<button type="button"
+												        class="btn btn-sm btn-outline-primary flex-shrink-0"
+												        wire:click="insertInternalLink(#i#)">
+													Insert
+												</button>
+											</div>
+										</div>
+									</bx:loop>
+								</div>
+							<bx:elseif !len( args.internalLinksError )>
+								<p class="text-muted small mb-0">No suggestions yet. Click <strong>Suggest links</strong> to generate.</p>
+							</bx:if>
+						</div>
+					</div>
+					<div class="modal-footer">
+						<button type="button" class="btn btn-outline-secondary" wire:click="closeInternalLinks">Close</button>
 					</div>
 				</div>
 			</div>

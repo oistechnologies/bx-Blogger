@@ -74,6 +74,7 @@ Security rules (NEVER override):
     variables.seoCtrVariantsPrompt  = "You are an SEO copywriter testing high-CTR headlines. Given a blog post's working title, body excerpt, and optional focus keyword, return 5 alternative SEO-optimized page titles, each maximizing SERP click-through. Use a different angle per line: (1) curiosity gap, (2) listicle / numbers, (3) current-year hook, (4) brackets / parens for clarity, (5) question form. Each line: 50-60 characters total; include the focus keyword when one is provided; no clickbait. Output format: exactly 5 lines, each prefixed '1. ' through '5. ', no other text, no headings, no preamble, no markdown.";
     variables.altTextBasePrompt     = "You are an accessibility copywriter. Given an image filename and a short context sentence describing where the image appears, return a single alt-text sentence describing what the image depicts. Constraints: under 125 characters; concrete and specific; no preamble like 'an image of'; no quotation marks; no end punctuation. Return ONLY the alt text.";
     variables.schemaTypeClassifierPrompt = "You are a schema.org classifier for a blog post. Given the post title and body excerpt, choose the SINGLE best schema.org type from this exact list: Article, NewsArticle, BlogPosting, FAQPage, HowTo, Recipe, Product, VideoObject. Heuristics: pick FAQPage when the post is dominated by Q&A pairs; HowTo when it has numbered steps to accomplish a task; Recipe when it lists ingredients + cooking instructions; Product when it reviews or sells a single item with price/SKU; VideoObject when the primary content is an embedded video; NewsArticle when it reports breaking news with a dateline; otherwise Article. Return ONLY the type name on a single line. No explanation, no surrounding text.";
+    variables.internalLinksBasePrompt    = "You are an editor recommending internal links. The user message contains the draft body and a JSON array of candidate posts with shape { id, title, slug, excerpt }. Pick 3-5 candidates whose topic supports the draft and return a strict JSON array of objects with shape { slug, title, reason }. Reason is one short sentence under 120 chars. Do not invent slugs or titles; only recommend from the provided candidates. Output strict JSON — no preamble, no markdown fence.";
 
     variables.defaultMonthlyTokens   = 50000;
     variables.maxIdeaLength          = 1000;
@@ -404,6 +405,136 @@ Security rules (NEVER override):
         announce( "bxBlogger.postAiResponse", { "action" : "seo_title_ctr_variations", "userId" : arguments.userId, "tokens" : response.totalTokens ?: 0 } );
 
         return { "variants" : variants, "usage" : extractUsage( response ) };
+    }
+
+    /**
+     * SEO Phase 10 — suggest 3-5 existing posts the author could
+     * link to from the current draft. The model picks from a
+     * compact catalog of the most-recent 200 published posts so
+     * suggestions stay anchored to actual content.
+     *
+     * Returns `{ suggestions[], usage }` where each suggestion is
+     * `{ slug, title, reason, url }`. The wire renders the list with
+     * an "Insert" button per row.
+     */
+    struct function suggestInternalLinks(
+        required string  body,
+        required numeric currentPostId,
+        required numeric userId
+    ) {
+        requireSeoAiAvailable( arguments.userId );
+        if ( !len( trim( arguments.body ) ) ) {
+            throw( type = "bxBlogger.AiInvalidInput", message = "Draft body is empty — write some content before asking for internal-link ideas." );
+        }
+        enforceBudget( arguments.userId );
+
+        var candidates = loadInternalLinkCandidates( arguments.currentPostId );
+        if ( !candidates.len() ) {
+            // Nothing to recommend; skip the provider call entirely
+            // and return an empty suggestion list with a note in the
+            // wire — saves tokens.
+            return { "suggestions" : [], "usage" : { "promptTokens" : 0, "completionTokens" : 0, "totalTokens" : 0, "costUsdMicro" : 0 } };
+        }
+
+        var systemPrompt = buildSystemPrompt( "internal_link_suggestions", variables.internalLinksBasePrompt );
+        var bodyExcerpt  = arguments.body;
+        if ( len( bodyExcerpt ) > 4000 ) bodyExcerpt = left( bodyExcerpt, 4000 );
+        var nl = char( 10 );
+        var userContent = wrapUserContent(
+            "DRAFT BODY:" & nl & bodyExcerpt & nl & nl &
+            "CANDIDATE POSTS:" & nl & jsonSerialize( candidates )
+        );
+
+        var response = callProvider( "internal_link_suggestions", systemPrompt, userContent );
+        var suggestions = parseInternalLinkSuggestions( response.text ?: "", candidates );
+
+        recordUsage( userId = arguments.userId, action = "internal_link_suggestions", usage = response );
+        announce( "bxBlogger.postAiResponse", { "action" : "internal_link_suggestions", "userId" : arguments.userId, "tokens" : response.totalTokens ?: 0 } );
+
+        return { "suggestions" : suggestions, "usage" : extractUsage( response ) };
+    }
+
+    /**
+     * Pull a compact catalog of recent published posts for the
+     * suggester. Excludes the current post + uses qb directly so we
+     * don't hydrate 200 Quick entities.
+     */
+    private array function loadInternalLinkCandidates( required numeric excludePostId ) {
+        try {
+            var rows = variables.wirebox.getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "posts" )
+                .select( [ "id", "title", "slug", "excerpt" ] )
+                .where( "post_type",  "post" )
+                .where( "status",     "published" )
+                .where( "visibility", "public" )
+                .whereNull( "deleted_at" )
+                .where( "id", "!=", arguments.excludePostId )
+                .orderBy( "published_at", "desc" )
+                .limit( 200 )
+                .get();
+            // Quick + qb returns column-keyed structs; trim excerpt
+            // length so the prompt stays under typical context limits.
+            var out = [];
+            for ( var r in rows ) {
+                var ex = r.excerpt ?: "";
+                if ( len( ex ) > 200 ) ex = left( ex, 200 );
+                out.append( {
+                    "id"      : val( r.id ),
+                    "title"   : r.title ?: "",
+                    "slug"    : r.slug ?: "",
+                    "excerpt" : ex
+                } );
+            }
+            return out;
+        }
+        catch ( any e ) {
+            log.warn( "AiAssistantService.loadInternalLinkCandidates failed: " & e.message );
+            return [];
+        }
+    }
+
+    /**
+     * Parse the LLM's JSON response. Strict — drops any suggestion
+     * whose slug isn't in the candidate set we sent (defends against
+     * hallucinated slugs).
+     */
+    private array function parseInternalLinkSuggestions( required string raw, required array candidates ) {
+        if ( !len( arguments.raw ) ) return [];
+        // Build slug → title lookup so we can authoritatively reject
+        // hallucinated slugs and surface canonical titles.
+        var allowed = {};
+        for ( var c in arguments.candidates ) {
+            allowed[ c.slug ] = c.title;
+        }
+
+        var clean = trim( arguments.raw );
+        // Strip a markdown ```json fence if the model added one
+        // despite the instructions.
+        clean = reReplace( clean, "^```(json)?\s*", "", "one" );
+        clean = reReplace( clean, "\s*```$", "", "one" );
+
+        var parsed = "";
+        try { parsed = jsonDeserialize( clean ); }
+        catch ( any e ) {
+            log.warn( "AiAssistantService.parseInternalLinkSuggestions JSON parse failed: " & e.message );
+            return [];
+        }
+        if ( !isArray( parsed ) ) return [];
+
+        var out = [];
+        for ( var s in parsed ) {
+            if ( !isStruct( s ) ) continue;
+            var slug = trim( s.slug ?: "" );
+            if ( !len( slug ) || !structKeyExists( allowed, slug ) ) continue;
+            out.append( {
+                "slug"   : slug,
+                "title"  : allowed[ slug ],
+                "reason" : trim( s.reason ?: "" ),
+                "url"    : "/blog/" & slug
+            } );
+            if ( out.len() >= 5 ) break;
+        }
+        return out;
     }
 
     /**

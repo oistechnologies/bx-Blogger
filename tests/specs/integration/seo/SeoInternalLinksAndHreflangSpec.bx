@@ -1,0 +1,141 @@
+/**
+ * bx-Blogger — SeoInternalLinksAndHreflangSpec (SEO Phase 10)
+ *
+ * Validates:
+ *   - suggestInternalLinks early-returns empty when no candidates
+ *     exist + gates correctly
+ *   - parseInternalLinkSuggestions filters hallucinated slugs
+ *     (covered indirectly via the suggester's own validation)
+ *   - hreflang link tags emit when meta.alternateLanguages is set
+ *     and skip otherwise
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        clearSystemProp( "AI_ENABLED"  );
+        clearSystemProp( "AI_PROVIDER" );
+        clearSystemProp( "AI_MODEL"    );
+        clearSystemProp( "AI_API_KEY"  );
+        super.afterAll();
+    }
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc        = getInstance( "SeoService" );
+        variables.aiSvc      = getInstance( "AiAssistantService" );
+        variables.settingSvc = getInstance( "SettingService" );
+
+        variables.savedSeoEnabled = variables.settingSvc.get( "ai.seo.enabled", true );
+    }
+
+    function run() {
+        describe( "SEO Phase 10 — internal links + hreflang", function() {
+
+            describe( "AiAssistantService.suggestInternalLinks", function() {
+
+                beforeEach( function() {
+                    setEnv( "AI_ENABLED",  "true"            );
+                    setEnv( "AI_PROVIDER", "openrouter"      );
+                    setEnv( "AI_MODEL",    "qwen/qwen-turbo" );
+                    setEnv( "AI_API_KEY",  "sk-test-key"     );
+                    variables.settingSvc.set( key = "ai.seo.enabled", value = "true", type = "bool" );
+                } );
+
+                afterEach( function() {
+                    variables.settingSvc.set( key = "ai.seo.enabled", value = variables.savedSeoEnabled, type = "bool" );
+                } );
+
+                it( "throws AiUnavailable when the gate fails", function() {
+                    setEnv( "AI_ENABLED", "false" );
+                    var u = createTestUser( {}, "", "author" );
+                    var threw = false;
+                    try {
+                        variables.aiSvc.suggestInternalLinks(
+                            body          = "Some draft body content here.",
+                            currentPostId = 1,
+                            userId        = u.getId()
+                        );
+                    }
+                    catch ( bxBlogger.AiUnavailable e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+                it( "rejects an empty body", function() {
+                    var u = createTestUser( {}, "", "author" );
+                    var threw = false;
+                    try {
+                        variables.aiSvc.suggestInternalLinks(
+                            body          = "  ",
+                            currentPostId = 1,
+                            userId        = u.getId()
+                        );
+                    }
+                    catch ( bxBlogger.AiInvalidInput e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+                it( "returns empty suggestions array (mock provider returns no slug-shaped JSON)", function() {
+                    var u = createTestUser( {}, "", "author" );
+                    var result = variables.aiSvc.suggestInternalLinks(
+                        body          = "BoxLang is a great tool. Lots of details here so the suggester has context to work with.",
+                        currentPostId = 1,
+                        userId        = u.getId()
+                    );
+                    expect( result ).toHaveKey( "suggestions" );
+                    expect( isArray( result.suggestions ) ).toBeTrue();
+                    // Mock provider returns plain text, not JSON of slugs.
+                    // The strict JSON parser drops everything → 0 suggestions.
+                    expect( result.suggestions.len() ).toBe( 0 );
+                } );
+
+            } );
+
+            describe( "renderHead emits hreflang", function() {
+
+                it( "emits <link rel='alternate' hreflang='X' href='Y'> per alternateLanguages entry", function() {
+                    var meta = variables.svc.buildForHome( baseUrl = "https://example.com", siteName = "X" );
+                    meta.alternateLanguages = [
+                        { "lang" : "en-US",     "url" : "https://example.com/" },
+                        { "lang" : "es",        "url" : "https://example.com/es/" },
+                        { "lang" : "x-default", "url" : "https://example.com/" }
+                    ];
+                    var html = variables.svc.renderHead( meta );
+                    expect( html ).toInclude( '<link rel="alternate" hreflang="en-US" href="https://example.com/">' );
+                    expect( html ).toInclude( '<link rel="alternate" hreflang="es" href="https://example.com/es/">' );
+                    expect( html ).toInclude( '<link rel="alternate" hreflang="x-default" href="https://example.com/">' );
+                } );
+
+                it( "skips entries with empty lang or url", function() {
+                    var meta = variables.svc.buildForHome( baseUrl = "https://example.com", siteName = "X" );
+                    meta.alternateLanguages = [
+                        { "lang" : "en", "url" : "" },
+                        { "lang" : "",   "url" : "https://example.com/fr/" },
+                        { "lang" : "fr", "url" : "https://example.com/fr/" }
+                    ];
+                    var html = variables.svc.renderHead( meta );
+                    expect( html ).toInclude( 'hreflang="fr"' );
+                    expect( html ).notToInclude( 'hreflang="en"' );
+                    expect( html ).notToInclude( 'hreflang=""' );
+                } );
+
+                it( "emits no hreflang tags when alternateLanguages is absent", function() {
+                    var meta = variables.svc.buildForHome( baseUrl = "https://example.com", siteName = "X" );
+                    var html = variables.svc.renderHead( meta );
+                    expect( html ).notToInclude( 'rel="alternate" hreflang' );
+                } );
+
+            } );
+
+        } );
+    }
+
+    private void function setEnv( required string key, required string value ) {
+        createObject( "java", "java.lang.System" ).setProperty( arguments.key, arguments.value );
+    }
+
+    private void function clearSystemProp( required string key ) {
+        try { createObject( "java", "java.lang.System" ).clearProperty( arguments.key ); }
+        catch ( any e ) {}
+    }
+
+}
