@@ -45,6 +45,12 @@ class {
         // SEO Phase 12 — outbound link health report.
         route( "settings/outbound-links" ).to( "Settings.outboundLinks" );
 
+        // SEO Phase 13 — site-wide SEO health dashboard. The
+        // mark-reviewed POST writes through Seo.markReviewed so
+        // the dashboard wire can flash + redirect cleanly.
+        route( "seo/mark-reviewed" ).to( "Seo.markReviewed" );
+        route( "seo" ).to( "Seo.index" );
+
         // Phase UX — self-service account lives inside the admin shell
         // (previously /account at the app root). Specific sub-routes
         // first so the base /admin/account GET/POST pair doesn't

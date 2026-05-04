@@ -40,6 +40,7 @@ class extends="quick.models.BaseEntity" accessors="true" {
     property name="ogVersion"           column="og_version";
     property name="ogAsFeaturedImage"   column="og_as_featured_image";
     property name="allowIndexing"       column="allow_indexing";
+    property name="lastSeoReviewAt"     column="last_seo_review_at";
 
     property name="featured"            column="featured";
     property name="featuredAt"          column="featured_at";

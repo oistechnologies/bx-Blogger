@@ -426,6 +426,13 @@
 					   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Media">
 						<i class="bi bi-images nav-icon"></i><span class="nav-label">Media</span>
 					</a>
+					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "posts.edit.others" )>
+						<a class="nav-link #( currentEvent.startsWith( 'admin:Seo.' ) ? 'active' : '' )#"
+						   href="/admin/seo"
+						   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="SEO Health">
+							<i class="bi bi-graph-up-arrow nav-icon"></i><span class="nav-label">SEO Health</span>
+						</a>
+					</bx:if>
 
 					<!--- System Settings — collapsible group. Parent visible
 					      only when the user has rights to any child; each

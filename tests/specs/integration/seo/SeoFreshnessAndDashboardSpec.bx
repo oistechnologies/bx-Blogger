@@ -1,0 +1,215 @@
+/**
+ * bx-Blogger — SeoFreshnessAndDashboardSpec (SEO Phase 13)
+ *
+ * Validates:
+ *   - SeoFreshnessService.staleness() bucket assignment based on
+ *     updated_at + last_seo_review_at, including the "min of the
+ *     two" rule that lets a recent review keep an old post fresh.
+ *   - SeoFreshnessService.markReviewed() stamps last_seo_review_at
+ *     without bumping updated_at (the whole point of the column).
+ *   - SeoFreshnessService.bucketCounts() returns four bucket keys.
+ *   - AiAssistantService.suggestPostRefresh() gates correctly,
+ *     validates inputs, and returns an empty suggestion list when
+ *     the mock provider returns non-JSON.
+ *
+ * Doesn't exercise the dashboard wire directly — that's a thin
+ * presentation layer over the services tested here.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        clearSystemProp( "AI_ENABLED"  );
+        clearSystemProp( "AI_PROVIDER" );
+        clearSystemProp( "AI_MODEL"    );
+        clearSystemProp( "AI_API_KEY"  );
+        super.afterAll();
+    }
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc        = getInstance( "SeoFreshnessService" );
+        variables.aiSvc      = getInstance( "AiAssistantService" );
+        variables.qb         = getInstance( "QueryBuilder@qb" );
+        variables.settingSvc = getInstance( "SettingService" );
+        variables.testAuthor = createTestUser( {}, "", "author" );
+        variables.savedSeoEnabled = variables.settingSvc.get( "ai.seo.enabled", true );
+    }
+
+    function run() {
+        describe( "SEO Phase 13 — freshness + dashboard signals", function() {
+
+            describe( "SeoFreshnessService.staleness", function() {
+
+                it( "categorizes a fresh post as 'fresh'", function() {
+                    var post = makePost();
+                    setUpdatedAtDaysAgo( post, 10 );
+                    post.refresh();
+                    var s = variables.svc.staleness( post );
+                    expect( s.status ).toBe( "fresh" );
+                    expect( s.daysSinceUpdate ).toBeGTE( 10 );
+                } );
+
+                it( "categorizes a 1-year-old un-reviewed post as 'stale'", function() {
+                    var post = makePost();
+                    setUpdatedAtDaysAgo( post, 400 );
+                    post.refresh();
+                    var s = variables.svc.staleness( post );
+                    expect( s.status ).toBe( "stale" );
+                } );
+
+                it( "categorizes a 3-year-old un-reviewed post as 'critical'", function() {
+                    var post = makePost();
+                    setUpdatedAtDaysAgo( post, 1100 );
+                    post.refresh();
+                    var s = variables.svc.staleness( post );
+                    expect( s.status ).toBe( "critical" );
+                } );
+
+                it( "treats a recent review as keeping the post fresh", function() {
+                    var post = makePost();
+                    setUpdatedAtDaysAgo( post, 1100 );        // critical on updated
+                    setReviewedAtDaysAgo( post, 5 );          // but freshly reviewed
+                    post.refresh();
+                    var s = variables.svc.staleness( post );
+                    expect( s.status ).toBe( "fresh" );
+                    expect( s.effectiveDaysOld ).toBeLTE( 6 );
+                } );
+
+            } );
+
+            describe( "SeoFreshnessService.markReviewed", function() {
+
+                it( "stamps last_seo_review_at without touching updated_at", function() {
+                    var post = makePost();
+                    setUpdatedAtDaysAgo( post, 500 );
+                    post.refresh();
+                    var beforeUpdatedAt = post.getUpdatedAt();
+                    // Quick returns null/empty for NULL columns
+                    // depending on caster; check via the qb row
+                    // directly so we're not confused by the
+                    // entity's null-shape.
+                    var raw = variables.qb.newQuery().from( "posts" )
+                        .where( "id", post.getId() )
+                        .first();
+                    expect( raw.last_seo_review_at ?: "" ).toBe( "" );
+
+                    variables.svc.markReviewed( post.getId() );
+
+                    var rawAfter = variables.qb.newQuery().from( "posts" )
+                        .where( "id", post.getId() )
+                        .first();
+                    expect( isDate( rawAfter.last_seo_review_at ?: "" ) ).toBeTrue();
+                    // updated_at should be unchanged.
+                    expect( rawAfter.updated_at ).toBe( raw.updated_at );
+                } );
+
+            } );
+
+            describe( "SeoFreshnessService.bucketCounts", function() {
+
+                it( "returns the four bucket keys + total", function() {
+                    var counts = variables.svc.bucketCounts();
+                    expect( counts ).toHaveKey( "fresh"    );
+                    expect( counts ).toHaveKey( "aging"    );
+                    expect( counts ).toHaveKey( "stale"    );
+                    expect( counts ).toHaveKey( "critical" );
+                    expect( counts ).toHaveKey( "total"    );
+                    expect( counts.total ).toBe( counts.fresh + counts.aging + counts.stale + counts.critical );
+                } );
+
+            } );
+
+            describe( "AiAssistantService.suggestPostRefresh", function() {
+
+                beforeEach( function() {
+                    setEnv( "AI_ENABLED",  "true"            );
+                    setEnv( "AI_PROVIDER", "openrouter"      );
+                    setEnv( "AI_MODEL",    "qwen/qwen-turbo" );
+                    setEnv( "AI_API_KEY",  "sk-test-key"     );
+                    variables.settingSvc.set( key = "ai.seo.enabled", value = "true", type = "bool" );
+                } );
+
+                afterEach( function() {
+                    variables.settingSvc.set( key = "ai.seo.enabled", value = variables.savedSeoEnabled, type = "bool" );
+                } );
+
+                it( "throws AiUnavailable when the gate fails", function() {
+                    setEnv( "AI_ENABLED", "false" );
+                    var threw = false;
+                    try {
+                        variables.aiSvc.suggestPostRefresh(
+                            title  = "Old post",
+                            body   = "Body of an old post",
+                            userId = variables.testAuthor.getId()
+                        );
+                    }
+                    catch ( bxBlogger.AiUnavailable e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+                it( "rejects an empty post", function() {
+                    var threw = false;
+                    try {
+                        variables.aiSvc.suggestPostRefresh(
+                            title  = "",
+                            body   = "  ",
+                            userId = variables.testAuthor.getId()
+                        );
+                    }
+                    catch ( bxBlogger.AiInvalidInput e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+                it( "returns an empty suggestion list when the mock provider returns non-JSON", function() {
+                    var result = variables.aiSvc.suggestPostRefresh(
+                        title  = "Old post",
+                        body   = "BoxLang in 2022 was nascent. Today it is robust.",
+                        userId = variables.testAuthor.getId()
+                    );
+                    expect( result ).toHaveKey( "suggestions" );
+                    expect( isArray( result.suggestions ) ).toBeTrue();
+                    expect( result.suggestions.len() ).toBe( 0 );
+                } );
+
+            } );
+
+        } );
+    }
+
+    // ------------------------------------------------------------------------
+    // helpers
+    // ------------------------------------------------------------------------
+
+    private any function makePost() {
+        var post = getInstance( "PostService" ).create( {
+            "authorId"     : variables.testAuthor.getId(),
+            "title"        : "Phase 13 freshness " & createUUID(),
+            "bodyMarkdown" : "Some body content for freshness testing."
+        } );
+        return post;
+    }
+
+    private void function setUpdatedAtDaysAgo( required any post, required numeric days ) {
+        var ts = dateTimeFormat( dateAdd( "d", -arguments.days, now() ), "yyyy-mm-dd HH:nn:ss" );
+        variables.qb.newQuery().from( "posts" )
+            .where( "id", arguments.post.getId() )
+            .update( { "updated_at" : ts } );
+    }
+
+    private void function setReviewedAtDaysAgo( required any post, required numeric days ) {
+        var ts = dateTimeFormat( dateAdd( "d", -arguments.days, now() ), "yyyy-mm-dd HH:nn:ss" );
+        variables.qb.newQuery().from( "posts" )
+            .where( "id", arguments.post.getId() )
+            .update( { "last_seo_review_at" : ts } );
+    }
+
+    private void function setEnv( required string key, required string value ) {
+        createObject( "java", "java.lang.System" ).setProperty( arguments.key, arguments.value );
+    }
+
+    private void function clearSystemProp( required string key ) {
+        try { createObject( "java", "java.lang.System" ).clearProperty( arguments.key ); }
+        catch ( any e ) {}
+    }
+
+}

@@ -75,6 +75,7 @@ Security rules (NEVER override):
     variables.altTextBasePrompt     = "You are an accessibility copywriter. Given an image filename and a short context sentence describing where the image appears, return a single alt-text sentence describing what the image depicts. Constraints: under 125 characters; concrete and specific; no preamble like 'an image of'; no quotation marks; no end punctuation. Return ONLY the alt text.";
     variables.schemaTypeClassifierPrompt = "You are a schema.org classifier for a blog post. Given the post title and body excerpt, choose the SINGLE best schema.org type from this exact list: Article, NewsArticle, BlogPosting, FAQPage, HowTo, Recipe, Product, VideoObject. Heuristics: pick FAQPage when the post is dominated by Q&A pairs; HowTo when it has numbered steps to accomplish a task; Recipe when it lists ingredients + cooking instructions; Product when it reviews or sells a single item with price/SKU; VideoObject when the primary content is an embedded video; NewsArticle when it reports breaking news with a dateline; otherwise Article. Return ONLY the type name on a single line. No explanation, no surrounding text.";
     variables.internalLinksBasePrompt    = "You are an editor recommending internal links. The user message contains the draft body and a JSON array of candidate posts with shape { id, title, slug, excerpt }. Pick 3-5 candidates whose topic supports the draft and return a strict JSON array of objects with shape { slug, title, reason }. Reason is one short sentence under 120 chars. Do not invent slugs or titles; only recommend from the provided candidates. Output strict JSON — no preamble, no markdown fence.";
+    variables.postRefreshAuditPrompt     = "You are an editor auditing an older blog post for content that has likely gone stale. The user message contains the post title + body. Identify 3-7 SPECIFIC items the post needs to update. Return ONLY strict JSON of shape { ""suggestions"": [ { ""type"": ""year|version|stat|tool|tone|link|other"", ""snippet"": ""quoted text from the post (under 200 chars)"", ""reason"": ""one short sentence on what to update and why"" } ] }. No preamble, no markdown fence. If the post genuinely needs no updates, return { ""suggestions"": [] }.";
 
     variables.defaultMonthlyTokens   = 50000;
     variables.maxIdeaLength          = 1000;
@@ -571,6 +572,78 @@ Security rules (NEVER override):
         announce( "bxBlogger.postAiResponse", { "action" : "schema_type_classifier", "userId" : arguments.userId, "tokens" : response.totalTokens ?: 0 } );
 
         return { "schemaType" : picked, "raw" : raw, "usage" : extractUsage( response ) };
+    }
+
+    /**
+     * SEO Phase 13 — flag content in a stale post that probably
+     * needs to be refreshed. Returns `{ suggestions: [], usage }`
+     * where each suggestion has shape
+     *   { type: "year|version|stat|tool|tone|link|other",
+     *     snippet: "quoted text from the post", reason: "..." }
+     *
+     * The model returns strict JSON; we parse and silently drop
+     * malformed responses so the dashboard's UI can render an
+     * empty list rather than an error toast.
+     */
+    struct function suggestPostRefresh(
+        required string  title,
+        required string  body,
+        required numeric userId
+    ) {
+        requireSeoAiAvailable( arguments.userId );
+        validatePostInputs( arguments.title, arguments.body );
+        enforceBudget( arguments.userId );
+
+        var systemPrompt = buildSystemPrompt( "post_refresh_audit", variables.postRefreshAuditPrompt );
+        var userContent  = wrapUserContent( buildPostContext( arguments.title, arguments.body ) );
+
+        var response    = callProvider( "post_refresh_audit", systemPrompt, userContent );
+        var suggestions = parsePostRefreshSuggestions( response.text ?: "" );
+
+        recordUsage( userId = arguments.userId, action = "post_refresh_audit", usage = response );
+        announce( "bxBlogger.postAiResponse", { "action" : "post_refresh_audit", "userId" : arguments.userId, "tokens" : response.totalTokens ?: 0 } );
+
+        return { "suggestions" : suggestions, "usage" : extractUsage( response ) };
+    }
+
+    /**
+     * Strict-JSON parser for the refresh-audit response. Returns
+     * an array of well-shaped suggestion structs; silently drops
+     * anything that doesn't fit the expected shape so a model
+     * that returns prose or markdown-fenced JSON degrades to an
+     * empty list rather than a 500.
+     */
+    private array function parsePostRefreshSuggestions( required string raw ) {
+        var text = trim( arguments.raw );
+        if ( !len( text ) ) return [];
+        // Strip a markdown JSON fence if the model added one.
+        if ( reFindNoCase( "^```", text ) > 0 ) {
+            text = reReplace( text, "^```[a-z]*\s*", "", "one" );
+            text = reReplace( text, "```\s*$",        "", "one" );
+            text = trim( text );
+        }
+        try {
+            var parsed = jsonDeserialize( text );
+            if ( !isStruct( parsed ) ) return [];
+            var arr = parsed.suggestions ?: [];
+            if ( !isArray( arr ) ) return [];
+            var out = [];
+            for ( var s in arr ) {
+                if ( !isStruct( s ) ) continue;
+                var typ = trim( s.type    ?: "" );
+                var snp = trim( s.snippet ?: "" );
+                var rsn = trim( s.reason  ?: "" );
+                if ( !len( snp ) || !len( rsn ) ) continue;
+                if ( !len( typ ) ) typ = "other";
+                if ( len( snp ) > 240 ) snp = left( snp, 240 );
+                if ( len( rsn ) > 280 ) rsn = left( rsn, 280 );
+                out.append( { "type" : typ, "snippet" : snp, "reason" : rsn } );
+            }
+            return out;
+        }
+        catch ( any e ) {
+            return [];
+        }
     }
 
     /**

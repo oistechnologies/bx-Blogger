@@ -1,0 +1,59 @@
+/**
+ * bx-Blogger — admin Seo handler (SEO Phase 13)
+ *
+ * Single-page SEO health dashboard at /admin/seo. Tabs are
+ * driven entirely client-side inside the dashboard wire (Bootstrap
+ * tabs + a `tab` data slot), so this handler is a thin pass-through:
+ * page-title + view binding only. The wire pulls every signal it
+ * needs via WireBox at render time and caches scorecards for 5
+ * minutes.
+ *
+ * Permission enforcement happens at the wire level so unauthorized
+ * users see a friendly banner instead of getting kicked to a 403.
+ * cbsecurity's `^admin.*` firewall still gates the route at the
+ * outer layer — this handler never executes for unauthenticated
+ * traffic.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    function index( event, rc, prc ) {
+        prc.pageTitle = "SEO Health";
+        event.setView( view = "seo/index" );
+    }
+
+    /**
+     * Mark-reviewed POST endpoint. Form-only (no JSON), so the
+     * dashboard wire can call it via a normal POST or an
+     * action-form. Response: 302 back to /admin/seo so the
+     * dashboard re-renders with the freshly-stamped row gone
+     * from the staleness queue.
+     */
+    function markReviewed( event, rc, prc ) {
+        var postId = val( rc.postId ?: 0 );
+        if ( postId <= 0 ) {
+            relocate( url = "/admin/seo" );
+            return;
+        }
+
+        var user = getInstance( "AuthenticationService@cbauth" ).getUser();
+        // posts.edit.own covers your own posts; posts.edit.others
+        // covers everyone's. Match PostService's normal write
+        // perm shape so the dashboard doesn't open a side door.
+        var post = getInstance( "Post" ).find( postId );
+        if ( isNull( post ) ) {
+            relocate( url = "/admin/seo" );
+            return;
+        }
+        var canMark = user.hasPermission( "posts.edit.others" )
+                   || ( user.hasPermission( "posts.edit.own" ) && post.getAuthorId() == user.getId() );
+        if ( !canMark ) {
+            relocate( url = "/admin/seo" );
+            return;
+        }
+
+        getInstance( "SeoFreshnessService" ).markReviewed( postId );
+        flash.put( "notice", "Marked '" & post.getTitle() & "' as reviewed." );
+        relocate( url = "/admin/seo" );
+    }
+
+}

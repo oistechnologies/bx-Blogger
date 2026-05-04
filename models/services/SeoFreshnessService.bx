@@ -1,0 +1,184 @@
+/**
+ * bx-Blogger — SeoFreshnessService (SEO Phase 13)
+ *
+ * Classifies how stale a published post is, so the SEO health
+ * dashboard's "Stale content" tab can surface posts that the
+ * editor probably wants to revisit.
+ *
+ * Two timestamps drive the bucket:
+ *
+ *   - `updated_at`           — bumped on every column write.
+ *   - `last_seo_review_at`   — bumped only when an editor
+ *                              explicitly clicks "Mark reviewed"
+ *                              in the dashboard. This is the
+ *                              "I read this, it's still right"
+ *                              signal.
+ *
+ * The bucket considers the MORE RECENT of the two so a typo
+ * fix on a 2-year-old post nudges it back to fresh while a
+ * formal "still accurate" review keeps it fresh even when no
+ * column changed.
+ *
+ * Default thresholds (all in days, configurable via the
+ * `seo.freshness_*` settings):
+ *
+ *   fresh    : 0   - 180   ("just updated / recently reviewed")
+ *   aging    : 181 - 365   ("worth a glance soon")
+ *   stale    : 366 - 730   ("almost certainly contains stale claims")
+ *   critical : > 730        ("years out of date")
+ *
+ * Pure service — reads SettingService for thresholds, no DB
+ * writes. The /admin/seo dashboard handler queries posts +
+ * passes each row through `staleness( post )` to compute the
+ * sortable list.
+ */
+class accessors="true" singleton {
+
+    property name="settingService" inject="SettingService";
+
+    variables.defaultThresholds = {
+        "aging"    : 180,
+        "stale"    : 365,
+        "critical" : 730
+    };
+
+    /**
+     * Returns:
+     *   {
+     *     status                : "fresh" | "aging" | "stale" | "critical",
+     *     daysSinceUpdate       : numeric,
+     *     daysSinceReview       : numeric (or "" if never reviewed),
+     *     effectiveDaysOld      : numeric — MIN of the two, drives bucket,
+     *     thresholds            : { aging, stale, critical }
+     *   }
+     */
+    struct function staleness( required any post ) {
+        var t = thresholds();
+
+        // Quick returns either a CF date object OR an empty value
+        // (null / empty array / empty struct) when the column is
+        // NULL — the exact null shape varies by version. Guard
+        // every read with isNullish() so we don't try to dateDiff
+        // an empty array.
+        var updatedAt   = arguments.post.getUpdatedAt();
+        var publishedAt = arguments.post.getPublishedAt();
+        var reviewedAt  = arguments.post.getLastSeoReviewAt();
+
+        var anchorAt = isNullish( updatedAt ) ? publishedAt : updatedAt;
+        if ( isNullish( anchorAt ) ) {
+            return {
+                "status"           : "fresh",
+                "daysSinceUpdate"  : 0,
+                "daysSinceReview"  : "",
+                "effectiveDaysOld" : 0,
+                "thresholds"       : t
+            };
+        }
+
+        var daysSinceUpdate = max( 0, dateDiff( "d", anchorAt, now() ) );
+        var daysSinceReview = "";
+        var effective       = daysSinceUpdate;
+
+        if ( !isNullish( reviewedAt ) ) {
+            daysSinceReview = max( 0, dateDiff( "d", reviewedAt, now() ) );
+            // The post is fresh if EITHER signal is recent.
+            effective = min( daysSinceUpdate, daysSinceReview );
+        }
+
+        var status = "fresh";
+        if ( effective gt t.critical )      status = "critical";
+        else if ( effective gt t.stale )    status = "stale";
+        else if ( effective gt t.aging )    status = "aging";
+
+        return {
+            "status"           : status,
+            "daysSinceUpdate"  : daysSinceUpdate,
+            "daysSinceReview"  : daysSinceReview,
+            "effectiveDaysOld" : effective,
+            "thresholds"       : t
+        };
+    }
+
+    /**
+     * Mark a post as reviewed. Just stamps the column; uses qb
+     * directly so we don't go through the full Post.save() path
+     * (which would also bump updated_at, defeating the point of
+     * having a separate signal).
+     */
+    void function markReviewed( required numeric postId ) {
+        var qb = wirebox().getInstance( "QueryBuilder@qb" );
+        qb.newQuery().from( "posts" )
+            .where( "id", arguments.postId )
+            .update( { "last_seo_review_at" : now() } );
+    }
+
+    /**
+     * SQL fragment that gives the dashboard query the
+     * "effective last touched" timestamp without having to
+     * post-process every row in BoxLang. Picks the LATER of
+     * updated_at and last_seo_review_at so the dashboard's
+     * stale-first sort is single-pass.
+     */
+    string function effectiveTouchedAtSql() {
+        return "GREATEST( COALESCE( last_seo_review_at, '1970-01-01' ),
+                          COALESCE( updated_at,         '1970-01-01' ) )";
+    }
+
+    /**
+     * Snapshot of the four counters the dashboard's Overview tab
+     * shows at the top: how many published posts fall in each
+     * bucket. A single SQL pass keeps this O(1) per render.
+     */
+    struct function bucketCounts() {
+        var qb = wirebox().getInstance( "QueryBuilder@qb" );
+        var t  = thresholds();
+
+        var rows = qb.newQuery().from( "posts" )
+            .where( "status", "published" )
+            .where( "post_type", "post" )
+            .selectRaw( "DATEDIFF( CURRENT_DATE, " & effectiveTouchedAtSql() & " ) AS diff" )
+            .get();
+
+        var counts = { "fresh" : 0, "aging" : 0, "stale" : 0, "critical" : 0, "total" : 0 };
+        for ( var r in rows ) {
+            counts.total++;
+            var d = val( r.diff ?: 0 );
+            if      ( d gt t.critical ) counts.critical++;
+            else if ( d gt t.stale )    counts.stale++;
+            else if ( d gt t.aging )    counts.aging++;
+            else                        counts.fresh++;
+        }
+        return counts;
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    /**
+     * Quick / qb sometimes returns an empty array or empty
+     * struct in place of `null` for a NULL column read,
+     * depending on the column's caster. `isNull` alone misses
+     * those cases. This wrapper does both.
+     */
+    private boolean function isNullish( required any value ) {
+        if ( isNull( arguments.value ) ) return true;
+        if ( isArray( arguments.value )  && arrayLen( arguments.value )  == 0 ) return true;
+        if ( isStruct( arguments.value ) && structIsEmpty( arguments.value ) )  return true;
+        if ( isSimpleValue( arguments.value ) && !len( arguments.value ) )      return true;
+        return false;
+    }
+
+    private struct function thresholds() {
+        return {
+            "aging"    : val( settingService.get( "seo.freshness_aging_days",    variables.defaultThresholds.aging    ) ),
+            "stale"    : val( settingService.get( "seo.freshness_stale_days",    variables.defaultThresholds.stale    ) ),
+            "critical" : val( settingService.get( "seo.freshness_critical_days", variables.defaultThresholds.critical ) )
+        };
+    }
+
+    private any function wirebox() {
+        return application.wireBox;
+    }
+
+}

@@ -1,0 +1,818 @@
+<bx:script>
+// @startWire
+/**
+ * seo.dashboard — SEO Phase 13 site-wide health dashboard.
+ *
+ * Single multi-tab wire showing:
+ *
+ *   Overview     — scorecards: avg audit score, missing alt count,
+ *                  broken outbound links, top 5 404 sources,
+ *                  redirects with no recent hits, bucket counts.
+ *   Stale        — paginated list of published posts sorted by
+ *                  effective last-touched ascending; per-row
+ *                  "AI suggest refresh" + "Mark reviewed".
+ *   Audit scores — paginated list of posts with their
+ *                  SeoAuditService score, worst-first.
+ *   Coverage     — schema-type distribution, category SEO-fill
+ *                  rate, author SEO-fill rate.
+ *
+ * Permission gating: read access via `posts.list`. Mark-reviewed +
+ * AI suggest-refresh require `posts.edit.others` (or own-post +
+ * `posts.edit.own`). Anyone without `posts.list` sees a banner
+ * instead of dashboard rows.
+ *
+ * Caching: scorecard signals are wrapped in a 5-minute cachebox
+ * read so the dashboard doesn't query 404s + sitemap stats on
+ * every Bootstrap-tab click. The "Refresh" button busts the
+ * cache and re-runs every signal.
+ */
+
+property name="cbauth"            inject="AuthenticationService@cbauth";
+property name="qb"                inject="QueryBuilder@qb";
+property name="freshnessService"  inject="SeoFreshnessService";
+property name="auditService"      inject="SeoAuditService";
+property name="aiService"         inject="AiAssistantService";
+property name="cacheBox"          inject="cachebox";
+
+variables.cacheKey = "seo.dashboard.overview.v1";
+variables.cacheTtl = createTimespan( 0, 0, 5, 0 );  // 5 min
+
+// `perPage` lives in `data` so the template can reach it as
+// args.perPage; CBWIRE only exposes the data struct (not the
+// component's `variables` scope) to the rendered .bxm template,
+// so a `data.perPage` reference in the markup throws
+// "key [perPage] not found".
+data = {
+    "tab"          : "overview",       // overview | stale | scores | coverage
+    "page"         : 1,
+    "perPage"      : 25,
+    "canView"      : false,
+    "canEditAny"   : false,
+    "canAi"        : false,
+    "flashOk"      : "",
+    "flashError"   : "",
+
+    "overview"     : {},
+
+    "staleRows"      : [],
+    "staleTotal"     : 0,
+    "staleBuckets"   : { fresh : 0, aging : 0, stale : 0, critical : 0 },
+
+    "scoreRows"      : [],
+    "scoreTotal"     : 0,
+
+    "coverage"       : {},
+
+    // Per-post AI refresh suggestion modal.
+    "showRefreshModal" : false,
+    "refreshPostId"    : 0,
+    "refreshTitle"     : "",
+    "refreshBusy"      : false,
+    "refreshError"     : "",
+    "refreshSuggestions" : []
+};
+
+function onMount( event, rc, prc, params ) {
+    var u = cbauth.isLoggedIn() ? cbauth.getUser() : "";
+    // Dashboard is a site-wide health surface — gate read access
+    // on `posts.edit.others` (editor + admin + super_admin).
+    // Authors who only have their own posts get the audit score
+    // panel inside the post editor instead.
+    data.canView    = !isSimpleValue( u ) && u.hasPermission( "posts.edit.others" );
+    data.canEditAny = !isSimpleValue( u ) && u.hasPermission( "posts.edit.others" );
+    data.canAi      = !isSimpleValue( u ) && u.hasPermission( "posts.ai.seo" );
+    if ( data.canView ) loadTab();
+}
+
+function setTab( required string value ) {
+    var allowed = [ "overview", "stale", "scores", "coverage" ];
+    data.tab  = allowed.findNoCase( arguments.value ) > 0 ? arguments.value : "overview";
+    data.page = 1;
+    loadTab();
+}
+
+function nextPage() { data.page++; loadTab(); }
+function prevPage() { if ( data.page > 1 ) data.page--; loadTab(); }
+
+/**
+ * Bust the 5-min overview cache + reload whatever tab is open.
+ * Useful when the user just published, ran an audit, or
+ * dispatched the outbound-link sweep.
+ */
+function refresh() {
+    try { cacheBox.getCache( "default" ).clear( variables.cacheKey ); }
+    catch ( any e ) {}
+    loadTab();
+    data.flashOk = "Refreshed.";
+}
+
+function markReviewed( required numeric postId ) {
+    if ( !canEditPost( arguments.postId ) ) {
+        data.flashError = "You don't have permission to mark that post reviewed.";
+        return;
+    }
+    freshnessService.markReviewed( arguments.postId );
+    data.flashOk = "Marked reviewed.";
+    loadTab();
+}
+
+function openRefresh( required numeric postId ) {
+    if ( !data.canAi ) {
+        data.flashError = "AI is not enabled or you lack the posts.ai.seo permission.";
+        return;
+    }
+    var post = getInstance( "Post" ).find( arguments.postId );
+    if ( isNull( post ) ) {
+        data.flashError = "Post not found.";
+        return;
+    }
+    data.showRefreshModal   = true;
+    data.refreshPostId      = arguments.postId;
+    data.refreshTitle       = post.getTitle() ?: "";
+    data.refreshSuggestions = [];
+    data.refreshError       = "";
+    data.refreshBusy        = true;
+    try {
+        var result = aiService.suggestPostRefresh(
+            title  = post.getTitle()    ?: "",
+            body   = post.getBodyMarkdown() ?: "",
+            userId = cbauth.getUser().getId()
+        );
+        data.refreshSuggestions = result.suggestions;
+    }
+    catch ( bxBlogger.AiUnavailable e )     { data.refreshError = e.message; }
+    catch ( bxBlogger.AiBudgetExceeded e )  { data.refreshError = e.message; }
+    catch ( bxBlogger.AiInvalidInput e )    { data.refreshError = e.message; }
+    catch ( bxBlogger.AiProviderError e )   { data.refreshError = "The AI provider failed: " & e.message; }
+    catch ( any e )                          { data.refreshError = "Unexpected failure: " & e.message; }
+    finally { data.refreshBusy = false; }
+}
+
+function closeRefresh() {
+    data.showRefreshModal = false;
+}
+
+// --------------------------------------------------------------
+// Per-tab loaders
+// --------------------------------------------------------------
+
+private void function loadTab() {
+    if ( !data.canView ) return;
+    switch ( data.tab ) {
+        case "stale"    : loadStale();    break;
+        case "scores"   : loadScores();   break;
+        case "coverage" : loadCoverage(); break;
+        default         : loadOverview();
+    }
+}
+
+/**
+ * Wrap the slow signal queries in cachebox so a tab switch +
+ * back doesn't re-run every count. 5-min TTL or "Refresh"
+ * click invalidates.
+ */
+private void function loadOverview() {
+    var cache = cacheBox.getCache( "default" );
+    var snap  = cache.get( variables.cacheKey );
+    if ( isNull( snap ) ) {
+        snap = computeOverview();
+        cache.set( variables.cacheKey, snap, variables.cacheTtl );
+    }
+    data.overview = snap;
+}
+
+private struct function computeOverview() {
+    var snap = {
+        "buckets"           : freshnessService.bucketCounts(),
+        "missingAltCount"   : missingAltCount(),
+        "brokenOutboundCt"  : brokenOutboundCount(),
+        "top404"            : top404Sources(),
+        "lowScoreCount"     : 0,   // populated below
+        "missingFocusKw"    : missingFocusKwCount(),
+        "redirectsIdle"     : idleRedirectsCount(),
+        "totalPublished"    : 0
+    };
+    snap.totalPublished = snap.buckets.total;
+
+    // Audit score scan — capped at 200 latest published posts to
+    // keep the overview cheap. The scores tab below shows the
+    // full set with paging.
+    var rows = qb.newQuery().from( "posts" )
+        .where( "status", "published" )
+        .where( "post_type", "post" )
+        .orderBy( "published_at", "desc" )
+        .limit( 200 )
+        .get();
+    var sumScore  = 0;
+    var counted   = 0;
+    var lowCount  = 0;
+    for ( var r in rows ) {
+        try {
+            var post  = getInstance( "Post" ).find( r.id );
+            if ( isNull( post ) ) continue;
+            var audit = auditService.audit( post );
+            sumScore += audit.score;
+            counted++;
+            if ( audit.score lt 60 ) lowCount++;
+        }
+        catch ( any e ) {}
+    }
+    snap.avgScore       = counted > 0 ? round( sumScore / counted ) : 0;
+    snap.lowScoreCount  = lowCount;
+    snap.scoredPosts    = counted;
+
+    return snap;
+}
+
+private void function loadStale() {
+    data.staleBuckets = freshnessService.bucketCounts();
+    var offset  = max( 0, ( data.page - 1 ) * data.perPage );
+    var touched = freshnessService.effectiveTouchedAtSql();
+
+    var totalRow = qb.newQuery().from( "posts" )
+        .where( "status", "published" )
+        .where( "post_type", "post" )
+        .selectRaw( "COUNT(*) AS n" )
+        .first();
+    data.staleTotal = val( totalRow.n ?: 0 );
+
+    data.staleRows = qb.newQuery().from( "posts" )
+        .where( "status", "published" )
+        .where( "post_type", "post" )
+        .selectRaw(
+            "id, title, slug, author_id, published_at, updated_at, last_seo_review_at,
+             " & touched & " AS effective_touched_at,
+             DATEDIFF( CURRENT_DATE, " & touched & " ) AS days_old"
+        )
+        .orderByRaw( "days_old DESC" )
+        .limit( data.perPage )
+        .offset( offset )
+        .get();
+}
+
+private void function loadScores() {
+    var totalRow = qb.newQuery().from( "posts" )
+        .where( "status", "published" )
+        .where( "post_type", "post" )
+        .selectRaw( "COUNT(*) AS n" )
+        .first();
+    data.scoreTotal = val( totalRow.n ?: 0 );
+
+    var offset = max( 0, ( data.page - 1 ) * data.perPage );
+    // We need to compute scores client-side (the audit service
+    // is BoxLang code, not SQL), so pull the page's posts and
+    // run the audit. The tab is paginated to keep this O(perPage)
+    // per request. Sort key in SQL is a compromise — we sort by
+    // a coarse proxy (word_count ascending = often-correlated with
+    // low audit score) so the worst-first ordering is a useful
+    // first cut without pre-computing every score. The score
+    // itself is shown in each row and the user can re-sort
+    // visually. A cron-precomputed score column is a future
+    // enhancement.
+    var rows = qb.newQuery().from( "posts" )
+        .where( "status", "published" )
+        .where( "post_type", "post" )
+        .orderBy( "word_count", "asc" )
+        .limit( data.perPage )
+        .offset( offset )
+        .get();
+
+    var enriched = [];
+    for ( var r in rows ) {
+        try {
+            var post  = getInstance( "Post" ).find( r.id );
+            if ( isNull( post ) ) continue;
+            var audit = auditService.audit( post );
+            enriched.append( {
+                "id"           : r.id,
+                "title"        : r.title,
+                "slug"         : r.slug,
+                "score"        : audit.score,
+                "passes"       : audit.summary.pass,
+                "warns"        : audit.summary.warn,
+                "fails"        : audit.summary.fail,
+                "wordCount"    : r.word_count
+            } );
+        }
+        catch ( any e ) {}
+    }
+    // In-memory ascending-score sort so the page actually presents
+    // worst-first regardless of the SQL ordering.
+    arraySort( enriched, function( a, b ) { return val( a.score ) - val( b.score ); } );
+    data.scoreRows = enriched;
+}
+
+private void function loadCoverage() {
+    var coverage = {
+        "schemaTypes"   : [],
+        "categoryFill"  : { withSeo : 0, total : 0 },
+        "authorFill"    : { withSeo : 0, total : 0 },
+        "postSeoFill"   : { withTitle : 0, withDesc : 0, total : 0 }
+    };
+
+    // schema_type distribution
+    var schemaRows = qb.newQuery().from( "posts" )
+        .where( "status", "published" )
+        .where( "post_type", "post" )
+        .selectRaw( "
+            COALESCE( NULLIF( schema_type, '' ), 'Article (default)' ) AS schema_type,
+            COUNT(*) AS n
+        " )
+        .groupBy( "schema_type" )
+        .orderByRaw( "n DESC" )
+        .get();
+    for ( var r in schemaRows ) {
+        coverage.schemaTypes.append( { "type" : r.schema_type, "count" : val( r.n ) } );
+    }
+
+    // post-level seo fill rate
+    var postFill = qb.newQuery().from( "posts" )
+        .where( "status", "published" )
+        .where( "post_type", "post" )
+        .selectRaw( "
+            COUNT(*) AS total,
+            SUM( CASE WHEN seo_title       IS NOT NULL AND seo_title       <> '' THEN 1 ELSE 0 END ) AS with_title,
+            SUM( CASE WHEN seo_description IS NOT NULL AND seo_description <> '' THEN 1 ELSE 0 END ) AS with_desc
+        " )
+        .first();
+    coverage.postSeoFill = {
+        "total"    : val( postFill.total      ?: 0 ),
+        "withTitle": val( postFill.with_title ?: 0 ),
+        "withDesc" : val( postFill.with_desc  ?: 0 )
+    };
+
+    // category-level seo fill rate
+    var catFill = qb.newQuery().from( "categories" )
+        .selectRaw( "
+            COUNT(*) AS total,
+            SUM( CASE WHEN seo_title IS NOT NULL AND seo_title <> '' THEN 1 ELSE 0 END ) AS with_seo
+        " )
+        .first();
+    coverage.categoryFill = { "total" : val( catFill.total ?: 0 ), "withSeo" : val( catFill.with_seo ?: 0 ) };
+
+    // author-level seo fill rate (only authors who have a public author page enabled)
+    var authorFill = qb.newQuery().from( "users" )
+        .where( "public_author_page_enabled", 1 )
+        .selectRaw( "
+            COUNT(*) AS total,
+            SUM( CASE WHEN seo_title IS NOT NULL AND seo_title <> '' THEN 1 ELSE 0 END ) AS with_seo
+        " )
+        .first();
+    coverage.authorFill = { "total" : val( authorFill.total ?: 0 ), "withSeo" : val( authorFill.with_seo ?: 0 ) };
+
+    data.coverage = coverage;
+}
+
+// --------------------------------------------------------------
+// Signal helpers (overview tab)
+// --------------------------------------------------------------
+
+private numeric function missingAltCount() {
+    try {
+        return val( qb.newQuery().from( "media" )
+            .where( "media_type", "image" )
+            .where( function( q ) {
+                q.whereNull( "alt_text" ).orWhere( "alt_text", "" );
+            } )
+            .selectRaw( "COUNT(*) AS n" )
+            .first().n ?: 0 );
+    }
+    catch ( any e ) { return 0; }
+}
+
+private numeric function brokenOutboundCount() {
+    try {
+        return val( qb.newQuery().from( "outbound_links" )
+            .where( function( q ) {
+                q.where( "status_code", "<", 200 )
+                 .orWhere( "status_code", ">=", 400 );
+            } )
+            .selectRaw( "COUNT(*) AS n" )
+            .first().n ?: 0 );
+    }
+    catch ( any e ) { return 0; }
+}
+
+private numeric function missingFocusKwCount() {
+    try {
+        return val( qb.newQuery().from( "posts" )
+            .where( "status", "published" )
+            .where( "post_type", "post" )
+            .where( function( q ) {
+                q.whereNull( "focus_keyword" ).orWhere( "focus_keyword", "" );
+            } )
+            .selectRaw( "COUNT(*) AS n" )
+            .first().n ?: 0 );
+    }
+    catch ( any e ) { return 0; }
+}
+
+private array function top404Sources() {
+    try {
+        return qb.newQuery().from( "broken_links" )
+            .whereNull( "resolved_at" )
+            .select( [ "path", "hits", "last_seen_at" ] )
+            .orderBy( "hits", "desc" )
+            .limit( 5 )
+            .get();
+    }
+    catch ( any e ) { return []; }
+}
+
+private numeric function idleRedirectsCount() {
+    try {
+        // Redirects table has a `hit_count` + `last_hit_at` (Phase 7.G).
+        // "Idle" = haven't been hit in 30+ days OR have never been hit.
+        return val( qb.newQuery().from( "redirects" )
+            .where( function( q ) {
+                q.whereNull( "last_hit_at" )
+                 .orWhere( "last_hit_at", "<", dateAdd( "d", -30, now() ) );
+            } )
+            .selectRaw( "COUNT(*) AS n" )
+            .first().n ?: 0 );
+    }
+    catch ( any e ) { return 0; }
+}
+
+// --------------------------------------------------------------
+// Permission helper for per-row mark-reviewed
+// --------------------------------------------------------------
+
+private boolean function canEditPost( required numeric postId ) {
+    if ( data.canEditAny ) return true;
+    var u = cbauth.getUser();
+    if ( !u.hasPermission( "posts.edit.own" ) ) return false;
+    var post = getInstance( "Post" ).find( arguments.postId );
+    if ( isNull( post ) ) return false;
+    return post.getAuthorId() == u.getId();
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<div>
+    <bx:if !args.canView>
+        <div class="alert alert-warning">
+            <i class="bi bi-shield-lock me-1"></i>
+            You don't have permission to view the SEO dashboard.
+        </div>
+    <bx:else>
+        <bx:if len( args.flashOk )>
+            <div class="alert alert-success alert-dismissible">
+                #encodeForHTML( args.flashOk )#
+                <button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+            </div>
+        </bx:if>
+        <bx:if len( args.flashError )>
+            <div class="alert alert-danger alert-dismissible">
+                #encodeForHTML( args.flashError )#
+                <button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+            </div>
+        </bx:if>
+
+        <ul class="nav nav-tabs mb-3">
+            <li class="nav-item">
+                <a class="nav-link <bx:if args.tab == 'overview'>active</bx:if>" href="##" wire:click.prevent="setTab('overview')">Overview</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link <bx:if args.tab == 'stale'>active</bx:if>" href="##" wire:click.prevent="setTab('stale')">Stale content</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link <bx:if args.tab == 'scores'>active</bx:if>" href="##" wire:click.prevent="setTab('scores')">Audit scores</a>
+            </li>
+            <li class="nav-item">
+                <a class="nav-link <bx:if args.tab == 'coverage'>active</bx:if>" href="##" wire:click.prevent="setTab('coverage')">Coverage</a>
+            </li>
+            <li class="nav-item ms-auto">
+                <button class="btn btn-sm btn-outline-secondary mt-1" wire:click="refresh">
+                    <i class="bi bi-arrow-clockwise me-1"></i> Refresh
+                </button>
+            </li>
+        </ul>
+
+        <bx:if args.tab == "overview">
+            <bx:set ov = args.overview>
+            <div class="row g-3 mb-3">
+                <div class="col-md-3">
+                    <div class="card stat-card stat-card-primary"><div class="card-body">
+                        <div class="text-muted small">Avg audit score</div>
+                        <div class="h3 mb-0">#( ov.avgScore ?: 0 )#/100</div>
+                        <div class="small text-muted">across last #( ov.scoredPosts ?: 0 )# posts</div>
+                    </div></div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card stat-card stat-card-warning"><div class="card-body">
+                        <div class="text-muted small">Posts with score &lt; 60</div>
+                        <div class="h3 mb-0">#( ov.lowScoreCount ?: 0 )#</div>
+                        <a class="small" href="##" wire:click.prevent="setTab('scores')">View list →</a>
+                    </div></div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card stat-card stat-card-info"><div class="card-body">
+                        <div class="text-muted small">Missing focus keyword</div>
+                        <div class="h3 mb-0">#( ov.missingFocusKw ?: 0 )#</div>
+                        <div class="small text-muted">published posts</div>
+                    </div></div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card stat-card stat-card-danger"><div class="card-body">
+                        <div class="text-muted small">Broken outbound links</div>
+                        <div class="h3 mb-0">#( ov.brokenOutboundCt ?: 0 )#</div>
+                        <a class="small" href="/admin/settings/outbound-links">Open report →</a>
+                    </div></div>
+                </div>
+            </div>
+
+            <div class="row g-3 mb-3">
+                <div class="col-md-3">
+                    <div class="card stat-card stat-card-warning"><div class="card-body">
+                        <div class="text-muted small">Images without alt text</div>
+                        <div class="h3 mb-0">#( ov.missingAltCount ?: 0 )#</div>
+                        <a class="small" href="/admin/media">Open library →</a>
+                    </div></div>
+                </div>
+                <div class="col-md-3">
+                    <div class="card stat-card stat-card-secondary"><div class="card-body">
+                        <div class="text-muted small">Idle redirects (30+ days)</div>
+                        <div class="h3 mb-0">#( ov.redirectsIdle ?: 0 )#</div>
+                        <a class="small" href="/admin/redirects">Review →</a>
+                    </div></div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card stat-card stat-card-danger h-100"><div class="card-body">
+                        <div class="text-muted small mb-2">Top 404 paths</div>
+                        <bx:if isArray( ov.top404 ?: [] ) && ov.top404.len()>
+                            <ul class="list-unstyled mb-0 small">
+                                <bx:loop array="#ov.top404#" item="r">
+                                    <li class="mb-1">
+                                        <code>#encodeForHTML( r.path )#</code>
+                                        <span class="text-muted">— #val( r.hits )# hits</span>
+                                    </li>
+                                </bx:loop>
+                            </ul>
+                            <a class="small mt-2 d-inline-block" href="/admin/broken-links">Open 404 report →</a>
+                        <bx:else>
+                            <div class="text-muted small">No unresolved 404 hits.</div>
+                        </bx:if>
+                    </div></div>
+                </div>
+            </div>
+
+            <div class="card stat-card stat-card-primary">
+                <div class="card-header card-header-soft card-header-soft-primary">
+                    <span class="h6 mb-0">Freshness buckets — published posts</span>
+                </div>
+                <div class="card-body">
+                    <bx:set b = ov.buckets ?: { fresh : 0, aging : 0, stale : 0, critical : 0, total : 0 }>
+                    <div class="row g-3 small">
+                        <div class="col-md-3">
+                            <div class="d-flex align-items-center gap-2">
+                                <span class="badge bg-success">#( b.fresh ?: 0 )#</span>
+                                <span>Fresh</span>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="d-flex align-items-center gap-2">
+                                <span class="badge bg-info">#( b.aging ?: 0 )#</span>
+                                <span>Aging</span>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="d-flex align-items-center gap-2">
+                                <span class="badge bg-warning text-dark">#( b.stale ?: 0 )#</span>
+                                <span>Stale</span>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="d-flex align-items-center gap-2">
+                                <span class="badge bg-danger">#( b.critical ?: 0 )#</span>
+                                <span>Critical</span>
+                            </div>
+                        </div>
+                    </div>
+                    <a class="small mt-2 d-inline-block" href="##" wire:click.prevent="setTab('stale')">Open stale-content list →</a>
+                </div>
+            </div>
+        <bx:elseif args.tab == "stale">
+            <div class="card stat-card stat-card-warning">
+                <div class="card-header card-header-soft card-header-soft-warning d-flex flex-wrap gap-2 justify-content-between align-items-center">
+                    <span class="h6 mb-0">Stale content</span>
+                    <span class="small text-muted">Sorted oldest-first by effective last-touched.</span>
+                </div>
+                <div class="card-body p-0">
+                    <bx:if args.staleRows.len() == 0>
+                        <div class="p-4 text-center text-muted small">No published posts.</div>
+                    <bx:else>
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle mb-0">
+                                <thead class="small text-muted">
+                                    <tr>
+                                        <th>Post</th>
+                                        <th class="text-nowrap">Days old</th>
+                                        <th class="text-nowrap">Updated</th>
+                                        <th class="text-nowrap">Reviewed</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <bx:loop array="#args.staleRows#" item="r">
+                                        <bx:set d = val( r.days_old )>
+                                        <bx:set bucketBadge =
+                                            d gt 730 ? "bg-danger" :
+                                            d gt 365 ? "bg-warning text-dark" :
+                                            d gt 180 ? "bg-info" : "bg-success">
+                                        <tr>
+                                            <td>
+                                                <a href="/admin/posts/editor?id=#r.id#">#encodeForHTML( r.title )#</a>
+                                                <div class="small text-muted"><code>/blog/#encodeForHTML( r.slug )#</code></div>
+                                            </td>
+                                            <td><span class="badge #bucketBadge#">#d#d</span></td>
+                                            <td class="small text-nowrap">
+                                                <bx:if isDate( r.updated_at ?: "" )>#dateFormat( r.updated_at, "yyyy-mm-dd" )#<bx:else>&mdash;</bx:if>
+                                            </td>
+                                            <td class="small text-nowrap">
+                                                <bx:if isDate( r.last_seo_review_at ?: "" )>#dateFormat( r.last_seo_review_at, "yyyy-mm-dd" )#<bx:else>&mdash;</bx:if>
+                                            </td>
+                                            <td class="text-end">
+                                                <bx:if args.canAi>
+                                                    <button class="btn btn-sm btn-outline-primary me-1"
+                                                            wire:click="openRefresh(#r.id#)">
+                                                        <i class="bi bi-magic"></i> Suggest
+                                                    </button>
+                                                </bx:if>
+                                                <button class="btn btn-sm btn-outline-secondary"
+                                                        wire:click="markReviewed(#r.id#)">
+                                                    <i class="bi bi-check2"></i> Reviewed
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    </bx:loop>
+                                </tbody>
+                            </table>
+                        </div>
+                    </bx:if>
+                </div>
+                <bx:if args.staleTotal gt data.perPage>
+                    <div class="card-footer d-flex justify-content-between align-items-center small">
+                        <span class="text-muted">Page #args.page# of #ceiling( args.staleTotal / data.perPage )# (#args.staleTotal# posts)</span>
+                        <span>
+                            <button class="btn btn-sm btn-outline-secondary me-1" wire:click="prevPage" <bx:if args.page lte 1>disabled</bx:if>>&laquo; Prev</button>
+                            <button class="btn btn-sm btn-outline-secondary"        wire:click="nextPage" <bx:if args.page gte ceiling( args.staleTotal / data.perPage )>disabled</bx:if>>Next &raquo;</button>
+                        </span>
+                    </div>
+                </bx:if>
+            </div>
+        <bx:elseif args.tab == "scores">
+            <div class="card stat-card stat-card-primary">
+                <div class="card-header card-header-soft card-header-soft-primary">
+                    <span class="h6 mb-0">Audit scores — worst first within page</span>
+                </div>
+                <div class="card-body p-0">
+                    <bx:if args.scoreRows.len() == 0>
+                        <div class="p-4 text-center text-muted small">No published posts.</div>
+                    <bx:else>
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle mb-0">
+                                <thead class="small text-muted">
+                                    <tr>
+                                        <th>Post</th>
+                                        <th class="text-nowrap">Score</th>
+                                        <th class="text-nowrap">Pass / Warn / Fail</th>
+                                        <th class="text-nowrap">Words</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <bx:loop array="#args.scoreRows#" item="r">
+                                        <bx:set s = val( r.score )>
+                                        <bx:set scoreBadge = s gte 80 ? "bg-success" : ( s gte 60 ? "bg-warning text-dark" : "bg-danger" )>
+                                        <tr>
+                                            <td>
+                                                <a href="/admin/posts/editor?id=#r.id#">#encodeForHTML( r.title )#</a>
+                                                <div class="small text-muted"><code>/blog/#encodeForHTML( r.slug )#</code></div>
+                                            </td>
+                                            <td><span class="badge #scoreBadge#">#s#</span></td>
+                                            <td class="small">
+                                                <span class="text-success">#r.passes#</span>
+                                                /
+                                                <span class="text-warning">#r.warns#</span>
+                                                /
+                                                <span class="text-danger">#r.fails#</span>
+                                            </td>
+                                            <td class="small">#val( r.wordCount )#</td>
+                                        </tr>
+                                    </bx:loop>
+                                </tbody>
+                            </table>
+                        </div>
+                    </bx:if>
+                </div>
+                <bx:if args.scoreTotal gt data.perPage>
+                    <div class="card-footer d-flex justify-content-between align-items-center small">
+                        <span class="text-muted">Page #args.page# of #ceiling( args.scoreTotal / data.perPage )# (#args.scoreTotal# posts)</span>
+                        <span>
+                            <button class="btn btn-sm btn-outline-secondary me-1" wire:click="prevPage" <bx:if args.page lte 1>disabled</bx:if>>&laquo; Prev</button>
+                            <button class="btn btn-sm btn-outline-secondary"        wire:click="nextPage" <bx:if args.page gte ceiling( args.scoreTotal / data.perPage )>disabled</bx:if>>Next &raquo;</button>
+                        </span>
+                    </div>
+                </bx:if>
+            </div>
+        <bx:else>
+            <bx:set cv = args.coverage>
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <div class="card stat-card stat-card-primary">
+                        <div class="card-header card-header-soft card-header-soft-primary">
+                            <span class="h6 mb-0">Schema.org type distribution</span>
+                        </div>
+                        <div class="card-body p-0">
+                            <table class="table table-sm mb-0">
+                                <thead class="small text-muted"><tr><th>Type</th><th class="text-end">Count</th></tr></thead>
+                                <tbody>
+                                    <bx:loop array="#cv.schemaTypes ?: []#" item="r">
+                                        <tr>
+                                            <td>#encodeForHTML( r.type )#</td>
+                                            <td class="text-end">#r.count#</td>
+                                        </tr>
+                                    </bx:loop>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="card stat-card stat-card-info mb-3">
+                        <div class="card-header card-header-soft card-header-soft-info">
+                            <span class="h6 mb-0">Post-level SEO fill rate</span>
+                        </div>
+                        <div class="card-body small">
+                            <bx:set pf = cv.postSeoFill ?: { total : 0, withTitle : 0, withDesc : 0 }>
+                            <div>seo_title set: <strong>#pf.withTitle#</strong> of #pf.total#</div>
+                            <div>seo_description set: <strong>#pf.withDesc#</strong> of #pf.total#</div>
+                        </div>
+                    </div>
+                    <div class="card stat-card stat-card-warning mb-3">
+                        <div class="card-header card-header-soft card-header-soft-warning">
+                            <span class="h6 mb-0">Categories with custom SEO</span>
+                        </div>
+                        <div class="card-body small">
+                            <bx:set cf = cv.categoryFill ?: { total : 0, withSeo : 0 }>
+                            <strong>#cf.withSeo#</strong> of #cf.total# categories carry a custom seo_title.
+                        </div>
+                    </div>
+                    <div class="card stat-card stat-card-success">
+                        <div class="card-header card-header-soft card-header-soft-success">
+                            <span class="h6 mb-0">Public authors with custom SEO</span>
+                        </div>
+                        <div class="card-body small">
+                            <bx:set af = cv.authorFill ?: { total : 0, withSeo : 0 }>
+                            <strong>#af.withSeo#</strong> of #af.total# authors carry a custom seo_title.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </bx:if>
+    </bx:if>
+
+    <!--- AI refresh-suggestions modal --->
+    <bx:if args.showRefreshModal>
+        <div class="modal show d-block" tabindex="-1" style="background:rgba(0,0,0,.35);">
+            <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title"><i class="bi bi-magic me-1"></i> Refresh suggestions — #encodeForHTML( args.refreshTitle )#</h5>
+                        <button type="button" class="btn-close" wire:click="closeRefresh"></button>
+                    </div>
+                    <div class="modal-body">
+                        <bx:if len( args.refreshError )>
+                            <div class="alert alert-warning small">
+                                <i class="bi bi-exclamation-triangle me-1"></i>#encodeForHTML( args.refreshError )#
+                            </div>
+                        </bx:if>
+                        <bx:if args.refreshBusy>
+                            <div class="text-muted py-4 text-center">
+                                <span class="spinner-border spinner-border-sm me-2 align-middle"></span>
+                                <span class="small align-middle">Asking the model what's gone stale&hellip;</span>
+                            </div>
+                        <bx:elseif args.refreshSuggestions.len() gt 0>
+                            <ul class="list-unstyled mb-0">
+                                <bx:loop array="#args.refreshSuggestions#" item="s">
+                                    <li class="mb-3">
+                                        <span class="badge bg-info text-dark me-1">#encodeForHTML( s.type )#</span>
+                                        <code class="small">#encodeForHTML( s.snippet )#</code>
+                                        <div class="small text-muted">#encodeForHTML( s.reason )#</div>
+                                    </li>
+                                </bx:loop>
+                            </ul>
+                        <bx:elseif !len( args.refreshError )>
+                            <p class="text-muted small mb-0">The model didn't flag anything stale. Click "Mark reviewed" on the row to lock in this verdict.</p>
+                        </bx:if>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-outline-secondary" wire:click="closeRefresh">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </bx:if>
+</div>
+</bx:output>
