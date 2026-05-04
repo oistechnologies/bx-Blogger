@@ -29,6 +29,7 @@ property name="settingService" inject="SettingService";
 property name="gscService"     inject="GscService";
 property name="cbauth"         inject="AuthenticationService@cbauth";
 property name="event"          inject="coldbox:requestContext";
+property name="cacheBox"       inject="cachebox";
 
 data = {
     "clientId"      : "",
@@ -87,10 +88,30 @@ function connect() {
     }
 
     var nonce = createUUID();
-    session.gsc_oauth_state = nonce;
+    // Stash the CSRF nonce in cachebox keyed by userId — the
+    // callback handler reads + clears it on Google's redirect
+    // back. Avoids `session` scope access from the wire (which
+    // is unreliable in CBWIRE's request context) and keeps the
+    // nonce out of any client-visible storage. 10-minute TTL
+    // is plenty for an OAuth round-trip.
     try {
-        var url = gscService.buildAuthUrl( redirectUri = data.redirectUri, state = nonce );
-        redirect( url = url );
+        cacheBox.getCache( "default" ).set(
+            "gsc.oauth_state." & cbauth.getUser().getId(),
+            nonce,
+            createTimespan( 0, 0, 10, 0 )
+        );
+    }
+    catch ( any cacheErr ) {
+        data.flashError = "Could not stash CSRF nonce: " & cacheErr.message;
+        return;
+    }
+
+    // `var url` collides with BoxLang's URL scope (CLAUDE.md
+    // reserved-scope gotcha) — using `authUrl` avoids the
+    // silent fall-through that produced "len() on null".
+    try {
+        var authUrl = gscService.buildAuthUrl( redirectUri = data.redirectUri, state = nonce );
+        redirect( url = authUrl );
     }
     catch ( bxBlogger.GscNotConfigured e ) {
         data.flashError = e.message;

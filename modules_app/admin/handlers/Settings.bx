@@ -123,16 +123,19 @@ class extends="coldbox.system.EventHandler" {
             return;
         }
 
-        // CSRF — the connect wire stamps a nonce into a session
-        // entry before redirecting; Google echoes it back in
-        // `state`. Constant-time compare.
-        var expected = session.gsc_oauth_state ?: "";
+        // CSRF — the connect wire stashed the nonce in cachebox
+        // keyed by userId; Google echoes it back as `state`. We
+        // read + immediately clear so a replay can't reuse it.
+        var cacheKey = "gsc.oauth_state." & user.getId();
+        var cache    = getInstance( "cachebox" ).getCache( "default" );
+        var expected = cache.get( cacheKey );
+        if ( isNull( expected ) ) expected = "";
         if ( !len( expected ) || compare( state, expected ) != 0 ) {
             flash.put( "error", "GSC OAuth state mismatch — try the connect flow again." );
             relocate( url = "/admin/settings/gsc" );
             return;
         }
-        structDelete( session, "gsc_oauth_state" );
+        try { cache.clear( cacheKey ); } catch ( any e ) {}
 
         if ( !len( code ) ) {
             flash.put( "error", "GSC OAuth callback missing authorization code." );
