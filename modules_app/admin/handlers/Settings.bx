@@ -72,6 +72,18 @@ class extends="coldbox.system.EventHandler" {
         event.setView( view = "settings/seo" );
     }
 
+    /**
+     * SEO Phase 12 — outbound-link health report. Lists every post
+     * carrying broken external URLs, sortable, with per-row
+     * "Re-check now" + "Audit all". Permission-gated to
+     * `seo.outbound_links.view` for read access; audit actions
+     * require `seo.outbound_links.audit`.
+     */
+    function outboundLinks( event, rc, prc ) {
+        prc.pageTitle = "Outbound link health";
+        event.setView( view = "settings/outbound-links" );
+    }
+
     function ogImage( event, rc, prc ) {
         prc.pageTitle = "OG Image Settings";
         event.setView( view = "settings/og-image" );

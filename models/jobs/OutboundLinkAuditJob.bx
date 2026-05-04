@@ -1,0 +1,102 @@
+/**
+ * bx-Blogger — OutboundLinkAuditJob (SEO Phase 12)
+ *
+ * Sweeps every published post (or one specific post when given
+ * `postId`), extracts external href targets from the body, and
+ * probes each via OutboundLinkService.checkUrl(). Results UPSERT
+ * into `outbound_links` so the editor badge + admin report can
+ * surface the broken set.
+ *
+ * Two dispatch shapes:
+ *
+ *   1. No properties — full sweep of every published post. Used
+ *      by the weekly Scheduler entry. Iterates in chronological
+ *      order (oldest first) so old posts with link rot get
+ *      attention even on a long-running site.
+ *
+ *   2. `{ postId: N }` — single-post audit. Used by the editor's
+ *      "Re-check now" button + the admin report's per-row
+ *      action. Returns immediately after the single post; no
+ *      cron-level traffic.
+ *
+ * Per-post failure is non-fatal — the job logs and continues so
+ * a single mis-shaped body doesn't strand the whole sweep.
+ *
+ * Throttling: OutboundLinkService.throttleForHost() handles per-
+ * host rate-limiting. The job itself doesn't sleep between posts.
+ */
+class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
+
+    function handle() {
+        var props   = variables.properties ?: {};
+        var wirebox = application.wireBox;
+        var qb      = wirebox.getInstance( "QueryBuilder@qb" );
+        var svc     = wirebox.getInstance( "OutboundLinkService" );
+
+        if ( structKeyExists( props, "postId" ) && val( props.postId ) > 0 ) {
+            auditOnePost( wirebox, svc, val( props.postId ) );
+            return;
+        }
+
+        var rows = qb.newQuery().from( "posts" )
+            .where( "status", "published" )
+            .where( "post_type", "post" )
+            .orderBy( "published_at", "asc" )
+            .select( [ "id" ] )
+            .get();
+
+        var swept  = 0;
+        var broken = 0;
+        for ( var r in rows ) {
+            try {
+                var stats = auditOnePost( wirebox, svc, r.id );
+                swept++;
+                broken += stats.brokenCount;
+            }
+            catch ( any e ) {
+                writeLog(
+                    file = "bxblogger",
+                    type = "warning",
+                    text = "OutboundLinkAuditJob: post=" & r.id & " failed: " & ( e.Message ?: "(no message)" )
+                );
+            }
+        }
+
+        writeLog(
+            file = "bxblogger",
+            type = "information",
+            text = "OutboundLinkAuditJob: swept " & swept & " posts; " & broken & " broken outbound links recorded"
+        );
+    }
+
+    /**
+     * Audit a single post. Returns
+     *   { totalUrls, brokenCount }
+     * for caller-side aggregation.
+     */
+    private struct function auditOnePost( required any wireboxArg, required any svc, required numeric postId ) {
+        var Post = arguments.wireboxArg.getInstance( "Post" );
+        var post = Post.find( arguments.postId );
+        if ( isNull( post ) ) {
+            return { "totalUrls" : 0, "brokenCount" : 0 };
+        }
+
+        var urls    = arguments.svc.extractFromPost( post );
+        var results = [];
+        var broken  = 0;
+        for ( var u in urls ) {
+            var probe = arguments.svc.checkUrl( u );
+            results.append( {
+                "url"             : u,
+                "statusCode"      : probe.statusCode,
+                "errorMessage"    : probe.errorMessage,
+                "redirectTarget"  : probe.redirectTarget
+            } );
+            if ( probe.statusCode == 0 || probe.statusCode >= 400 ) broken++;
+        }
+        arguments.svc.recordResults( arguments.postId, results );
+
+        return { "totalUrls" : urls.len(), "brokenCount" : broken };
+    }
+
+}

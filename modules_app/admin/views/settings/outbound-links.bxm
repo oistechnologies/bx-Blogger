@@ -1,0 +1,5 @@
+<bx:output>
+#view( view = "partials/heading", args = { "title" : "Outbound link health" } )#
+
+#wire( name = "settings.outboundLinks" )#
+</bx:output>

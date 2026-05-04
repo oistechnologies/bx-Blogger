@@ -42,6 +42,9 @@ class {
         // hyphenated URL is what the sidebar uses.
         route( "settings/og-image" ).to( "Settings.ogImage" );
 
+        // SEO Phase 12 — outbound link health report.
+        route( "settings/outbound-links" ).to( "Settings.outboundLinks" );
+
         // Phase UX — self-service account lives inside the admin shell
         // (previously /account at the app root). Specific sub-routes
         // first so the base /admin/account GET/POST pair doesn't

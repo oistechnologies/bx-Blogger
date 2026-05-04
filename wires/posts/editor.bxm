@@ -25,6 +25,7 @@ property name="draftPreviewService"  inject="DraftPreviewService";
 property name="aiService"            inject="AiAssistantService";
 property name="auditService"         inject="SeoAuditService";
 property name="auditAgentService"    inject="SeoAuditAgentService";
+property name="outboundLinkService"  inject="OutboundLinkService";
 property name="settingService"       inject="SettingService";
 property name="aiImageService"       inject="AiImageService";
 property name="themeService"         inject="ThemeService";
@@ -86,6 +87,10 @@ data = {
     "showInternalLinks"  : false,
     "internalLinks"      : [],
     "internalLinksError" : "",
+    // SEO Phase 12 — outbound link health modal state
+    "showLinkHealth"     : false,
+    "linkHealthBusy"     : false,
+    "linkHealthError"    : "",
     // 2.I AI image-gen state
     "showImageModal"  : false,
     "imagePrompt"     : "",
@@ -862,6 +867,112 @@ function insertInternalLink( required numeric index ) {
     var snippet = nl & nl & "[" & link.title & "](" & link.url & ")";
     data.bodyMarkdown = ( data.bodyMarkdown ?: "" ) & snippet;
     data.flashOk = "Inserted internal link to " & link.title & ".";
+}
+
+// --------------------------------------------------------------------
+// SEO Phase 12 — outbound link health
+// --------------------------------------------------------------------
+
+/**
+ * How many broken outbound links does the audit currently
+ * have on file for this post? Drives the editor badge — a
+ * pill on the SEO panel header that turns the operator's
+ * eye to a known-broken state without requiring a click.
+ *
+ * Returns 0 (badge hidden) when the post is unsaved or no
+ * outbound_links rows exist for it yet.
+ */
+numeric function outboundBrokenCount() {
+    var pid = val( data.postId ?: 0 );
+    if ( pid <= 0 ) return 0;
+    try { return outboundLinkService.brokenCountForPost( pid ); }
+    catch ( any e ) { return 0; }
+}
+
+/**
+ * All outbound_links rows for the post (for the modal). Sorted
+ * with broken (4xx/5xx/0) first, then 3xx, then 2xx — the
+ * operator should see what to fix at the top.
+ */
+array function outboundLinkRows() {
+    var pid = val( data.postId ?: 0 );
+    if ( pid <= 0 ) return [];
+    try {
+        var qb = getInstance( "QueryBuilder@qb" );
+        return qb.newQuery().from( "outbound_links" )
+            .where( "post_id", pid )
+            .selectRaw(
+                "id, url, status_code, error_message, redirect_target,
+                 last_checked_at, last_status_change_at,
+                 CASE
+                    WHEN status_code = 0 OR status_code >= 400 THEN 0
+                    WHEN status_code >= 300 THEN 1
+                    ELSE 2
+                 END AS sort_bucket"
+            )
+            .orderBy( "sort_bucket", "asc" )
+            .orderBy( "status_code", "desc" )
+            .get();
+    }
+    catch ( any e ) {
+        return [];
+    }
+}
+
+function openLinkHealth() {
+    data.showLinkHealth  = true;
+    data.linkHealthError = "";
+}
+
+function closeLinkHealth() {
+    data.showLinkHealth = false;
+}
+
+/**
+ * Audit just this post on demand. Permission-gated on
+ * `seo.outbound_links.audit`; falls back to a friendly message
+ * if the user lacks the perm. Synchronous so the modal can
+ * refresh immediately on close.
+ */
+function auditOutboundLinksNow() {
+    var pid = val( data.postId ?: 0 );
+    if ( pid <= 0 ) {
+        data.linkHealthError = "Save the post first — the audit needs a stored body to scan.";
+        return;
+    }
+    var user = cbauth.getUser();
+    if ( !user.hasPermission( "seo.outbound_links.audit" ) ) {
+        data.linkHealthError = "You don't have permission to run on-demand link audits.";
+        return;
+    }
+    data.linkHealthBusy  = true;
+    data.linkHealthError = "";
+    try {
+        var post = getInstance( "Post" ).find( pid );
+        if ( isNull( post ) ) {
+            data.linkHealthError = "Post not found.";
+            return;
+        }
+        var urls    = outboundLinkService.extractFromPost( post );
+        var results = [];
+        for ( var u in urls ) {
+            var probe = outboundLinkService.checkUrl( u );
+            results.append( {
+                "url"            : u,
+                "statusCode"     : probe.statusCode,
+                "errorMessage"   : probe.errorMessage,
+                "redirectTarget" : probe.redirectTarget
+            } );
+        }
+        outboundLinkService.recordResults( pid, results );
+        data.flashOk = "Re-checked " & urls.len() & " outbound link(s).";
+    }
+    catch ( any e ) {
+        data.linkHealthError = "Audit failed: " & e.message;
+    }
+    finally {
+        data.linkHealthBusy = false;
+    }
 }
 
 // --------------------------------------------------------------------
@@ -2149,6 +2260,18 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 								        title="Suggest internal links from existing posts">
 									<i class="bi bi-link-45deg me-1"></i> Internal links
 								</button>
+								<bx:set obc = outboundBrokenCount()>
+								<button type="button"
+								        class="btn btn-sm <bx:if obc gt 0>btn-outline-danger<bx:else>btn-outline-secondary</bx:if>"
+								        wire:click="openLinkHealth"
+								        title="Outbound link health (broken external URLs)">
+									<i class="bi bi-broadcast-pin me-1"></i>
+									<bx:if obc gt 0>
+										#obc# broken
+									<bx:else>
+										Link health
+									</bx:if>
+								</button>
 								<button type="button"
 								        class="btn btn-sm btn-outline-primary"
 								        wire:click="openAuditPanel"
@@ -2639,6 +2762,106 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 					</div>
 					<div class="modal-footer">
 						<button type="button" class="btn btn-outline-secondary" wire:click="closeInternalLinks">Close</button>
+					</div>
+				</div>
+			</div>
+		</div>
+	</bx:if>
+
+	<!--- SEO Phase 12 — outbound link health modal -------------------- --->
+	<bx:if args.showLinkHealth>
+		<bx:set rows = outboundLinkRows()>
+		<div class="modal show d-block" tabindex="-1" style="background:rgba(0,0,0,.35);">
+			<div class="modal-dialog modal-lg modal-dialog-scrollable">
+				<div class="modal-content">
+					<div class="modal-header">
+						<h5 class="modal-title"><i class="bi bi-broadcast-pin me-1"></i> Outbound link health</h5>
+						<button type="button" class="btn-close" wire:click="closeLinkHealth"></button>
+					</div>
+					<div class="modal-body">
+						<bx:if len( args.linkHealthError )>
+							<div class="alert alert-warning small">
+								<i class="bi bi-exclamation-triangle me-1"></i>#encodeForHTML( args.linkHealthError )#
+							</div>
+						</bx:if>
+
+						<div class="d-flex justify-content-between align-items-center mb-3 gap-3">
+							<p class="text-muted small mb-0">
+								Status of every external URL referenced from the post body. Audited
+								weekly + on demand. <strong>Re-check now</strong> probes each URL
+								synchronously (slow if the post has many — per-host throttle is 1 rps).
+							</p>
+							<button type="button"
+							        class="btn btn-sm btn-primary flex-shrink-0"
+							        wire:click="auditOutboundLinksNow"
+							        wire:target="auditOutboundLinksNow"
+							        wire:loading.attr="disabled">
+								<i class="bi bi-arrow-clockwise me-1" wire:loading.remove wire:target="auditOutboundLinksNow"></i>
+								<span class="spinner-border spinner-border-sm me-1" wire:loading wire:target="auditOutboundLinksNow"></span>
+								Re-check now
+							</button>
+						</div>
+
+						<div wire:loading wire:target="auditOutboundLinksNow" class="text-muted py-4 text-center">
+							<span class="spinner-border spinner-border-sm me-2 align-middle"></span>
+							<span class="small align-middle">Probing each external URL&hellip;</span>
+						</div>
+
+						<div wire:loading.remove wire:target="auditOutboundLinksNow">
+							<bx:if rows.len()>
+								<div class="table-responsive">
+									<table class="table table-sm align-middle">
+										<thead class="small text-muted">
+											<tr>
+												<th>Status</th>
+												<th>URL</th>
+												<th class="text-nowrap">Last checked</th>
+											</tr>
+										</thead>
+										<tbody>
+											<bx:loop array="#rows#" item="r">
+												<bx:set sc = val( r.status_code )>
+												<bx:set isErr = ( sc == 0 || sc gte 400 )>
+												<bx:set isRedir = ( sc gte 300 && sc lt 400 )>
+												<bx:set badgeClass = isErr ? "bg-danger" : ( isRedir ? "bg-warning text-dark" : "bg-success" )>
+												<bx:set label = ( sc == 0 ) ? "ERR" : sc>
+												<tr>
+													<td><span class="badge #badgeClass#">#label#</span></td>
+													<td class="small">
+														<a href="#encodeForHTMLAttribute( r.url )#" target="_blank" rel="noopener noreferrer">
+															#encodeForHTML( r.url )#
+														</a>
+														<bx:if len( r.error_message ?: "" )>
+															<div class="text-danger small">#encodeForHTML( r.error_message )#</div>
+														</bx:if>
+														<bx:if isRedir && len( r.redirect_target ?: "" )>
+															<div class="text-muted small">
+																→ <code>#encodeForHTML( r.redirect_target )#</code>
+															</div>
+														</bx:if>
+													</td>
+													<td class="small text-nowrap">
+														<bx:if isDate( r.last_checked_at ?: "" )>
+															#dateTimeFormat( r.last_checked_at, "yyyy-mm-dd HH:nn" )#
+														<bx:else>
+															&mdash;
+														</bx:if>
+													</td>
+												</tr>
+											</bx:loop>
+										</tbody>
+									</table>
+								</div>
+							<bx:else>
+								<p class="text-muted small mb-0">
+									No outbound links recorded for this post yet. Click
+									<strong>Re-check now</strong> to scan the current body.
+								</p>
+							</bx:if>
+						</div>
+					</div>
+					<div class="modal-footer">
+						<button type="button" class="btn btn-outline-secondary" wire:click="closeLinkHealth">Close</button>
 					</div>
 				</div>
 			</div>

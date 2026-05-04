@@ -1,0 +1,420 @@
+/**
+ * bx-Blogger — OutboundLinkService (SEO Phase 12)
+ *
+ * Scans a post's body for external href targets and probes each
+ * with a HEAD (falling back to GET on 405) so the editor can
+ * surface dead outbound links and the admin can sweep the whole
+ * site on demand or via the weekly Scheduler entry.
+ *
+ * Three logical operations:
+ *
+ *   1. extractFromPost( post ) — pull every external URL out of
+ *      the post's body (HTML or markdown). Returns an array of
+ *      normalized absolute URLs, deduped per call.
+ *
+ *   2. checkUrl( url ) — single-URL probe. HEAD first, GET on
+ *      405 (some hosts disallow HEAD). Returns
+ *      { statusCode, errorMessage, redirectTarget }.
+ *      0 = network/timeout/DNS failure (errorMessage carries
+ *      the reason). 3xx with a Location header is followed
+ *      ONCE so a permanent redirect is recorded as the new
+ *      target (otherwise the report is full of 301s that
+ *      should really be classified by their final URL).
+ *
+ *   3. recordResults( postId, results ) — UPSERT each row in
+ *      `outbound_links` keyed by (post_id, url_hash). Bumps
+ *      `last_status_change_at` only when the bucket flips
+ *      (2xx vs 3xx vs 4xx vs 5xx vs 0).
+ *
+ *   4. brokenCountForPost( postId ) — convenience read used by
+ *      the editor badge.
+ *
+ * Uses Java's HttpClient directly (same shape as
+ * PingSearchEnginesJob / WebSubPingJob) so the code paths are
+ * identical between request-thread invocations and cbq-worker
+ * invocations. Per-host rate limiting is a soft 1 rps cap kept
+ * in a thread-safe synchronized struct on the service singleton —
+ * the audit job sleeps when a host is hit twice in less than
+ * 1000ms so we don't accidentally hammer a slow target.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox" inject="wirebox";
+    property name="log"     inject="logbox:logger:{this}";
+
+    variables.requestTimeoutS  = 10;
+    variables.followRedirects  = true;
+    variables.minHostIntervalMs = 1000;
+    // host → epochMs of last request. Synchronized via the
+    // singleton's intrinsic monitor in throttleForHost().
+    variables.hostLastRequestMs = {};
+
+    // --------------------------------------------------------------------
+    // Public API
+    // --------------------------------------------------------------------
+
+    /**
+     * Pull every external URL from the post's body. Reads
+     * `body_html` first; falls back to `body_md` when the post
+     * stores markdown only. Output is deduped and normalized
+     * (lowercased scheme + host, trimmed).
+     */
+    array function extractFromPost( required any post ) {
+        var html = arguments.post.getBodyHtml() ?: "";
+        var md   = arguments.post.getBodyMarkdown() ?: "";
+        var raw  = len( html ) ? scanHtmlHrefs( html ) : scanMarkdownLinks( md );
+
+        var seen = {};
+        var out  = [];
+        for ( var u in raw ) {
+            if ( !isExternalUrl( u ) ) continue;
+            var n = normalizeUrl( u );
+            if ( !len( n ) ) continue;
+            if ( structKeyExists( seen, n ) ) continue;
+            seen[ n ] = true;
+            out.append( n );
+        }
+        return out;
+    }
+
+    /**
+     * Probe a single URL. Returns:
+     *   { statusCode: numeric, errorMessage: string|null, redirectTarget: string|null }
+     */
+    struct function checkUrl( required string url ) {
+        var result = {
+            "statusCode"      : 0,
+            "errorMessage"    : "",
+            "redirectTarget"  : ""
+        };
+
+        if ( !len( arguments.url ) ) {
+            result.errorMessage = "Empty URL";
+            return result;
+        }
+
+        try {
+            throttleForHost( extractHost( arguments.url ) );
+
+            var headResp = sendRequest( arguments.url, "HEAD" );
+            if ( headResp.statusCode == 405 ) {
+                // Some servers block HEAD — fall back to GET.
+                var getResp = sendRequest( arguments.url, "GET" );
+                result.statusCode     = getResp.statusCode;
+                result.redirectTarget = getResp.redirectTarget;
+            } else {
+                result.statusCode     = headResp.statusCode;
+                result.redirectTarget = headResp.redirectTarget;
+            }
+        }
+        catch ( any e ) {
+            result.statusCode   = 0;
+            result.errorMessage = ( e.Message ?: "" ) & ( len( e.detail ?: "" ) ? " — " & e.detail : "" );
+        }
+
+        return result;
+    }
+
+    /**
+     * UPSERT each result into outbound_links. Updates
+     * `last_status_change_at` only when the response bucket
+     * flips so the admin "newly broken" filter is accurate.
+     *
+     * @results  array of { url, statusCode, errorMessage, redirectTarget }
+     */
+    void function recordResults( required numeric postId, required array results ) {
+        var qb  = wirebox.getInstance( "QueryBuilder@qb" );
+        var now = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" );
+
+        for ( var r in arguments.results ) {
+            var u    = trim( r.url ?: "" );
+            if ( !len( u ) ) continue;
+            var hashKey = hashUrl( u );
+
+            var existing = qb.newQuery().from( "outbound_links" )
+                .where( "post_id", arguments.postId )
+                .where( "url_hash", hashKey )
+                .first();
+
+            var newStatus  = int( r.statusCode ?: 0 );
+            var newBucket  = bucketOf( newStatus );
+            var redirect   = trim( r.redirectTarget ?: "" );
+            var errMessage = left( trim( r.errorMessage ?: "" ), 500 );
+
+            if ( !isNull( existing ) && !( isStruct( existing ) && structIsEmpty( existing ) ) ) {
+                var prevBucket = bucketOf( int( existing.status_code ?: 0 ) );
+                var update = {
+                    "status_code"     : newStatus,
+                    "error_message"   : errMessage,
+                    "redirect_target" : redirect,
+                    "last_checked_at" : now
+                };
+                if ( newBucket != prevBucket ) update[ "last_status_change_at" ] = now;
+                qb.newQuery().from( "outbound_links" )
+                    .where( "id", existing.id )
+                    .update( update );
+            }
+            else {
+                qb.newQuery().from( "outbound_links" ).insert( {
+                    "post_id"               : arguments.postId,
+                    "url"                   : u,
+                    "url_hash"              : hashKey,
+                    "status_code"           : newStatus,
+                    "error_message"         : errMessage,
+                    "redirect_target"       : redirect,
+                    "last_checked_at"       : now,
+                    "last_status_change_at" : now,
+                    "first_seen_at"         : now
+                } );
+            }
+        }
+
+        // Garbage collection — drop rows in outbound_links for
+        // URLs that no longer appear in the post body. Keeps the
+        // editor badge counter accurate when an author removes
+        // a known-broken link.
+        var keepHashes = arguments.results.map( function( r ) {
+            return hashUrl( trim( r.url ?: "" ) );
+        } );
+        if ( keepHashes.len() ) {
+            qb.newQuery().from( "outbound_links" )
+                .where( "post_id", arguments.postId )
+                .whereNotIn( "url_hash", keepHashes )
+                .delete();
+        }
+        else {
+            // Body has zero outbound links — wipe stale rows entirely.
+            qb.newQuery().from( "outbound_links" )
+                .where( "post_id", arguments.postId )
+                .delete();
+        }
+    }
+
+    /**
+     * Number of broken (status != 2xx, ignoring 3xx) outbound
+     * links currently recorded for a post. Used by the editor
+     * badge.
+     */
+    numeric function brokenCountForPost( required numeric postId ) {
+        var qb  = wirebox.getInstance( "QueryBuilder@qb" );
+        var row = qb.newQuery().from( "outbound_links" )
+            .where( "post_id", arguments.postId )
+            .where( function( q ) {
+                q.where( "status_code", "<", 200 )
+                 .orWhere( "status_code", ">=", 400 );
+            } )
+            .selectRaw( "COUNT(*) AS n" )
+            .first();
+        return val( row.n ?: 0 );
+    }
+
+    // --------------------------------------------------------------------
+    // Private — HTTP plumbing
+    // --------------------------------------------------------------------
+
+    /**
+     * Send a single HTTP request and return
+     *   { statusCode, redirectTarget }.
+     * Follows one level of redirect on 3xx responses with a
+     * Location header so the recorded status reflects the
+     * destination, not the redirect itself.
+     */
+    private struct function sendRequest( required string urlArg, required string method ) {
+        var HttpClient   = createObject( "java", "java.net.http.HttpClient" );
+        var HttpRequest  = createObject( "java", "java.net.http.HttpRequest" );
+        var BodyPubs     = createObject( "java", "java.net.http.HttpRequest$BodyPublishers" );
+        var BodyHandlers = createObject( "java", "java.net.http.HttpResponse$BodyHandlers" );
+        var URI          = createObject( "java", "java.net.URI" );
+        var Duration     = createObject( "java", "java.time.Duration" );
+        var Redirect     = createObject( "java", "java.net.http.HttpClient$Redirect" );
+
+        var httpClient = HttpClient.newBuilder()
+            .connectTimeout( Duration.ofSeconds( javaCast( "long", variables.requestTimeoutS ) ) )
+            .followRedirects( Redirect.NORMAL )
+            .build();
+
+        var builder = HttpRequest.newBuilder()
+            .uri( URI.init( arguments.urlArg ) )
+            .timeout( Duration.ofSeconds( javaCast( "long", variables.requestTimeoutS ) ) )
+            .header( "User-Agent", "bx-Blogger Outbound Link Auditor (+https://github.com/oistechnologies/bx-Blogger)" );
+
+        if ( arguments.method == "HEAD" ) {
+            builder.method( "HEAD", BodyPubs.noBody() );
+        } else {
+            builder.GET();
+        }
+
+        var req = builder.build();
+        var res = httpClient.send( req, BodyHandlers.discarding() );
+
+        var redirectTarget = "";
+        try {
+            var loc = res.headers().firstValue( "Location" );
+            if ( loc.isPresent() ) redirectTarget = loc.get();
+        }
+        catch ( any locErr ) {}
+
+        return {
+            "statusCode"     : res.statusCode(),
+            "redirectTarget" : redirectTarget
+        };
+    }
+
+    /**
+     * Soft per-host rate limit — sleep until at least
+     * `minHostIntervalMs` has elapsed since the last hit. Keeps
+     * us off Cloudflare / Akamai rate-limit blacklists during
+     * a full-site audit.
+     *
+     * Synchronization is on the singleton instance itself — cbq
+     * jobs share the same OutboundLinkService instance so all
+     * outbound traffic flows through one rate-limit ledger.
+     */
+    private void function throttleForHost( required string host ) {
+        if ( !len( arguments.host ) ) return;
+        var sleepMs = 0;
+        lock name="bx-blogger.outbound-link-throttle" timeout="2" {
+            var nowMs = getTickCount();
+            var last  = variables.hostLastRequestMs[ arguments.host ] ?: 0;
+            var delta = nowMs - last;
+            if ( delta < variables.minHostIntervalMs && last > 0 ) {
+                sleepMs = variables.minHostIntervalMs - delta;
+            }
+            variables.hostLastRequestMs[ arguments.host ] = nowMs + sleepMs;
+        }
+        if ( sleepMs > 0 ) {
+            try { sleep( sleepMs ); } catch ( any e ) {}
+        }
+    }
+
+    // --------------------------------------------------------------------
+    // Private — URL parsing helpers
+    // --------------------------------------------------------------------
+
+    /**
+     * Categorize an HTTP status into the buckets we care about.
+     * 0 = network failure; 2xx success; 3xx redirect; 4xx client
+     * error (broken); 5xx server error (broken).
+     */
+    private string function bucketOf( required numeric status ) {
+        if ( arguments.status == 0 )                       return "err";
+        if ( arguments.status >= 200 && arguments.status < 300 ) return "2xx";
+        if ( arguments.status >= 300 && arguments.status < 400 ) return "3xx";
+        if ( arguments.status >= 400 && arguments.status < 500 ) return "4xx";
+        if ( arguments.status >= 500 )                     return "5xx";
+        return "other";
+    }
+
+    private boolean function isExternalUrl( required string href ) {
+        var u = trim( arguments.href );
+        if ( !len( u ) ) return false;
+        return reFindNoCase( "^https?://", u ) > 0;
+    }
+
+    /**
+     * Lowercase scheme + host, drop fragments, trim trailing
+     * whitespace. The dedupe + db hash then both treat
+     * "https://Example.com/foo##anchor" and
+     * "HTTPS://example.com/foo" as one URL.
+     */
+    private string function normalizeUrl( required string urlArg ) {
+        var u = trim( arguments.urlArg );
+        if ( !len( u ) ) return "";
+
+        // Drop fragment.
+        var hashPos = find( "##", u );
+        if ( hashPos > 0 ) u = left( u, hashPos - 1 );
+
+        // Lowercase scheme + host portion only.
+        var schemeMatch = reFindNoCase( "^(https?)://([^/?##]+)", u, 1, true );
+        if ( schemeMatch.match.len() >= 1 ) {
+            var matched = schemeMatch.match[ 1 ];
+            var rest    = mid( u, len( matched ) + 1, len( u ) );
+            u = lCase( matched ) & rest;
+        }
+        return u;
+    }
+
+    private string function extractHost( required string urlArg ) {
+        try {
+            var URI = createObject( "java", "java.net.URI" );
+            var hostV = URI.init( arguments.urlArg ).getHost();
+            return isNull( hostV ) ? "" : lCase( hostV & "" );
+        }
+        catch ( any e ) {
+            return "";
+        }
+    }
+
+    // --------------------------------------------------------------------
+    // Private — body scanners (mirrors SeoAuditService extractor logic)
+    // --------------------------------------------------------------------
+
+    private array function scanHtmlHrefs( required string html ) {
+        var out  = [];
+        var jSrc = javaCast( "string", arguments.html );
+        var jLc  = javaCast( "string", lCase( arguments.html ) );
+        var pos  = 0;
+        var n    = jSrc.length();
+        while ( pos < n ) {
+            var idx = jLc.indexOf( "href", pos );
+            if ( idx == -1 ) break;
+            var p = idx + 4;
+            while ( p < n && isJavaWhitespace( jSrc.codePointAt( p ) ) ) p++;
+            if ( p >= n || jSrc.codePointAt( p ) != 61 ) { pos = idx + 1; continue; }
+            p++;
+            while ( p < n && isJavaWhitespace( jSrc.codePointAt( p ) ) ) p++;
+            if ( p >= n ) break;
+            var quoteCh = jSrc.codePointAt( p );
+            if ( quoteCh != 34 && quoteCh != 39 ) { pos = idx + 1; continue; }
+            p++;
+            var endPos = jSrc.indexOf( javaCast( "string", char( quoteCh ) ), p );
+            if ( endPos == -1 ) break;
+            var foundLink = jSrc.substring( p, endPos );
+            if ( foundLink.length() > 0 ) out.append( foundLink );
+            pos = endPos + 1;
+        }
+        return out;
+    }
+
+    private array function scanMarkdownLinks( required string md ) {
+        var out  = [];
+        var jSrc = javaCast( "string", arguments.md );
+        var pos  = 0;
+        var n    = jSrc.length();
+        while ( pos < n ) {
+            var idx = jSrc.indexOf( "](", pos );
+            if ( idx == -1 ) break;
+            var startUrl = idx + 2;
+            var endUrl   = jSrc.indexOf( ")", startUrl );
+            if ( endUrl == -1 ) break;
+            var foundLink = jSrc.substring( startUrl, endUrl );
+            if ( foundLink.length() > 0 ) out.append( foundLink );
+            pos = endUrl + 1;
+        }
+        return out;
+    }
+
+    private boolean function isJavaWhitespace( required numeric ch ) {
+        return arguments.ch == 32 || arguments.ch == 9 || arguments.ch == 10 || arguments.ch == 13;
+    }
+
+    /**
+     * SHA-256 hex of the URL string. BoxLang's `hash()` BIF
+     * works, but goes through a CFML-compat shim that has been
+     * unreliable in singleton class context (see CLAUDE.md
+     * BIF-name gotchas). Java's MessageDigest is unambiguous
+     * and the same shape you'd see anywhere else.
+     */
+    private string function hashUrl( required string urlArg ) {
+        if ( !len( arguments.urlArg ) ) return "";
+        var md     = createObject( "java", "java.security.MessageDigest" ).getInstance( "SHA-256" );
+        var bytes  = md.digest( javaCast( "string", arguments.urlArg ).getBytes( "UTF-8" ) );
+        // Java 17+ HexFormat — single-call byte[] → hex string,
+        // no manual byte-iteration needed (which trips BoxLang's
+        // dynamic array-coercion path on Java byte[]).
+        var hexFormat = createObject( "java", "java.util.HexFormat" ).of();
+        return hexFormat.formatHex( bytes );
+    }
+
+}

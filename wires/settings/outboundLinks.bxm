@@ -1,0 +1,333 @@
+<bx:script>
+// @startWire
+/**
+ * settings.outboundLinks — SEO Phase 12 admin report.
+ *
+ * Surface every post that carries broken outbound links plus the
+ * "site-wide audit" trigger. Read access requires
+ * `seo.outbound_links.view`; trigger actions require
+ * `seo.outbound_links.audit`. The wire renders a banner instead
+ * of redirecting on perm failure so an editor can still see the
+ * landing page (the rows just don't load).
+ *
+ *   Filters:
+ *     "broken" — only posts with at least one 4xx/5xx/network row.
+ *     "all"    — include 2xx-only posts too (for "everything is
+ *                fine" verification).
+ *
+ *   Actions:
+ *     - Audit all          → dispatches OutboundLinkAuditJob with
+ *                            no postId; sweeps every published post.
+ *     - Audit just this    → per-row; dispatches the same job with
+ *                            { postId: row.id } for a synchronous
+ *                            single-post probe.
+ *
+ * Fully paginated — 25 rows / page. Sortable by title, broken
+ * count, last_checked.
+ */
+
+property name="settingService" inject="SettingService";
+property name="cbauth"         inject="AuthenticationService@cbauth";
+property name="qb"             inject="QueryBuilder@qb";
+
+data = {
+    "filter"        : "broken",     // "broken" | "all"
+    "sort"          : "broken_desc",// "broken_desc" | "title_asc" | "last_checked_desc"
+    "page"          : 1,
+    "perPage"       : 25,
+    "rows"          : [],
+    "totalRows"     : 0,
+    "flashOk"       : "",
+    "flashError"    : "",
+    "canAudit"      : false,
+    "canView"       : false
+};
+
+function onMount( event, rc, prc, params ) {
+    var user      = cbauth.getUser();
+    data.canView  = user.hasPermission( "seo.outbound_links.view"  );
+    data.canAudit = user.hasPermission( "seo.outbound_links.audit" );
+    if ( data.canView ) loadRows();
+}
+
+function setFilter( required string value ) {
+    data.filter = arguments.value == "all" ? "all" : "broken";
+    data.page   = 1;
+    loadRows();
+}
+
+function setSort( required string value ) {
+    var allowed = [ "broken_desc", "title_asc", "last_checked_desc" ];
+    data.sort = allowed.findNoCase( arguments.value ) > 0 ? arguments.value : "broken_desc";
+    data.page = 1;
+    loadRows();
+}
+
+function nextPage() { data.page++; loadRows(); }
+function prevPage() { if ( data.page > 1 ) data.page--; loadRows(); }
+
+/**
+ * Fire the site-wide audit. Asynchronous — work happens in the
+ * cbq worker. Operator gets a flash and sees results trickle in
+ * as they refresh.
+ */
+function auditAll() {
+    if ( !data.canAudit ) {
+        data.flashError = "You don't have permission to trigger audits.";
+        return;
+    }
+    try {
+        getInstance( "OutboundLinkAuditJob" ).dispatch();
+        data.flashOk = "Site-wide audit queued. Refresh in a few minutes to see updated results.";
+    }
+    catch ( any e ) {
+        data.flashError = "Failed to queue audit: " & e.message;
+    }
+}
+
+/**
+ * Re-check a single post synchronously. Faster feedback than
+ * waiting for the queue, at the cost of a long-running wire
+ * call when the post has many links.
+ */
+function recheckPost( required numeric postId ) {
+    if ( !data.canAudit ) {
+        data.flashError = "You don't have permission to trigger audits.";
+        return;
+    }
+    var pid = val( arguments.postId );
+    if ( pid <= 0 ) return;
+    try {
+        var svc  = getInstance( "OutboundLinkService" );
+        var Post = getInstance( "Post" );
+        var post = Post.find( pid );
+        if ( isNull( post ) ) {
+            data.flashError = "Post #pid# not found.";
+            return;
+        }
+        var urls    = svc.extractFromPost( post );
+        var results = [];
+        for ( var u in urls ) {
+            var probe = svc.checkUrl( u );
+            results.append( {
+                "url"            : u,
+                "statusCode"     : probe.statusCode,
+                "errorMessage"   : probe.errorMessage,
+                "redirectTarget" : probe.redirectTarget
+            } );
+        }
+        svc.recordResults( pid, results );
+        data.flashOk = "Re-checked post: " & urls.len() & " outbound link(s).";
+        loadRows();
+    }
+    catch ( any e ) {
+        data.flashError = "Re-check failed: " & e.message;
+    }
+}
+
+/**
+ * Pull the per-post aggregate from outbound_links + posts.
+ * Returns one row per post with a broken count + last-checked
+ * timestamp, plus the post title + slug for the link.
+ */
+private void function loadRows() {
+    if ( !data.canView ) return;
+
+    var brokenCondition = "(status_code = 0 OR status_code >= 400)";
+    var brokenFilter    = data.filter == "broken";
+
+    var base = qb.newQuery().from( "outbound_links AS ol" )
+        .join( "posts AS p", "p.id", "ol.post_id" )
+        .selectRaw( "
+            p.id            AS post_id,
+            p.title         AS post_title,
+            p.slug          AS post_slug,
+            p.status        AS post_status,
+            COUNT(*)                                                                  AS total_links,
+            SUM( CASE WHEN " & brokenCondition & " THEN 1 ELSE 0 END )                AS broken_count,
+            MAX( ol.last_checked_at )                                                 AS last_checked_at
+        " )
+        .groupBy( "p.id" )
+        .groupBy( "p.title" )
+        .groupBy( "p.slug" )
+        .groupBy( "p.status" );
+
+    if ( brokenFilter ) {
+        base.havingRaw( "broken_count > 0" );
+    }
+
+    // Total count for paging — runs before order/limit so paging
+    // numbers don't shift when sort changes.
+    var countRow = qb.newQuery()
+        .fromSub( "x", base )
+        .selectRaw( "COUNT(*) AS n" )
+        .first();
+    data.totalRows = val( countRow.n ?: 0 );
+
+    switch ( data.sort ) {
+        case "title_asc"          : base.orderBy( "p.title", "asc" ); break;
+        case "last_checked_desc"  : base.orderByRaw( "MAX( ol.last_checked_at ) DESC" ); break;
+        default                   : base.orderByRaw( "broken_count DESC, MAX( ol.last_checked_at ) DESC" );
+    }
+
+    var offset = max( 0, ( data.page - 1 ) * data.perPage );
+    base.limit( data.perPage ).offset( offset );
+
+    data.rows = base.get();
+}
+
+private void function clearFlashes() {
+    data.flashOk    = "";
+    data.flashError = "";
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<div>
+    <bx:if !args.canView>
+        <div class="alert alert-warning">
+            <i class="bi bi-shield-lock me-1"></i>
+            You don't have permission to view the outbound link health report.
+        </div>
+    <bx:else>
+        <bx:if len( args.flashOk )>
+            <div class="alert alert-success alert-dismissible">
+                #encodeForHTML( args.flashOk )#
+                <button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+            </div>
+        </bx:if>
+        <bx:if len( args.flashError )>
+            <div class="alert alert-danger alert-dismissible">
+                #encodeForHTML( args.flashError )#
+                <button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+            </div>
+        </bx:if>
+
+        <div class="card stat-card stat-card-primary">
+            <div class="card-header card-header-soft card-header-soft-primary d-flex flex-wrap align-items-center justify-content-between gap-2">
+                <span class="h6 mb-0">Outbound link health</span>
+                <span class="d-flex flex-wrap gap-2 align-items-center">
+                    <div class="btn-group btn-group-sm" role="group" aria-label="Filter">
+                        <button type="button"
+                                class="btn <bx:if args.filter == 'broken'>btn-primary<bx:else>btn-outline-primary</bx:if>"
+                                wire:click="setFilter('broken')">Broken only</button>
+                        <button type="button"
+                                class="btn <bx:if args.filter == 'all'>btn-primary<bx:else>btn-outline-primary</bx:if>"
+                                wire:click="setFilter('all')">All posts with links</button>
+                    </div>
+                    <select class="form-select form-select-sm" style="width:auto;"
+                            wire:change="setSort($event.target.value)">
+                        <option value="broken_desc"        <bx:if args.sort == 'broken_desc'>selected</bx:if>>Sort: most broken first</option>
+                        <option value="last_checked_desc"  <bx:if args.sort == 'last_checked_desc'>selected</bx:if>>Sort: recently checked</option>
+                        <option value="title_asc"          <bx:if args.sort == 'title_asc'>selected</bx:if>>Sort: title A-Z</option>
+                    </select>
+                    <bx:if args.canAudit>
+                        <button type="button"
+                                class="btn btn-sm btn-warning"
+                                wire:click="auditAll"
+                                wire:target="auditAll"
+                                wire:loading.attr="disabled">
+                            <i class="bi bi-arrow-clockwise me-1"></i>
+                            <span wire:loading.remove wire:target="auditAll">Audit all</span>
+                            <span wire:loading wire:target="auditAll">
+                                <span class="spinner-border spinner-border-sm me-1"></span>Queuing&hellip;
+                            </span>
+                        </button>
+                    </bx:if>
+                </span>
+            </div>
+
+            <div class="card-body p-0">
+                <bx:if args.rows.len() == 0>
+                    <div class="p-4 text-center text-muted small">
+                        <bx:if args.filter == "broken">
+                            No broken outbound links recorded. Either nothing's been audited yet, or every external
+                            URL on every post is responding.
+                        <bx:else>
+                            No outbound links recorded at all yet — click <strong>Audit all</strong>
+                            to sweep every published post.
+                        </bx:if>
+                    </div>
+                <bx:else>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-hover mb-0 align-middle">
+                            <thead class="small text-muted">
+                                <tr>
+                                    <th>Post</th>
+                                    <th class="text-nowrap">Broken</th>
+                                    <th class="text-nowrap">Total links</th>
+                                    <th class="text-nowrap">Last checked</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <bx:loop array="#args.rows#" item="r">
+                                    <bx:set bc = val( r.broken_count )>
+                                    <bx:set rowEditUrl = "/admin/posts/editor?id=" & r.post_id>
+                                    <tr>
+                                        <td>
+                                            <a href="#encodeForHTMLAttribute( rowEditUrl )#">#encodeForHTML( r.post_title )#</a>
+                                            <div class="small text-muted"><code>/blog/#encodeForHTML( r.post_slug )#</code></div>
+                                        </td>
+                                        <td>
+                                            <bx:if bc gt 0>
+                                                <span class="badge bg-danger">#bc#</span>
+                                            <bx:else>
+                                                <span class="badge bg-success">0</span>
+                                            </bx:if>
+                                        </td>
+                                        <td class="small">#val( r.total_links )#</td>
+                                        <td class="small text-nowrap">
+                                            <bx:if isDate( r.last_checked_at ?: "" )>
+                                                #dateTimeFormat( r.last_checked_at, "yyyy-mm-dd HH:nn" )#
+                                            <bx:else>
+                                                &mdash;
+                                            </bx:if>
+                                        </td>
+                                        <td class="text-end">
+                                            <bx:if args.canAudit>
+                                                <button type="button"
+                                                        class="btn btn-sm btn-outline-secondary"
+                                                        wire:click="recheckPost(#r.post_id#)"
+                                                        wire:target="recheckPost(#r.post_id#)"
+                                                        wire:loading.attr="disabled">
+                                                    <i class="bi bi-arrow-clockwise"
+                                                       wire:loading.remove wire:target="recheckPost(#r.post_id#)"></i>
+                                                    <span class="spinner-border spinner-border-sm"
+                                                          wire:loading wire:target="recheckPost(#r.post_id#)"></span>
+                                                    Re-check
+                                                </button>
+                                            </bx:if>
+                                        </td>
+                                    </tr>
+                                </bx:loop>
+                            </tbody>
+                        </table>
+                    </div>
+                </bx:if>
+            </div>
+
+            <bx:if args.totalRows gt args.perPage>
+                <div class="card-footer d-flex justify-content-between align-items-center small">
+                    <span class="text-muted">
+                        Page #args.page# of #ceiling( args.totalRows / args.perPage )#
+                        (#args.totalRows# posts)
+                    </span>
+                    <span>
+                        <button type="button" class="btn btn-sm btn-outline-secondary me-1"
+                                wire:click="prevPage" <bx:if args.page lte 1>disabled</bx:if>>
+                            &laquo; Prev
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary"
+                                wire:click="nextPage"
+                                <bx:if args.page gte ceiling( args.totalRows / args.perPage )>disabled</bx:if>>
+                            Next &raquo;
+                        </button>
+                    </span>
+                </div>
+            </bx:if>
+        </div>
+    </bx:if>
+</div>
+</bx:output>

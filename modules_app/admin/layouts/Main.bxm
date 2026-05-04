@@ -379,16 +379,17 @@
 				canSysAudit     = cbauth.isLoggedIn() && u.hasPermission( "audit.view" );
 				canSysPrivacy   = cbauth.isLoggedIn() && u.hasPermission( "users.export_data" );
 				canSysAiPrompts = cbauth.isLoggedIn() && u.hasPermission( "ai.prompts.manage" );
+				canSysOutbound  = cbauth.isLoggedIn() && u.hasPermission( "seo.outbound_links.view" );
 				hasSysAccess    = canSysUsers || canSysSettings || canSysThemes || canSysMenus
 				                || canSysRedir || canSys404 || canSysAudit || canSysPrivacy
-				                || canSysAiPrompts;
+				                || canSysAiPrompts || canSysOutbound;
 
 				// Auto-expand System Settings when the active page is one
 				// of its children, otherwise it starts collapsed.
 				isInSystemSettings = !!reFindNoCase(
 					"^admin:(Users|Settings|Themes|Menus|Redirects|BrokenLinks|AuditLog|Privacy|AiPrompts)\.",
 					currentEvent
-				);
+				) || ( currentEvent == "admin:Settings.outboundLinks" );
 			</bx:script>
 			<aside class="col-12 col-md-3 col-lg-2 admin-sidebar mb-4">
 				<div class="admin-sidebar-inner">
@@ -509,6 +510,13 @@
 								   href="#event.buildLink( 'admin:BrokenLinks.index' )#"
 								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="404 Report">
 									<i class="bi bi-exclamation-triangle nav-icon"></i><span class="nav-label">404 Report</span>
+								</a>
+							</bx:if>
+							<bx:if canSysOutbound>
+								<a class="nav-link nav-sub #( currentEvent == 'admin:Settings.outboundLinks' ? 'active' : '' )#"
+								   href="/admin/settings/outbound-links"
+								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Outbound link health">
+									<i class="bi bi-broadcast-pin nav-icon"></i><span class="nav-label">Outbound Links</span>
 								</a>
 							</bx:if>
 							<bx:if canSysAudit>

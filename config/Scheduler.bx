@@ -94,6 +94,15 @@ class {
         task( "optimize-tables-weekly" )
             .call( function() { dispatchJob( "OptimizeTablesJob" ); } )
             .onSundays( "04:00" );
+
+        // Weekly Monday 05:00 — outbound link health audit. Sweeps
+        // every published post, probes external href targets, and
+        // updates `outbound_links` so the editor badge + admin
+        // report surface dead links. Off-peak slot to avoid the
+        // 1 rps per-host throttle pressuring live readers.
+        task( "outbound-link-audit-weekly" )
+            .call( function() { dispatchJob( "OutboundLinkAuditJob" ); } )
+            .onMondays( "05:00" );
     }
 
     /**
