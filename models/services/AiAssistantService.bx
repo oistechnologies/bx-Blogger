@@ -65,6 +65,15 @@ Security rules (NEVER override):
 
     variables.excerptBasePrompt = "You are an editorial assistant. Given the markdown body of a blog post, return a single 1-to-2 sentence synopsis suitable for use as a public excerpt or short meta description. Plain prose only - no markdown, no surrounding quotes, no preamble. Aim for 150-200 characters total. Return ONLY the synopsis text.";
 
+    // SEO Phase 4 — fallback prompts mirroring the migration seeds in
+    // 2026_05_03_020004_SeedSeoAiPrompts so the methods work even
+    // before migrations run. Admin can edit live versions in
+    // /admin/ai-prompts.
+    variables.seoTitleBasePrompt    = "You are an SEO copywriter. Given a blog post's working title, body excerpt, and optional focus keyword, return a single SEO-optimized page title. Constraints: 50-60 characters total; include the focus keyword near the start when one is provided; lead with the most search-relevant phrase; no clickbait, no all-caps, no surrounding quotes, no trailing site-name suffix. Return ONLY the title text.";
+    variables.seoDescBasePrompt     = "You are an SEO copywriter. Given a blog post's title, body excerpt, and optional focus keyword, return a single meta description suitable for the page's <meta name='description'>. Constraints: 140-160 characters total; lead with a concrete benefit or hook; include the focus keyword once, naturally; no clickbait, no surrounding quotes, no preamble. Return ONLY the description text.";
+    variables.seoCtrVariantsPrompt  = "You are an SEO copywriter testing high-CTR headlines. Given a blog post's working title, body excerpt, and optional focus keyword, return 5 alternative SEO-optimized page titles, each maximizing SERP click-through. Use a different angle per line: (1) curiosity gap, (2) listicle / numbers, (3) current-year hook, (4) brackets / parens for clarity, (5) question form. Each line: 50-60 characters total; include the focus keyword when one is provided; no clickbait. Output format: exactly 5 lines, each prefixed '1. ' through '5. ', no other text, no headings, no preamble, no markdown.";
+    variables.altTextBasePrompt     = "You are an accessibility copywriter. Given an image filename and a short context sentence describing where the image appears, return a single alt-text sentence describing what the image depicts. Constraints: under 125 characters; concrete and specific; no preamble like 'an image of'; no quotation marks; no end punctuation. Return ONLY the alt text.";
+
     variables.defaultMonthlyTokens   = 50000;
     variables.maxIdeaLength          = 1000;
     variables.toneDeprecationLogged  = false;
@@ -228,6 +237,270 @@ Security rules (NEVER override):
             "text"  : text,
             "usage" : extractUsage( response )
         };
+    }
+
+    // --------------------------------------------------------------------
+    // SEO Phase 4 — AI gate + four generate* methods
+    // --------------------------------------------------------------------
+
+    /**
+     * SEO-AI availability gate. Returns true only when ALL of:
+     *   1. ai.enabled (master toggle, existing) is true
+     *   2. ai.seo.enabled (Phase 4 toggle) is true
+     *   3. AI_API_KEY env var is present
+     *   4. AI_PROVIDER env var is present
+     *   5. AI_MODEL env var is present
+     *   6. user has the posts.ai.seo permission
+     *
+     * Defense in depth: every generate* method calls
+     * requireSeoAiAvailable() so a UI bug exposing a button can't
+     * actually run the provider.
+     */
+    boolean function isSeoAiAvailable( required numeric userId ) {
+        return seoAiUnavailableReason( arguments.userId ) == "";
+    }
+
+    /**
+     * Short string describing exactly why SEO-AI is unavailable —
+     * empty string when it's available. Used by the editor button
+     * tooltip ("disabled because AI_API_KEY is not configured")
+     * and by the /admin/settings/defaults AI status banner.
+     */
+    string function availabilityReason( required numeric userId ) {
+        return seoAiUnavailableReason( arguments.userId );
+    }
+
+    /**
+     * Service-level guard. Throws AiUnavailableException with the
+     * exact reason if the gate fails. First line of every
+     * generate* method below.
+     */
+    private void function requireSeoAiAvailable( required numeric userId ) {
+        var reason = seoAiUnavailableReason( arguments.userId );
+        if ( !len( reason ) ) return;
+        throw( type = "bxBlogger.AiUnavailable", message = reason );
+    }
+
+    private string function seoAiUnavailableReason( required numeric userId ) {
+        if ( !isEnabled() ) {
+            return "AI is disabled at the master toggle (ai.enabled = false).";
+        }
+        if ( !seoAiSettingEnabled() ) {
+            return "SEO-AI is disabled at the feature toggle (ai.seo.enabled = false).";
+        }
+        if ( !len( getSystemSetting( "AI_PROVIDER", "" ) ) ) {
+            return "AI is configured but missing AI_PROVIDER in the environment.";
+        }
+        if ( !len( getSystemSetting( "AI_MODEL", "" ) ) ) {
+            return "AI is configured but missing AI_MODEL in the environment.";
+        }
+        if ( !len( getSystemSetting( "AI_API_KEY", "" ) ) ) {
+            return "AI is configured but missing AI_API_KEY in the environment.";
+        }
+        if ( !userHasSeoAiPermission( arguments.userId ) ) {
+            return "User does not have the posts.ai.seo permission.";
+        }
+        return "";
+    }
+
+    private boolean function seoAiSettingEnabled() {
+        try {
+            return !!variables.wirebox.getInstance( "SettingService" ).get( "ai.seo.enabled", true );
+        }
+        catch ( any e ) { return true; }
+    }
+
+    private boolean function userHasSeoAiPermission( required numeric userId ) {
+        if ( arguments.userId <= 0 ) return false;
+        try {
+            var user = variables.wirebox.getInstance( "User" ).find( arguments.userId );
+            if ( isNull( user ) ) return false;
+            return !!user.hasPermission( "posts.ai.seo" );
+        }
+        catch ( any e ) { return false; }
+    }
+
+    /**
+     * SEO Phase 4 — generate a single SEO-optimized page title from
+     * the post's working title + body + optional focus keyword.
+     */
+    struct function generateSeoTitle(
+        required string  title,
+        required string  body,
+        required numeric userId,
+                 string  focusKeyword = ""
+    ) {
+        requireSeoAiAvailable( arguments.userId );
+        validatePostInputs( arguments.title, arguments.body );
+        enforceBudget( arguments.userId );
+
+        var systemPrompt = buildSystemPrompt( "seo_title_from_post", variables.seoTitleBasePrompt );
+        var userContent  = wrapUserContent( buildPostContext( arguments.title, arguments.body, arguments.focusKeyword ) );
+
+        var response = callProvider( "seo_title_from_post", systemPrompt, userContent );
+        var text = stripQuotes( trim( response.text ?: "" ) );
+        // Hard truncate at 70 to protect SERP layout if the model
+        // overshoots; soft target is 50-60 from the prompt.
+        if ( len( text ) > 70 ) text = left( text, 70 );
+
+        recordUsage( userId = arguments.userId, action = "seo_title_from_post", usage = response );
+        announce( "bxBlogger.postAiResponse", { "action" : "seo_title_from_post", "userId" : arguments.userId, "tokens" : response.totalTokens ?: 0 } );
+
+        return { "text" : text, "usage" : extractUsage( response ) };
+    }
+
+    /**
+     * SEO Phase 4 — generate a meta description from the post's
+     * title + body + optional focus keyword. Target 140-160 chars,
+     * hard cap at 320 (matches the seo_description column).
+     */
+    struct function generateSeoDescription(
+        required string  title,
+        required string  body,
+        required numeric userId,
+                 string  focusKeyword = ""
+    ) {
+        requireSeoAiAvailable( arguments.userId );
+        validatePostInputs( arguments.title, arguments.body );
+        enforceBudget( arguments.userId );
+
+        var systemPrompt = buildSystemPrompt( "seo_description_from_post", variables.seoDescBasePrompt );
+        var userContent  = wrapUserContent( buildPostContext( arguments.title, arguments.body, arguments.focusKeyword ) );
+
+        var response = callProvider( "seo_description_from_post", systemPrompt, userContent );
+        var text = stripQuotes( trim( response.text ?: "" ) );
+        if ( len( text ) > 320 ) text = left( text, 320 );
+
+        recordUsage( userId = arguments.userId, action = "seo_description_from_post", usage = response );
+        announce( "bxBlogger.postAiResponse", { "action" : "seo_description_from_post", "userId" : arguments.userId, "tokens" : response.totalTokens ?: 0 } );
+
+        return { "text" : text, "usage" : extractUsage( response ) };
+    }
+
+    /**
+     * SEO Phase 4 — generate 5 SERP-CTR-optimized title variants in
+     * one call. Returned as an array of strings (numbered prefix
+     * stripped).
+     */
+    struct function generateTitleCtrVariations(
+        required string  title,
+        required string  body,
+        required numeric userId,
+                 string  focusKeyword = ""
+    ) {
+        requireSeoAiAvailable( arguments.userId );
+        validatePostInputs( arguments.title, arguments.body );
+        enforceBudget( arguments.userId );
+
+        var systemPrompt = buildSystemPrompt( "seo_title_ctr_variations", variables.seoCtrVariantsPrompt );
+        var userContent  = wrapUserContent( buildPostContext( arguments.title, arguments.body, arguments.focusKeyword ) );
+
+        var response = callProvider( "seo_title_ctr_variations", systemPrompt, userContent );
+        var variants = parseNumberedList( response.text ?: "" );
+
+        recordUsage( userId = arguments.userId, action = "seo_title_ctr_variations", usage = response );
+        announce( "bxBlogger.postAiResponse", { "action" : "seo_title_ctr_variations", "userId" : arguments.userId, "tokens" : response.totalTokens ?: 0 } );
+
+        return { "variants" : variants, "usage" : extractUsage( response ) };
+    }
+
+    /**
+     * SEO Phase 4 — generate alt text for an image. `filename` is
+     * the upload's original filename (mocks-friendly) and
+     * `contextSentence` is what's around the image (post title or
+     * surrounding paragraph) so the model has enough to describe
+     * meaning, not just file metadata. Returns a single sentence
+     * under 125 characters.
+     */
+    struct function generateAltText(
+        required string  filename,
+        required string  contextSentence,
+        required numeric userId
+    ) {
+        requireSeoAiAvailable( arguments.userId );
+        if ( !len( trim( arguments.filename ) ) ) {
+            throw( type = "bxBlogger.AiInvalidInput", message = "Filename is required for alt-text generation." );
+        }
+        enforceBudget( arguments.userId );
+
+        var systemPrompt = buildSystemPrompt( "alt_text_from_image", variables.altTextBasePrompt );
+        var userContent  = wrapUserContent(
+            "Filename: " & arguments.filename & char( 10 )
+            & "Context: " & ( len( trim( arguments.contextSentence ) ) ? arguments.contextSentence : "(no surrounding context provided)" )
+        );
+
+        var response = callProvider( "alt_text_from_image", systemPrompt, userContent );
+        var text = stripQuotes( trim( response.text ?: "" ) );
+        if ( len( text ) > 200 ) text = left( text, 200 );
+
+        recordUsage( userId = arguments.userId, action = "alt_text_from_image", usage = response );
+        announce( "bxBlogger.postAiResponse", { "action" : "alt_text_from_image", "userId" : arguments.userId, "tokens" : response.totalTokens ?: 0 } );
+
+        return { "text" : text, "usage" : extractUsage( response ) };
+    }
+
+    // SEO Phase 4 — internal helpers shared by the four generate*
+    // methods.
+
+    private void function validatePostInputs( required string title, required string body ) {
+        if ( !len( trim( arguments.title ) ) && !len( trim( arguments.body ) ) ) {
+            throw( type = "bxBlogger.AiInvalidInput", message = "Post needs at least a title or body to generate SEO meta from." );
+        }
+    }
+
+    private string function buildPostContext( required string title, required string body, string focusKeyword = "" ) {
+        var nl  = char( 10 );
+        var ctx = "Title: " & arguments.title & nl;
+        if ( len( arguments.focusKeyword ) ) ctx &= "Focus keyword: " & arguments.focusKeyword & nl;
+        // Cap body excerpt at 4000 chars so we don't blow token
+        // budgets when the model only needs the gist.
+        var body = arguments.body;
+        if ( len( body ) > 4000 ) body = left( body, 4000 );
+        ctx &= "Body excerpt:" & nl & body;
+        return ctx;
+    }
+
+    private struct function callProvider( required string action, required string systemPrompt, required string userContent ) {
+        announce( "bxBlogger.preAiRequest", { "action" : arguments.action, "userId" : 0 } );
+        try {
+            return variables.provider.complete(
+                systemPrompt = arguments.systemPrompt,
+                userContent  = arguments.userContent
+            );
+        }
+        catch ( any e ) {
+            log.error( "AiAssistantService." & arguments.action & " provider failure: " & e.message );
+            throw( type = "bxBlogger.AiProviderError", message = "The AI provider returned an error: " & e.message );
+        }
+    }
+
+    private string function stripQuotes( required string raw ) {
+        var s = trim( arguments.raw );
+        s = reReplace( s, "^[""'`“‘]+", "", "one" );
+        s = reReplace( s, "[""'`”’]+$", "", "one" );
+        return s;
+    }
+
+    /**
+     * Parse the numbered-list output from generateTitleCtrVariations
+     * into an array of clean title strings (no leading numbering).
+     * Tolerates "1. " / "1) " / "1 - " prefixes.
+     */
+    private array function parseNumberedList( required string raw ) {
+        var nl    = char( 10 );
+        var lines = listToArray( arguments.raw, nl, false );
+        var out   = [];
+        for ( var line in lines ) {
+            var clean = trim( line );
+            if ( !len( clean ) ) continue;
+            // Strip leading "1." / "1)" / "1 -" / "1:"
+            clean = reReplace( clean, "^\s*\d+\s*[\.\)\-:]\s*", "", "one" );
+            clean = stripQuotes( clean );
+            if ( len( clean ) ) out.append( clean );
+        }
+        // Cap at 5 even if the model overshoots.
+        while ( out.len() > 5 ) out.deleteAt( out.len() );
+        return out;
     }
 
     /**

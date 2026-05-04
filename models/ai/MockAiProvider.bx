@@ -81,6 +81,52 @@ class accessors="true" singleton {
         };
     }
 
+    /**
+     * SEO Phase 4 — deterministic single-shot completion. Used by
+     * AiAssistantService.generateSeoTitle / SeoDescription /
+     * TitleCtrVariations / AltText so specs can assert exact output
+     * without hitting a real provider.
+     *
+     * The mock inspects the system prompt for keywords ("CTR" /
+     * "5 alternative" → numbered list, otherwise → single sentence)
+     * and tailors output. Token estimates come from the same length
+     * heuristic the rest of the mock uses.
+     */
+    struct function complete( required string systemPrompt, required string userContent ) {
+        variables.lastSystemPrompt = arguments.systemPrompt;
+        maybeFail();
+        var tokens = estimateTokens( arguments.systemPrompt & arguments.userContent );
+
+        var text = "";
+        var sp   = arguments.systemPrompt;
+        if ( findNoCase( "5 alternative", sp ) || findNoCase( "CTR", sp ) ) {
+            // Numbered-list output for the CTR-variants prompt.
+            text = "1. Mock CTR Title — Curiosity Hook" & char( 10 )
+                & "2. Mock CTR Title — 7 Things to Know" & char( 10 )
+                & "3. Mock CTR Title for 2026 Readers" & char( 10 )
+                & "4. Mock CTR Title (Quick Guide)" & char( 10 )
+                & "5. Why Does Mock CTR Title Matter?";
+        }
+        else if ( findNoCase( "alt-text", sp ) || findNoCase( "alt text", sp ) ) {
+            text = "Mock alt text describing the image";
+        }
+        else if ( findNoCase( "meta description", sp ) ) {
+            text = "Mock meta description summarizing the post in roughly 150 characters of plain prose for the SERP snippet preview.";
+        }
+        else {
+            // Default = single SEO title.
+            text = "Mock SEO Title: " & summarize( arguments.userContent );
+        }
+
+        return {
+            "text"             : text,
+            "promptTokens"     : tokens,
+            "completionTokens" : 25,
+            "totalTokens"      : tokens + 25,
+            "costUsdMicro"     : ( tokens + 25 ) * 10
+        };
+    }
+
     struct function review( required string systemPrompt, required string postBody ) {
         variables.lastSystemPrompt = arguments.systemPrompt;
         maybeFail();

@@ -1,0 +1,240 @@
+/**
+ * bx-Blogger — SeoAiGenerationSpec (SEO Phase 4)
+ *
+ * Exercises the four new AI generate* methods on AiAssistantService
+ * end-to-end against MockAiProvider:
+ *
+ *   generateSeoTitle
+ *   generateSeoDescription
+ *   generateTitleCtrVariations
+ *   generateAltText
+ *
+ * Plus the new gating helpers (isSeoAiAvailable, availabilityReason,
+ * requireSeoAiAvailable) that every generate* method calls first.
+ *
+ * Each spec runs with the mock provider so token weather is
+ * deterministic and no network traffic is generated. Env vars are
+ * primed in beforeEach so each test starts from a known-good state.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        try {
+            var qb = getInstance( "QueryBuilder@qb" );
+            if ( arrayLen( variables.createdIds.users ?: [] ) ) {
+                qb.newQuery().from( "ai_usage" ).whereIn( "user_id", variables.createdIds.users ).delete();
+            }
+        } catch ( any e ) {
+            writeLog( file = "testbox", text = "SeoAiGenerationSpec cleanup failed: " & e.message );
+        }
+
+        // CRITICAL — System.setProperty() persists for the lifetime of
+        // the JVM and getSystemSetting() reads system properties BEFORE
+        // env vars. If we leave "sk-test-key" set, every live AI call
+        // after the spec runs will use the test fixture and fail with
+        // 401 Missing Authentication header. Clear them out.
+        clearSystemProp( "AI_ENABLED"  );
+        clearSystemProp( "AI_PROVIDER" );
+        clearSystemProp( "AI_MODEL"    );
+        clearSystemProp( "AI_API_KEY"  );
+
+        super.afterAll();
+    }
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.createdIds = { "users" : [] };
+        variables.aiSvc      = getInstance( "AiAssistantService" );
+        variables.settingSvc = getInstance( "SettingService" );
+
+        variables.savedSeoEnabled = variables.settingSvc.get( "ai.seo.enabled", true );
+    }
+
+    function run() {
+        describe( "AiAssistantService — SEO Phase 4 methods", function() {
+
+            beforeEach( function() {
+                setEnv( "AI_ENABLED",  "true"            );
+                setEnv( "AI_PROVIDER", "openrouter"      );
+                setEnv( "AI_MODEL",    "qwen/qwen-turbo" );
+                setEnv( "AI_API_KEY",  "sk-test-key"     );
+                variables.settingSvc.set( key = "ai.seo.enabled", value = "true", type = "bool" );
+                var mock = getInstance( "AiProvider" );
+                if ( structKeyExists( mock, "setSimulateFailure" ) ) mock.setSimulateFailure( "" );
+            } );
+
+            afterEach( function() {
+                variables.settingSvc.set( key = "ai.seo.enabled", value = variables.savedSeoEnabled, type = "bool" );
+            } );
+
+            describe( "isSeoAiAvailable + availabilityReason", function() {
+
+                it( "is available for an author user with all env vars set", function() {
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    expect( aiSvc.isSeoAiAvailable( u.getId() ) ).toBeTrue();
+                    expect( aiSvc.availabilityReason( u.getId() ) ).toBe( "" );
+                } );
+
+                it( "is unavailable when ai.enabled (master) is off", function() {
+                    setEnv( "AI_ENABLED", "false" );
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    expect( aiSvc.isSeoAiAvailable( u.getId() ) ).toBeFalse();
+                    expect( aiSvc.availabilityReason( u.getId() ) ).toInclude( "master toggle" );
+                } );
+
+                it( "is unavailable when ai.seo.enabled (feature) is off", function() {
+                    variables.settingSvc.set( key = "ai.seo.enabled", value = "false", type = "bool" );
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    expect( aiSvc.isSeoAiAvailable( u.getId() ) ).toBeFalse();
+                    expect( aiSvc.availabilityReason( u.getId() ) ).toInclude( "feature toggle" );
+                } );
+
+                it( "is unavailable when AI_API_KEY is blank", function() {
+                    setEnv( "AI_API_KEY", "" );
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    expect( aiSvc.isSeoAiAvailable( u.getId() ) ).toBeFalse();
+                    expect( aiSvc.availabilityReason( u.getId() ) ).toInclude( "AI_API_KEY" );
+                } );
+
+                it( "is unavailable when user lacks posts.ai.seo permission", function() {
+                    // contributor is the only role NOT granted posts.ai.seo
+                    var u = trackUser( createTestUser( {}, "", "contributor" ) );
+                    expect( aiSvc.isSeoAiAvailable( u.getId() ) ).toBeFalse();
+                    expect( aiSvc.availabilityReason( u.getId() ) ).toInclude( "permission" );
+                } );
+
+            } );
+
+            describe( "generateSeoTitle()", function() {
+
+                it( "returns mock title text + usage for a valid post", function() {
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    var result = aiSvc.generateSeoTitle(
+                        title  = "Adopting BoxLang in a CFML shop",
+                        body   = "We migrated our admin app from Lucee to BoxLang in three weeks.",
+                        userId = u.getId()
+                    );
+                    expect( result ).toHaveKey( "text" );
+                    expect( result ).toHaveKey( "usage" );
+                    expect( result.text ).toInclude( "Mock SEO Title" );
+                    expect( result.usage.totalTokens ).toBeGT( 0 );
+                } );
+
+                it( "writes an ai_usage row tagged 'seo_title_from_post'", function() {
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    aiSvc.generateSeoTitle( title = "Adopting BoxLang", body = "Body.", userId = u.getId() );
+
+                    var rows = getInstance( "QueryBuilder@qb" ).newQuery()
+                        .from( "ai_usage" )
+                        .where( "user_id", u.getId() )
+                        .where( "action",  "seo_title_from_post" )
+                        .get();
+                    expect( rows.len() ).toBe( 1 );
+                } );
+
+                it( "throws AiUnavailable when the gate fails", function() {
+                    setEnv( "AI_ENABLED", "false" );
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    var threw = false;
+                    try { aiSvc.generateSeoTitle( title = "T", body = "B", userId = u.getId() ); }
+                    catch ( bxBlogger.AiUnavailable e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+                it( "rejects when both title and body are empty", function() {
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    var threw = false;
+                    try { aiSvc.generateSeoTitle( title = "", body = "  ", userId = u.getId() ); }
+                    catch ( bxBlogger.AiInvalidInput e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+            } );
+
+            describe( "generateSeoDescription()", function() {
+
+                it( "returns a meta-description string", function() {
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    var result = aiSvc.generateSeoDescription(
+                        title  = "Adopting BoxLang",
+                        body   = "Three-week migration with no production downtime.",
+                        userId = u.getId()
+                    );
+                    expect( result.text ).toInclude( "Mock meta description" );
+                } );
+
+            } );
+
+            describe( "generateTitleCtrVariations()", function() {
+
+                it( "returns 5 variants parsed from numbered list", function() {
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    var result = aiSvc.generateTitleCtrVariations(
+                        title  = "Adopting BoxLang",
+                        body   = "Migration story.",
+                        userId = u.getId()
+                    );
+                    expect( result ).toHaveKey( "variants" );
+                    expect( result.variants.len() ).toBe( 5 );
+                    // Numbered prefix is stripped.
+                    for ( var v in result.variants ) {
+                        expect( reFind( "^\d+\s*[\.\)]", v ) ).toBe( 0 );
+                    }
+                    expect( result.variants[ 1 ] ).toInclude( "Mock CTR Title" );
+                } );
+
+            } );
+
+            describe( "generateAltText()", function() {
+
+                it( "returns alt text for a filename + context", function() {
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    var result = aiSvc.generateAltText(
+                        filename        = "lake-at-dawn.jpg",
+                        contextSentence = "A photo of the lake at sunrise.",
+                        userId          = u.getId()
+                    );
+                    expect( result.text ).toInclude( "Mock alt text" );
+                } );
+
+                it( "throws AiInvalidInput when filename is blank", function() {
+                    var u = trackUser( createTestUser( {}, "", "author" ) );
+                    var threw = false;
+                    try { aiSvc.generateAltText( filename = "  ", contextSentence = "x", userId = u.getId() ); }
+                    catch ( bxBlogger.AiInvalidInput e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+            } );
+
+        } );
+    }
+
+    private any function trackUser( required any user ) {
+        variables.createdIds.users.append( arguments.user.getId() );
+        return arguments.user;
+    }
+
+    /**
+     * Same helper the existing AiAssistantServiceSpec defines —
+     * BoxLang's getSystemSetting() reads java.lang.System properties
+     * before env vars, so System.setProperty() is the only writeable
+     * surface from a spec closure (env vars are read-only).
+     */
+    private void function setEnv( required string key, required string value ) {
+        createObject( "java", "java.lang.System" ).setProperty( arguments.key, arguments.value );
+    }
+
+    /**
+     * Clear a system property so the spec's fixture values don't
+     * leak into subsequent live requests after the spec ends.
+     * `clearProperty` returns the previous value (we discard it).
+     */
+    private void function clearSystemProp( required string key ) {
+        try {
+            createObject( "java", "java.lang.System" ).clearProperty( arguments.key );
+        }
+        catch ( any e ) {}
+    }
+
+}

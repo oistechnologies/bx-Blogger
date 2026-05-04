@@ -64,6 +64,9 @@ data = {
     "aiError"         : "",
     "showAiReview"    : false,    // Review-and-Suggest panel
     "aiSuggestions"   : [],
+    // SEO Phase 4 — CTR-variants modal state
+    "showCtrModal"    : false,
+    "ctrVariants"     : [],
     // 2.I AI image-gen state
     "showImageModal"  : false,
     "imagePrompt"     : "",
@@ -549,6 +552,98 @@ function aiGenerateExcerpt() {
     catch ( bxBlogger.AiProviderError e )  { data.aiError = "The AI provider failed: " & e.message; }
     catch ( bxBlogger.AiDisabled e )       { data.aiError = e.message; }
     catch ( any e )                         { data.aiError = "Unexpected failure: " & e.message; }
+}
+
+// --------------------------------------------------------------------
+// SEO Phase 4 — AI SEO meta generation
+// --------------------------------------------------------------------
+
+/**
+ * Centralized gate. Wraps AiAssistantService.isSeoAiAvailable so
+ * the template `<bx:if>` checks stay one-liners and the four
+ * generate* wire actions don't each duplicate the same checks.
+ */
+function seoAiAvailable() {
+    return aiService.isSeoAiAvailable( cbauth.getUser().getId() );
+}
+
+function seoAiUnavailableReason() {
+    return aiService.availabilityReason( cbauth.getUser().getId() );
+}
+
+function aiGenerateSeoTitle() {
+    data.aiError = "";
+    try {
+        var result = aiService.generateSeoTitle(
+            title        = data.title ?: "",
+            body         = data.bodyMarkdown ?: "",
+            userId       = cbauth.getUser().getId(),
+            focusKeyword = ""
+        );
+        data.seoTitle = result.text;
+        data.flashOk  = "AI SEO title generated.";
+    }
+    catch ( bxBlogger.AiUnavailable e )    { data.aiError = e.message; }
+    catch ( bxBlogger.AiBudgetExceeded e ) { data.aiError = e.message; }
+    catch ( bxBlogger.AiInvalidInput e )   { data.aiError = e.message; }
+    catch ( bxBlogger.AiProviderError e )  { data.aiError = "The AI provider failed: " & e.message; }
+    catch ( any e )                         { data.aiError = "Unexpected failure: " & e.message; }
+}
+
+function aiGenerateSeoDescription() {
+    data.aiError = "";
+    try {
+        var result = aiService.generateSeoDescription(
+            title        = data.title ?: "",
+            body         = data.bodyMarkdown ?: "",
+            userId       = cbauth.getUser().getId(),
+            focusKeyword = ""
+        );
+        data.seoDescription = result.text;
+        data.flashOk        = "AI SEO description generated.";
+    }
+    catch ( bxBlogger.AiUnavailable e )    { data.aiError = e.message; }
+    catch ( bxBlogger.AiBudgetExceeded e ) { data.aiError = e.message; }
+    catch ( bxBlogger.AiInvalidInput e )   { data.aiError = e.message; }
+    catch ( bxBlogger.AiProviderError e )  { data.aiError = "The AI provider failed: " & e.message; }
+    catch ( any e )                         { data.aiError = "Unexpected failure: " & e.message; }
+}
+
+function aiSuggestCtrTitleVariants() {
+    data.aiError       = "";
+    data.ctrVariants   = [];
+    data.showCtrModal  = false;
+    try {
+        var result = aiService.generateTitleCtrVariations(
+            title        = data.title ?: "",
+            body         = data.bodyMarkdown ?: "",
+            userId       = cbauth.getUser().getId(),
+            focusKeyword = ""
+        );
+        data.ctrVariants  = result.variants;
+        data.showCtrModal = true;
+    }
+    catch ( bxBlogger.AiUnavailable e )    { data.aiError = e.message; }
+    catch ( bxBlogger.AiBudgetExceeded e ) { data.aiError = e.message; }
+    catch ( bxBlogger.AiInvalidInput e )   { data.aiError = e.message; }
+    catch ( bxBlogger.AiProviderError e )  { data.aiError = "The AI provider failed: " & e.message; }
+    catch ( any e )                         { data.aiError = "Unexpected failure: " & e.message; }
+}
+
+function applyCtrVariant( required numeric index ) {
+    var idx     = int( arguments.index ?: 0 );
+    var variants = data.ctrVariants ?: [];
+    if ( idx < 1 || idx > variants.len() ) return;
+    var picked = variants[ idx ];
+    if ( !len( trim( picked ?: "" ) ) ) return;
+    data.seoTitle     = picked;
+    data.showCtrModal = false;
+    data.flashOk      = "Applied SEO title variant.";
+}
+
+function closeCtrModal() {
+    data.showCtrModal = false;
+    data.ctrVariants  = [];
 }
 
 // --------------------------------------------------------------------
@@ -1572,16 +1667,66 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 				</div>
 				<div class="collapse" id="sidebarSeoBody" wire:ignore.self>
 					<div class="card-body">
+						<bx:set seoAiOn = seoAiAvailable()>
+						<bx:set seoAiTooltip = seoAiOn ? "" : seoAiUnavailableReason()>
+
 						<div class="mb-2">
-							<label for="postSeoTitle" class="form-label small">SEO title</label>
+							<label for="postSeoTitle" class="form-label small d-flex justify-content-between align-items-center">
+								<span>SEO title</span>
+								<span class="d-flex gap-1">
+									<button type="button"
+									        class="btn btn-sm btn-link p-0 small text-decoration-none"
+									        wire:click="aiGenerateSeoTitle"
+									        wire:target="aiGenerateSeoTitle"
+									        wire:loading.attr="disabled"
+									        title="#encodeForHTMLAttribute( seoAiOn ? "Generate an SEO-optimized title from the post body" : seoAiTooltip )#"
+									        <bx:if !seoAiOn>disabled</bx:if>>
+										<i class="bi bi-magic"
+										   wire:loading.remove wire:target="aiGenerateSeoTitle"></i>
+										<span class="spinner-border spinner-border-sm"
+										      wire:loading wire:target="aiGenerateSeoTitle"></span>
+										AI title
+									</button>
+									<button type="button"
+									        class="btn btn-sm btn-link p-0 small text-decoration-none"
+									        wire:click="aiSuggestCtrTitleVariants"
+									        wire:target="aiSuggestCtrTitleVariants"
+									        wire:loading.attr="disabled"
+									        title="#encodeForHTMLAttribute( seoAiOn ? "Suggest 5 CTR-optimized title variants" : seoAiTooltip )#"
+									        <bx:if !seoAiOn>disabled</bx:if>>
+										<i class="bi bi-list-ol"
+										   wire:loading.remove wire:target="aiSuggestCtrTitleVariants"></i>
+										<span class="spinner-border spinner-border-sm"
+										      wire:loading wire:target="aiSuggestCtrTitleVariants"></span>
+										5 variants
+									</button>
+								</span>
+							</label>
 							<input type="text" id="postSeoTitle" class="form-control form-control-sm"
 							       wire:model.blur="seoTitle" maxlength="255">
 						</div>
+
 						<div class="mb-2">
-							<label for="postSeoDescription" class="form-label small">SEO description</label>
+							<label for="postSeoDescription" class="form-label small d-flex justify-content-between align-items-center">
+								<span>SEO description</span>
+								<button type="button"
+								        class="btn btn-sm btn-link p-0 small text-decoration-none"
+								        wire:click="aiGenerateSeoDescription"
+								        wire:target="aiGenerateSeoDescription"
+								        wire:loading.attr="disabled"
+								        title="#encodeForHTMLAttribute( seoAiOn ? "Generate an SEO meta description from the post body" : seoAiTooltip )#"
+								        <bx:if !seoAiOn>disabled</bx:if>>
+									<i class="bi bi-magic"
+									   wire:loading.remove wire:target="aiGenerateSeoDescription"></i>
+									<span class="spinner-border spinner-border-sm"
+									      wire:loading wire:target="aiGenerateSeoDescription"></span>
+									AI description
+								</button>
+							</label>
 							<textarea id="postSeoDescription" class="form-control form-control-sm" rows="2"
 							          maxlength="320" wire:model.blur="seoDescription"></textarea>
 						</div>
+
 						<div class="form-check">
 							<input class="form-check-input" type="checkbox" id="postAllowIndexing"
 							       wire:model.live="allowIndexing">
@@ -1718,6 +1863,39 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 							Your content was sent to the configured AI provider.
 						</small>
 						<button type="button" class="btn btn-outline-secondary" wire:click="closeAiReview">Close</button>
+					</div>
+				</div>
+			</div>
+		</div>
+	</bx:if>
+
+	<!--- SEO Phase 4 — CTR title variants picker modal --------------- --->
+	<bx:if args.showCtrModal>
+		<div class="modal show d-block" tabindex="-1" style="background:rgba(0,0,0,.25);">
+			<div class="modal-dialog modal-lg">
+				<div class="modal-content">
+					<div class="modal-header">
+						<h5 class="modal-title">Pick an SEO title variant</h5>
+						<button type="button" class="btn-close" wire:click="closeCtrModal"></button>
+					</div>
+					<div class="modal-body">
+						<p class="text-muted small mb-3">
+							Five title variants optimized for search-result click-through.
+							Each uses a different angle (curiosity gap, listicle, year, brackets, question).
+							Pick one to populate the SEO title field.
+						</p>
+						<div class="list-group">
+							<bx:loop from="1" to="#args.ctrVariants.len()#" index="i">
+								<button type="button"
+								        class="list-group-item list-group-item-action"
+								        wire:click="applyCtrVariant(#i#)">
+									#encodeForHTML( args.ctrVariants[ i ] )#
+								</button>
+							</bx:loop>
+						</div>
+					</div>
+					<div class="modal-footer">
+						<button type="button" class="btn btn-outline-secondary" wire:click="closeCtrModal">Cancel</button>
 					</div>
 				</div>
 			</div>

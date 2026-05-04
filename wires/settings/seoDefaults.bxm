@@ -16,6 +16,7 @@
  */
 
 property name="settingService" inject="SettingService";
+property name="aiService"      inject="AiAssistantService";
 property name="cbauth"         inject="AuthenticationService@cbauth";
 
 data = {
@@ -29,6 +30,32 @@ data = {
     "flashOk"            : "",
     "flashError"         : ""
 };
+
+/**
+ * SEO Phase 4 — AI status snapshot for the banner at the top of
+ * the page. Returns a struct the template renders directly so
+ * we don't have to repeat the gating logic in markup.
+ */
+struct function aiStatus() {
+    var userId = cbauth.getUser().getId();
+    var avail  = aiService.isSeoAiAvailable( userId );
+    var reason = avail ? "" : aiService.availabilityReason( userId );
+    var status = "ready";
+    if ( !avail ) {
+        if ( findNoCase( "disabled at the master toggle", reason ) ) status = "master_off";
+        else if ( findNoCase( "disabled at the feature toggle", reason ) ) status = "feature_off";
+        else if ( findNoCase( "missing AI_", reason ) ) status = "misconfigured";
+        else if ( findNoCase( "permission", reason ) ) status = "no_permission";
+        else status = "unavailable";
+    }
+    return {
+        "available" : avail,
+        "status"    : status,
+        "reason"    : reason,
+        "model"     : getSystemSetting( "AI_MODEL", "" ),
+        "provider"  : getSystemSetting( "AI_PROVIDER", "" )
+    };
+}
 
 function onMount( event, rc, prc, params ) {
     data.siteTitle         = settingService.get( "site.title", "" );
@@ -122,6 +149,51 @@ private boolean function requirePerm() {
 
 <bx:output>
 <div>
+    <bx:set ai = aiStatus()>
+    <bx:if ai.available>
+        <div class="alert alert-success small d-flex align-items-center">
+            <i class="bi bi-check-circle me-2"></i>
+            <div>
+                <strong>AI ready</strong> &mdash; using
+                <code>#encodeForHTML( ai.model )#</code>
+                via <code>#encodeForHTML( ai.provider )#</code>.
+                The SEO-AI editor buttons are available to anyone with the <code>posts.ai.seo</code> permission.
+            </div>
+        </div>
+    <bx:elseif ai.status == "master_off">
+        <div class="alert alert-warning small d-flex align-items-center">
+            <i class="bi bi-power me-2"></i>
+            <div>
+                <strong>AI is disabled at the master toggle.</strong>
+                Set <code>AI_ENABLED=true</code> in <code>.env</code> (or flip <code>ai.enabled</code> in BoxLang config) to surface the SEO-AI editor buttons.
+            </div>
+        </div>
+    <bx:elseif ai.status == "feature_off">
+        <div class="alert alert-warning small d-flex align-items-center">
+            <i class="bi bi-toggle-off me-2"></i>
+            <div>
+                <strong>SEO-AI is disabled.</strong>
+                The <code>ai.seo.enabled</code> setting is OFF &mdash; flip it ON to surface the SEO-AI editor buttons. Other AI features (drafting, image-gen) are unaffected.
+            </div>
+        </div>
+    <bx:elseif ai.status == "misconfigured">
+        <div class="alert alert-danger small d-flex align-items-center">
+            <i class="bi bi-exclamation-triangle me-2"></i>
+            <div>
+                <strong>AI is configured but missing required env vars.</strong>
+                #encodeForHTML( ai.reason )#
+                Add the missing variable to <code>.env</code> and reboot the app.
+            </div>
+        </div>
+    <bx:elseif ai.status == "no_permission">
+        <div class="alert alert-secondary small d-flex align-items-center">
+            <i class="bi bi-shield-lock me-2"></i>
+            <div>
+                AI is configured, but your account lacks the <code>posts.ai.seo</code> permission. Other users with that permission see the SEO-AI buttons in the editor.
+            </div>
+        </div>
+    </bx:if>
+
     <bx:if len( args.flashOk )>
         <div class="alert alert-success alert-dismissible">
             #encodeForHTML( args.flashOk )#

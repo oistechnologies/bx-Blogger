@@ -69,6 +69,28 @@ class accessors="true" singleton {
         };
     }
 
+    /**
+     * SEO Phase 4 — generic single-shot completion. Powers the new
+     * SEO-AI methods (generateSeoTitle / SeoDescription / AltText /
+     * TitleCtrVariations) on AiAssistantService. Returns the raw
+     * model text plus token usage so the assistant service can
+     * normalize per-method (trim quotes, parse numbered list,
+     * truncate to length).
+     */
+    struct function complete( required string systemPrompt, required string userContent ) {
+        var result = chat(
+            systemPrompt = arguments.systemPrompt,
+            userContent  = arguments.userContent
+        );
+        return {
+            "text"             : result.markdown,
+            "promptTokens"     : result.promptTokens,
+            "completionTokens" : result.completionTokens,
+            "totalTokens"      : result.totalTokens,
+            "costUsdMicro"     : result.costUsdMicro
+        };
+    }
+
     // --------------------------------------------------------------------
 
     private struct function chat( required string systemPrompt, required string userContent ) {
