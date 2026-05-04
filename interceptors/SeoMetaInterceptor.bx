@@ -91,15 +91,27 @@ class extends="coldbox.system.Interceptor" {
                 if ( !isArray( cats ) ) cats = queryToArrayOfStructs( cats );
                 if ( !isArray( tags ) ) tags = queryToArrayOfStructs( tags );
 
-                arguments.prc.seoMeta = svc.buildForPost(
-                    post        = post,
-                    authorName  = arguments.prc.authorName ?: "",
-                    categories  = cats,
-                    tags        = tags,
-                    baseUrl     = baseUrl,
-                    siteName    = siteName,
-                    siteLocale  = siteLocale
-                );
+                // SEO Phase 3 — load the full author entity so the
+                // SeoService can emit a Person with sameAs[] (8
+                // social URLs) + image + bio. Quick caches the
+                // relation so the second `.author().first()` (handler
+                // already loaded it) is free.
+                var args = {
+                    "post"        : post,
+                    "authorName"  : arguments.prc.authorName ?: "",
+                    "categories"  : cats,
+                    "tags"        : tags,
+                    "baseUrl"     : baseUrl,
+                    "siteName"    : siteName,
+                    "siteLocale"  : siteLocale
+                };
+                try {
+                    var authorEntity = post.author().first();
+                    if ( !isNull( authorEntity ) ) args[ "authorEntity" ] = authorEntity;
+                }
+                catch ( any e ) { /* best-effort; minimal Person still emitted */ }
+
+                arguments.prc.seoMeta = svc.buildForPost( argumentCollection = args );
                 return;
             }
 
@@ -119,6 +131,26 @@ class extends="coldbox.system.Interceptor" {
                     siteName    = siteName,
                     siteLocale  = siteLocale
                 );
+
+                // SEO Phase 3 — author archive pages (/author/{slug})
+                // emit a Person JSON-LD node so Google can build an
+                // author knowledge panel with sameAs[]. Falls through
+                // silently if prc.author isn't set (other archive
+                // types).
+                if ( structKeyExists( arguments.prc, "author" ) && !isNull( arguments.prc.author ) ) {
+                    try {
+                        var personLd = svc.buildPersonJsonLd(
+                            user    = arguments.prc.author,
+                            baseUrl = baseUrl
+                        );
+                        // Person needs an explicit @context when
+                        // it's a top-level node (not nested under
+                        // Article.author).
+                        personLd[ "@context" ] = "https://schema.org";
+                        arguments.prc.seoMeta.jsonLd.append( personLd );
+                    }
+                    catch ( any e ) { /* best-effort */ }
+                }
                 return;
             }
 

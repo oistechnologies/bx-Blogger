@@ -455,6 +455,11 @@
 								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Site Defaults">
 									<i class="bi bi-gear nav-icon"></i><span class="nav-label">Site Defaults</span>
 								</a>
+								<a class="nav-link nav-sub #( currentEvent == 'admin:Settings.organization' ? 'active' : '' )#"
+								   href="#event.buildLink( 'admin:Settings.organization' )#"
+								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Organization">
+									<i class="bi bi-building nav-icon"></i><span class="nav-label">Organization</span>
+								</a>
 								<a class="nav-link nav-sub #( currentEvent == 'admin:Settings.seo' ? 'active' : '' )#"
 								   href="#event.buildLink( 'admin:Settings.seo' )#"
 								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="SEO Settings">

@@ -133,4 +133,51 @@
         if ( !structKeyExists( arguments.prc, "seoMeta" ) || !isStruct( arguments.prc.seoMeta ) ) return "";
         return getInstance( "SeoService" ).renderHead( arguments.prc.seoMeta );
     }
+
+    /**
+     * SEO Phase 3 — visible "Updated N days ago" indicator.
+     *
+     * Returns an HTML snippet (a leading separator + `<time>` tag)
+     * when the post's `updated_at` is more than `minDays` past the
+     * `published_at` (default 7 days). Returns empty string
+     * otherwise. Themes call this in the byline area after the
+     * published-date `<time>` so freshness signal lines up next to
+     * publication date both visually and in the JSON-LD.
+     *
+     * `dateModified` in the Article JSON-LD is sourced from the
+     * same `updated_at`, so structured data and visible signal stay
+     * in sync. No call to SeoService — pure date arithmetic.
+     */
+    function updatedSinceLabel( required any post, numeric minDays = 7 ) {
+        try {
+            var pub = arguments.post.getPublishedAt();
+            var upd = arguments.post.getUpdatedAt();
+            if ( isNull( pub ) || !len( pub ?: "" ) ) return "";
+            if ( isNull( upd ) || !len( upd ?: "" ) ) return "";
+
+            var pubDate = parseDateTime( pub );
+            var updDate = parseDateTime( upd );
+            var daysSincePub  = dateDiff( "d", pubDate, updDate );
+            if ( daysSincePub < arguments.minDays ) return "";
+
+            var daysSinceNow = dateDiff( "d", updDate, now() );
+            var label = "";
+            if ( daysSinceNow < 1 )         label = "today";
+            else if ( daysSinceNow == 1 )   label = "yesterday";
+            else if ( daysSinceNow < 30 )   label = daysSinceNow & " days ago";
+            else if ( daysSinceNow < 365 ) {
+                var months = int( daysSinceNow / 30 );
+                label = ( months == 1 ? "1 month ago" : ( months & " months ago" ) );
+            }
+            else {
+                var years = int( daysSinceNow / 365 );
+                label = ( years == 1 ? "1 year ago" : ( years & " years ago" ) );
+            }
+            return ' &middot; <time datetime="' & dateTimeFormat( updDate, "yyyy-mm-dd" ) & '" class="post-updated-at">'
+                & 'Updated ' & encodeForHTML( label ) & '</time>';
+        }
+        catch ( any e ) {
+            return "";
+        }
+    }
 </bx:script>

@@ -48,6 +48,16 @@ class extends="coldbox.system.EventHandler" {
         event.setView( view = "settings/defaults" );
     }
 
+    /**
+     * SEO Phase 3 — Organization JSON-LD settings (legal name, logo,
+     * contact email, sameAs URLs). Drives the publisher node in
+     * every Article + the standalone Organization on the home page.
+     */
+    function organization( event, rc, prc ) {
+        prc.pageTitle = "Organization";
+        event.setView( view = "settings/organization" );
+    }
+
     function seo( event, rc, prc ) {
         prc.pageTitle = "SEO Settings";
         event.setView( view = "settings/seo" );

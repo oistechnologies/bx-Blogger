@@ -21,6 +21,7 @@
                 <time datetime="#dateTimeFormat( prc.post.getPublishedAt(), 'yyyy-mm-dd' )#">
                     #dateFormat( prc.post.getPublishedAt(), "mmm d, yyyy" )#
                 </time>
+                #updatedSinceLabel( prc.post )#
             </bx:if>
         </p>
     </header>

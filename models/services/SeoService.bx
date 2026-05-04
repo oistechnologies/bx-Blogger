@@ -54,11 +54,12 @@ class accessors="true" singleton {
     struct function buildForPost(
         required any    post,
         required string authorName,
-                 array  categories = [],
-                 array  tags       = [],
+                 array  categories   = [],
+                 array  tags         = [],
         required string baseUrl,
-                 string siteName   = "",
-                 string siteLocale = "en_US"
+                 string siteName     = "",
+                 string siteLocale   = "en_US",
+                 any    authorEntity
     ) {
         var slug        = arguments.post.getSlug();
         var canonical   = arguments.baseUrl & "/blog/" & slug;
@@ -111,16 +112,17 @@ class accessors="true" singleton {
         };
         if ( len( imageUrl ) ) tw[ "image" ] = imageUrl;
 
-        var jsonLd = [
-            buildArticleJsonLd(
-                post        = arguments.post,
-                authorName  = arguments.authorName,
-                canonical   = canonical,
-                imageUrl    = imageUrl,
-                siteName    = arguments.siteName,
-                description = description
-            )
-        ];
+        var articleArgs = {
+            "post"        : arguments.post,
+            "authorName"  : arguments.authorName,
+            "canonical"   : canonical,
+            "imageUrl"    : imageUrl,
+            "siteName"    : arguments.siteName,
+            "description" : description,
+            "baseUrl"     : arguments.baseUrl
+        };
+        if ( !isNull( arguments.authorEntity ) ) articleArgs[ "authorEntity" ] = arguments.authorEntity;
+        var jsonLd = [ buildArticleJsonLd( argumentCollection = articleArgs ) ];
         if ( arguments.categories.len() ) {
             jsonLd.append( buildBreadcrumbsForPost( arguments.post, arguments.categories, arguments.baseUrl ) );
         }
@@ -180,6 +182,18 @@ class accessors="true" singleton {
         };
         if ( len( imageUrl ) ) tw[ "image" ] = imageUrl;
 
+        // SEO Phase 3 — WebPage with Organization publisher (single
+        // source of truth for the org node across post + page +
+        // home renders).
+        var webPageLd = {
+            "@context"    : "https://schema.org",
+            "@type"       : "WebPage",
+            "name"        : title,
+            "description" : description,
+            "url"         : canonical,
+            "publisher"   : buildOrganizationJsonLd( baseUrl = arguments.baseUrl, siteName = arguments.siteName )
+        };
+
         return {
             "title"       : title,
             "description" : description,
@@ -187,13 +201,7 @@ class accessors="true" singleton {
             "robots"      : robots,
             "og"          : og,
             "twitter"     : tw,
-            "jsonLd"      : [ {
-                "@context"    : "https://schema.org",
-                "@type"       : "WebPage",
-                "name"        : title,
-                "description" : description,
-                "url"         : canonical
-            } ],
+            "jsonLd"      : [ webPageLd ],
             "links"       : []
         };
     }
@@ -296,6 +304,13 @@ class accessors="true" singleton {
             "query-input" : "required name=search_term_string"
         };
 
+        // SEO Phase 3 — Organization JSON-LD on the home page.
+        // Google uses Organization for sitelinks + knowledge-panel
+        // logo when the home page emits both WebSite and
+        // Organization nodes. Always emitted (name falls back to
+        // siteTitle so the node always has at least a name + url).
+        var jsonLd = [ webSiteLd, buildOrganizationJsonLd( baseUrl = arguments.baseUrl, siteName = siteTitle ) ];
+
         return {
             "title"       : siteTitle,
             "description" : siteDesc,
@@ -303,7 +318,7 @@ class accessors="true" singleton {
             "robots"      : "index, follow",
             "og"          : og,
             "twitter"     : tw,
-            "jsonLd"      : [ webSiteLd ],
+            "jsonLd"      : jsonLd,
             "links"       : [
                 { "rel" : "alternate", "type" : "application/rss+xml", "href" : arguments.baseUrl & "/feed.xml" }
             ]
@@ -325,6 +340,118 @@ class accessors="true" singleton {
             "jsonLd"      : [],
             "links"       : []
         };
+    }
+
+    // --------------------------------------------------------------------
+    // Schema.org Organization + Person — SEO Phase 3
+    // --------------------------------------------------------------------
+
+    /**
+     * Build the schema.org Organization JSON-LD node from admin
+     * settings. Used as `publisher` on every Article + WebPage and
+     * as a standalone node on the home page.
+     *
+     *   org.legal_name        → name (falls back to site.title, then siteName arg)
+     *   org.logo_media_id     → logo (resolved via MediaService.urlFor)
+     *   org.contact_email     → contactPoint (Customer Service)
+     *   org.same_as           → sameAs[] (JSON-decoded)
+     *   social.facebook_publisher → appended to sameAs[]
+     *
+     * Returns the bare struct so callers can append it to a jsonLd
+     * array. Empty/missing settings are omitted from the struct
+     * rather than emitted as empty values.
+     */
+    struct function buildOrganizationJsonLd(
+        required string baseUrl,
+                 string siteName = ""
+    ) {
+        var legalName = orgLegalNameSetting();
+        if ( !len( legalName ) ) legalName = siteTitleSetting( arguments.siteName );
+
+        var ld = {
+            "@context" : "https://schema.org",
+            "@type"    : "Organization",
+            "name"     : legalName,
+            "url"      : arguments.baseUrl & "/"
+        };
+
+        var logoUrl = orgLogoUrl();
+        if ( len( logoUrl ) ) {
+            ld[ "logo" ] = ( left( logoUrl, 1 ) == "/" ) ? ( arguments.baseUrl & logoUrl ) : logoUrl;
+        }
+
+        var contactEmail = orgContactEmailSetting();
+        if ( len( contactEmail ) ) {
+            ld[ "contactPoint" ] = {
+                "@type"       : "ContactPoint",
+                "contactType" : "Customer Service",
+                "email"       : contactEmail
+            };
+        }
+
+        var sameAs = orgSameAsList();
+        // Pick up the FB publisher URL (Phase 2 setting) so org sameAs
+        // is the single source of truth across both renders.
+        var fbPub = facebookPublisherSetting();
+        if ( len( fbPub ) && !sameAs.find( fbPub ) ) sameAs.append( fbPub );
+        if ( sameAs.len() ) ld[ "sameAs" ] = sameAs;
+
+        return ld;
+    }
+
+    /**
+     * Build a schema.org Person JSON-LD node from a User entity.
+     * `sameAs[]` flattens the eight social URL columns via the
+     * existing User.socialUrls() helper. `image` resolves through
+     * UserService.profilePhotoUrl when the user has a photo.
+     *
+     * Empty fields are omitted rather than emitted blank. The
+     * returned struct is the bare Person — callers wrap it as
+     * an Article.author or append it to a jsonLd array directly.
+     */
+    struct function buildPersonJsonLd(
+        required any    user,
+        required string baseUrl
+    ) {
+        var ld = {
+            "@type" : "Person",
+            "name"  : arguments.user.getDisplayName() ?: ""
+        };
+
+        var bio = arguments.user.getBioShort() ?: "";
+        if ( len( bio ) ) ld[ "description" ] = bio;
+
+        // sameAs[] — all the populated social URLs.
+        var socials = arguments.user.socialUrls();
+        var sameAs  = [];
+        for ( var k in socials ) {
+            if ( len( socials[ k ] ) ) sameAs.append( socials[ k ] );
+        }
+        if ( sameAs.len() ) ld[ "sameAs" ] = sameAs;
+
+        // Profile photo, when set + author opted in. Absolute URL
+        // for crawler portability.
+        try {
+            if ( !!( arguments.user.getOgIncludeProfilePhoto() ?: 1 ) ) {
+                var photoUrl = variables.wirebox.getInstance( "UserService" ).profilePhotoUrl( arguments.user );
+                if ( len( photoUrl ?: "" ) ) {
+                    ld[ "image" ] = ( left( photoUrl, 1 ) == "/" ) ? ( arguments.baseUrl & photoUrl ) : photoUrl;
+                }
+            }
+        }
+        catch ( any e ) {
+            // Best-effort; never fail the meta build over a missing
+            // profile photo.
+        }
+
+        // Author public-page URL — only when author has opted in
+        // AND has a slug. Skipped silently otherwise.
+        var slug = arguments.user.getAuthorSlug() ?: "";
+        if ( len( slug ) && !!( arguments.user.getPublicAuthorPageEnabled() ?: 0 ) ) {
+            ld[ "url" ] = arguments.baseUrl & "/author/" & slug;
+        }
+
+        return ld;
     }
 
     // --------------------------------------------------------------------
@@ -467,6 +594,59 @@ class accessors="true" singleton {
         catch ( any e ) { return ""; }
     }
 
+    // SEO Phase 3 — org.* setting accessors.
+
+    private string function orgLegalNameSetting() {
+        try {
+            return settingService.get( "org.legal_name", "" ) ?: "";
+        }
+        catch ( any e ) { return ""; }
+    }
+
+    private string function orgContactEmailSetting() {
+        try {
+            return settingService.get( "org.contact_email", "" ) ?: "";
+        }
+        catch ( any e ) { return ""; }
+    }
+
+    /**
+     * Resolve the configured Organization logo URL by looking up
+     * the media row pointed to by `org.logo_media_id` and asking
+     * MediaService for the public URL. Empty when unset (id=0) or
+     * the media row is gone. Relative URLs ("/includes/...") are
+     * left alone here — buildOrganizationJsonLd absolutifies.
+     */
+    private string function orgLogoUrl() {
+        try {
+            var mediaId = val( settingService.get( "org.logo_media_id", 0 ) );
+            if ( mediaId <= 0 ) return "";
+            var media = variables.wirebox.getInstance( "Media" ).find( mediaId );
+            if ( isNull( media ) ) return "";
+            return variables.wirebox.getInstance( "MediaService" ).urlFor( media );
+        }
+        catch ( any e ) { return ""; }
+    }
+
+    /**
+     * Decode the JSON-encoded `org.same_as` setting into an array
+     * of URLs. Returns an empty array on missing / malformed JSON.
+     */
+    private array function orgSameAsList() {
+        try {
+            var raw = trim( settingService.get( "org.same_as", "[]" ) ?: "[]" );
+            if ( !len( raw ) ) return [];
+            var parsed = jsonDeserialize( raw );
+            if ( !isArray( parsed ) ) return [];
+            var out = [];
+            for ( var u in parsed ) {
+                if ( isSimpleValue( u ) && len( trim( u ) ) ) out.append( trim( u ) );
+            }
+            return out;
+        }
+        catch ( any e ) { return []; }
+    }
+
     /**
      * Per-post robots directive. `allow_indexing = 0` → noindex,
      * otherwise the default "index, follow". Draft/pending/
@@ -565,7 +745,9 @@ class accessors="true" singleton {
         required string canonical,
         required string imageUrl,
         required string siteName,
-        required string description
+        required string description,
+        required string baseUrl,
+                 any    authorEntity
     ) {
         var ld = {
             "@context"      : "https://schema.org",
@@ -580,18 +762,22 @@ class accessors="true" singleton {
         if ( len( arguments.description ) ) ld[ "description" ] = arguments.description;
         if ( len( arguments.imageUrl )    ) ld[ "image"       ] = arguments.imageUrl;
 
-        if ( len( arguments.authorName ) ) {
+        // SEO Phase 3 — when the caller passes the full author entity
+        // we emit an enriched Person with sameAs[] (8 social URLs),
+        // image, and bio. Falls back to the minimal Person when only
+        // a name is available (test paths, edge cases).
+        if ( !isNull( arguments.authorEntity ) ) {
+            ld[ "author" ] = buildPersonJsonLd( user = arguments.authorEntity, baseUrl = arguments.baseUrl );
+        } else if ( len( arguments.authorName ) ) {
             ld[ "author" ] = {
                 "@type" : "Person",
                 "name"  : arguments.authorName
             };
         }
-        if ( len( arguments.siteName ) ) {
-            ld[ "publisher" ] = {
-                "@type" : "Organization",
-                "name"  : arguments.siteName
-            };
-        }
+
+        // SEO Phase 3 — publisher is the full Organization node
+        // (logo, sameAs, contactPoint when set), not a stub.
+        ld[ "publisher" ] = buildOrganizationJsonLd( baseUrl = arguments.baseUrl, siteName = arguments.siteName );
 
         var publishedAt = arguments.post.getPublishedAt();
         if ( !isNull( publishedAt ) && len( publishedAt ?: "" ) ) {

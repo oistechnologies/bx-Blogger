@@ -1,0 +1,266 @@
+/**
+ * bx-Blogger — SeoOrganizationPersonSpec (SEO Phase 3)
+ *
+ * Validates the new Organization + Person JSON-LD builders and the
+ * Article-author enrichment that flows from a User entity into a
+ * Person node with sameAs[] (8 social URLs).
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc        = getInstance( "SeoService" );
+        variables.settingSvc = getInstance( "SettingService" );
+        variables.postSvc    = getInstance( "PostService" );
+
+        variables.savedSettings = {
+            "org.legal_name"    : variables.settingSvc.get( "org.legal_name", "" ),
+            "org.same_as"       : variables.settingSvc.get( "org.same_as", "[]" ),
+            "org.contact_email" : variables.settingSvc.get( "org.contact_email", "" ),
+            "site.title"        : variables.settingSvc.get( "site.title", "" )
+        };
+    }
+
+    function afterAll() {
+        for ( var k in variables.savedSettings ) {
+            variables.settingSvc.set( key = k, value = variables.savedSettings[ k ] ?: "", type = "string" );
+        }
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "SEO Phase 3 — Organization + Person JSON-LD", function() {
+
+            describe( "buildOrganizationJsonLd", function() {
+
+                it( "uses org.legal_name when set", function() {
+                    variables.settingSvc.set( key = "org.legal_name", value = "Phase3 Org Inc", type = "string" );
+
+                    var ld = variables.svc.buildOrganizationJsonLd(
+                        baseUrl  = "https://example.com",
+                        siteName = "Site"
+                    );
+
+                    expect( ld[ "@type" ] ).toBe( "Organization" );
+                    expect( ld.name ).toBe( "Phase3 Org Inc" );
+                    expect( ld.url  ).toBe( "https://example.com/" );
+                } );
+
+                it( "falls back to site.title then siteName arg when org.legal_name blank", function() {
+                    variables.settingSvc.set( key = "org.legal_name", value = "", type = "string" );
+                    variables.settingSvc.set( key = "site.title",     value = "Phase3 Site", type = "string" );
+
+                    var ld = variables.svc.buildOrganizationJsonLd(
+                        baseUrl  = "https://example.com",
+                        siteName = "Arg Fallback"
+                    );
+
+                    expect( ld.name ).toBe( "Phase3 Site" );
+                } );
+
+                it( "emits sameAs[] from JSON-encoded org.same_as", function() {
+                    variables.settingSvc.set(
+                        key   = "org.same_as",
+                        value = jsonSerialize( [ "https://twitter.com/p3", "https://github.com/p3" ] ),
+                        type  = "string"
+                    );
+
+                    var ld = variables.svc.buildOrganizationJsonLd(
+                        baseUrl  = "https://example.com",
+                        siteName = "Site"
+                    );
+
+                    expect( ld ).toHaveKey( "sameAs" );
+                    expect( ld.sameAs.len() ).toBeGTE( 2 );
+                    expect( ld.sameAs ).toInclude( "https://twitter.com/p3" );
+                    expect( ld.sameAs ).toInclude( "https://github.com/p3" );
+                } );
+
+                it( "emits contactPoint when org.contact_email is set", function() {
+                    variables.settingSvc.set( key = "org.contact_email", value = "phase3@example.com", type = "string" );
+
+                    var ld = variables.svc.buildOrganizationJsonLd(
+                        baseUrl  = "https://example.com",
+                        siteName = "Site"
+                    );
+
+                    expect( ld ).toHaveKey( "contactPoint" );
+                    expect( ld.contactPoint.email ).toBe( "phase3@example.com" );
+                } );
+
+                it( "skips contactPoint when org.contact_email is blank", function() {
+                    variables.settingSvc.set( key = "org.contact_email", value = "", type = "string" );
+
+                    var ld = variables.svc.buildOrganizationJsonLd(
+                        baseUrl  = "https://example.com",
+                        siteName = "Site"
+                    );
+
+                    expect( ld ).notToHaveKey( "contactPoint" );
+                } );
+
+            } );
+
+            describe( "buildPersonJsonLd", function() {
+
+                it( "produces Person with name + sameAs from social URLs", function() {
+                    var user = createTestUser( {
+                        "displayName" : "Phase3 Author",
+                        "twitterUrl"  : "https://twitter.com/p3author",
+                        "githubUrl"   : "https://github.com/p3author"
+                    } );
+
+                    var ld = variables.svc.buildPersonJsonLd(
+                        user    = user,
+                        baseUrl = "https://example.com"
+                    );
+
+                    expect( ld[ "@type" ] ).toBe( "Person" );
+                    expect( ld.name ).toBe( "Phase3 Author" );
+                    expect( ld ).toHaveKey( "sameAs" );
+                    expect( ld.sameAs ).toInclude( "https://twitter.com/p3author" );
+                    expect( ld.sameAs ).toInclude( "https://github.com/p3author" );
+                } );
+
+                it( "omits sameAs when user has no social URLs", function() {
+                    var user = createTestUser( { "displayName" : "Solo" } );
+
+                    var ld = variables.svc.buildPersonJsonLd(
+                        user    = user,
+                        baseUrl = "https://example.com"
+                    );
+
+                    expect( ld ).notToHaveKey( "sameAs" );
+                } );
+
+                it( "emits public author URL when slug + flag are set", function() {
+                    var user = createTestUser( {
+                        "displayName"             : "Public Author",
+                        "authorSlug"              : "public-author-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                        "publicAuthorPageEnabled" : 1
+                    } );
+
+                    var ld = variables.svc.buildPersonJsonLd(
+                        user    = user,
+                        baseUrl = "https://example.com"
+                    );
+
+                    expect( ld ).toHaveKey( "url" );
+                    expect( ld.url ).toInclude( "/author/public-author-" );
+                } );
+
+            } );
+
+            describe( "buildForPost integrates Organization publisher + Person author", function() {
+
+                it( "Article publisher is the full Organization node from settings", function() {
+                    variables.settingSvc.set( key = "org.legal_name", value = "Phase3 Publisher", type = "string" );
+
+                    var author = createTestUser( { "displayName" : "Author Without Socials" } );
+                    var post = variables.postSvc.create( {
+                        "authorId"     : author.getId(),
+                        "title"        : "Phase3 Article",
+                        "slug"         : "phase3-article-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                        "bodyMarkdown" : "Body."
+                    } );
+                    variables.postSvc.publish( post );
+
+                    var meta = variables.svc.buildForPost(
+                        post       = post,
+                        authorName = "Author Without Socials",
+                        baseUrl    = "https://example.com",
+                        siteName   = "Site"
+                    );
+
+                    var foundPublisher = false;
+                    for ( var ld in meta.jsonLd ) {
+                        if ( ld[ "@type" ] == "Article" && structKeyExists( ld, "publisher" ) ) {
+                            foundPublisher = true;
+                            expect( ld.publisher[ "@type" ] ).toBe( "Organization" );
+                            expect( ld.publisher.name ).toBe( "Phase3 Publisher" );
+                        }
+                    }
+                    expect( foundPublisher ).toBeTrue();
+                } );
+
+                it( "Article author is enriched Person when authorEntity passed", function() {
+                    var author = createTestUser( {
+                        "displayName" : "Rich Author",
+                        "twitterUrl"  : "https://twitter.com/richauthor"
+                    } );
+                    var post = variables.postSvc.create( {
+                        "authorId"     : author.getId(),
+                        "title"        : "Rich Article",
+                        "slug"         : "rich-article-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                        "bodyMarkdown" : "Body."
+                    } );
+                    variables.postSvc.publish( post );
+
+                    var meta = variables.svc.buildForPost(
+                        post         = post,
+                        authorName   = "Rich Author",
+                        baseUrl      = "https://example.com",
+                        siteName     = "Site",
+                        authorEntity = author
+                    );
+
+                    for ( var ld in meta.jsonLd ) {
+                        if ( ld[ "@type" ] == "Article" ) {
+                            expect( ld ).toHaveKey( "author" );
+                            expect( ld.author[ "@type" ] ).toBe( "Person" );
+                            expect( ld.author.name ).toBe( "Rich Author" );
+                            expect( ld.author ).toHaveKey( "sameAs" );
+                            expect( ld.author.sameAs ).toInclude( "https://twitter.com/richauthor" );
+                        }
+                    }
+                } );
+
+                it( "Article author falls back to minimal Person when only name passed", function() {
+                    var author = createTestUser();
+                    var post = variables.postSvc.create( {
+                        "authorId"     : author.getId(),
+                        "title"        : "Minimal Article",
+                        "slug"         : "minimal-article-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+                        "bodyMarkdown" : "Body."
+                    } );
+                    variables.postSvc.publish( post );
+
+                    var meta = variables.svc.buildForPost(
+                        post       = post,
+                        authorName = "Just A Name",
+                        baseUrl    = "https://example.com",
+                        siteName   = "Site"
+                        // no authorEntity
+                    );
+
+                    for ( var ld in meta.jsonLd ) {
+                        if ( ld[ "@type" ] == "Article" ) {
+                            expect( ld.author.name ).toBe( "Just A Name" );
+                            expect( ld.author ).notToHaveKey( "sameAs" );
+                        }
+                    }
+                } );
+
+            } );
+
+            describe( "buildForHome injects standalone Organization JSON-LD", function() {
+
+                it( "home.jsonLd contains both WebSite and Organization", function() {
+                    var meta = variables.svc.buildForHome(
+                        baseUrl  = "https://example.com",
+                        siteName = "Phase3 Home"
+                    );
+
+                    var types = meta.jsonLd.map( function( ld ) {
+                        return ld[ "@type" ] ?: "";
+                    } );
+                    expect( types ).toInclude( "WebSite" );
+                    expect( types ).toInclude( "Organization" );
+                } );
+
+            } );
+
+        } );
+    }
+
+}

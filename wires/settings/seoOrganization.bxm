@@ -1,0 +1,226 @@
+<bx:script>
+// @startWire
+/**
+ * settings.seoOrganization — SEO Phase 3 admin form for the
+ * Organization JSON-LD payload that ships on every public page.
+ *
+ *   org.legal_name      — Organization "name" (falls back to site.title)
+ *   org.logo_media_id   — Logo (Media row id, 0 = no logo)
+ *   org.contact_email   — ContactPoint email
+ *   org.same_as         — Array of social profile URLs (JSON in DB)
+ *
+ * The sameAs URLs live as a JSON-encoded array in the settings
+ * table because the SettingService doesn't have an array type.
+ * This wire renders + parses them as a newline-separated text list
+ * so the admin form stays a plain textarea — no JS dependency.
+ */
+
+property name="settingService" inject="SettingService";
+property name="cbauth"         inject="AuthenticationService@cbauth";
+
+data = {
+    "legalName"      : "",
+    "logoMediaId"    : 0,
+    "contactEmail"   : "",
+    "sameAsLines"    : "",  // newline-separated URLs, edited in textarea
+    "flashOk"        : "",
+    "flashError"     : ""
+};
+
+function onMount( event, rc, prc, params ) {
+    data.legalName    = settingService.get( "org.legal_name", "" );
+    data.logoMediaId  = settingService.get( "org.logo_media_id", 0 );
+    data.contactEmail = settingService.get( "org.contact_email", "" );
+
+    // Decode the JSON-encoded sameAs array into newline-separated text
+    // for editing.
+    var raw = trim( settingService.get( "org.same_as", "[]" ) ?: "[]" );
+    var urls = [];
+    try {
+        var parsed = jsonDeserialize( raw );
+        if ( isArray( parsed ) ) {
+            for ( var u in parsed ) {
+                if ( isSimpleValue( u ) && len( trim( u ) ) ) urls.append( trim( u ) );
+            }
+        }
+    }
+    catch ( any e ) {}
+    data.sameAsLines = arrayToList( urls, char( 10 ) );
+}
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function save() {
+    clearFlashes();
+    if ( !requirePerm() ) return;
+
+    var legalName = trim( data.legalName ?: "" );
+    if ( len( legalName ) > 200 ) {
+        data.flashError = "Legal name is too long (200 chars max).";
+        return;
+    }
+
+    var logoId = val( data.logoMediaId ?: 0 );
+
+    var contactEmail = trim( data.contactEmail ?: "" );
+    if ( len( contactEmail ) && !isValid( "email", contactEmail ) ) {
+        data.flashError = "Contact email is not a valid email address.";
+        return;
+    }
+
+    // Parse + validate sameAs URLs from the textarea.
+    var rawLines = data.sameAsLines ?: "";
+    var urls     = [];
+    var invalid  = [];
+    for ( var line in listToArray( rawLines, char( 10 ) ) ) {
+        var u = trim( line );
+        if ( !len( u ) ) continue;
+        if ( !reFindNoCase( "^https?://", u ) ) {
+            invalid.append( u );
+            continue;
+        }
+        if ( !urls.find( u ) ) urls.append( u );
+    }
+    if ( invalid.len() ) {
+        data.flashError = "Invalid sameAs URL(s) — must start with http:// or https://: " & invalid.toList( ", " );
+        return;
+    }
+    if ( urls.len() > 50 ) {
+        data.flashError = "Too many sameAs URLs (50 max).";
+        return;
+    }
+
+    settingService.set( key = "org.legal_name",    value = legalName,    type = "string" );
+    settingService.set( key = "org.logo_media_id", value = logoId,       type = "int"    );
+    settingService.set( key = "org.contact_email", value = contactEmail, type = "string" );
+    settingService.set( key = "org.same_as",       value = jsonSerialize( urls ), type = "string" );
+
+    onMount();
+    data.flashOk = "Organization settings saved. Public pages will pick up the new values on next request.";
+}
+
+// --------------------------------------------------------------------
+// Private
+// --------------------------------------------------------------------
+
+private void function clearFlashes() {
+    data.flashOk    = "";
+    data.flashError = "";
+}
+
+private boolean function requirePerm() {
+    var user = cbauth.getUser();
+    if ( user.hasPermission( "settings.manage" ) ) return true;
+    data.flashError = "You don't have permission to edit settings.";
+    return false;
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<div>
+    <bx:if len( args.flashOk )>
+        <div class="alert alert-success alert-dismissible">
+            #encodeForHTML( args.flashOk )#
+            <button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+        </div>
+    </bx:if>
+    <bx:if len( args.flashError )>
+        <div class="alert alert-danger alert-dismissible">
+            #encodeForHTML( args.flashError )#
+            <button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+        </div>
+    </bx:if>
+
+    <div class="row g-4">
+        <div class="col-12 col-xl-8">
+            <div class="card stat-card stat-card-primary">
+                <div class="card-header card-header-soft card-header-soft-primary">
+                    <span class="h6 mb-0">Organization (schema.org)</span>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted small mb-3">
+                        Drives the <code>publisher</code> node in every Article
+                        JSON-LD plus the standalone Organization JSON-LD on the
+                        home page. Google uses these signals for sitelinks
+                        logos and the knowledge panel.
+                    </p>
+
+                    <form wire:submit.prevent="save">
+                        <div class="mb-3">
+                            <label for="org-legal-name" class="form-label">Legal / display name</label>
+                            <input id="org-legal-name"
+                                   type="text"
+                                   class="form-control"
+                                   maxlength="200"
+                                   wire:model.blur="legalName"
+                                   placeholder="Falls back to Site title when blank">
+                            <div class="form-text">Drives Organization <code>name</code>. Empty = use the value from <a href="#event.buildLink( 'admin:Settings.defaults' )#">Site Defaults</a>.</div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="org-logo" class="form-label">Logo media ID</label>
+                            <input id="org-logo"
+                                   type="number"
+                                   class="form-control"
+                                   min="0"
+                                   max="9999999"
+                                   wire:model.blur="logoMediaId"
+                                   placeholder="0 = no logo emitted">
+                            <div class="form-text">Media row id of the Organization logo. <code>0</code> = no <code>logo</code> in JSON-LD. (Media picker UI lands in a later phase.)</div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="org-contact" class="form-label">Contact email</label>
+                            <input id="org-contact"
+                                   type="email"
+                                   class="form-control"
+                                   maxlength="320"
+                                   wire:model.blur="contactEmail"
+                                   placeholder="contact@yoursite.com">
+                            <div class="form-text">Optional. Drives <code>contactPoint.email</code> when set.</div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="org-sameas" class="form-label">Social profile URLs (sameAs)</label>
+                            <textarea id="org-sameas"
+                                      class="form-control font-monospace"
+                                      rows="6"
+                                      wire:model.blur="sameAsLines"
+                                      placeholder="One URL per line, e.g. https://twitter.com/yoursite"></textarea>
+                            <div class="form-text">One URL per line. These flow into the Organization <code>sameAs[]</code> array so Google can link your social profiles back to your site.</div>
+                        </div>
+
+                        <div class="d-flex gap-2">
+                            <button type="submit" class="btn btn-primary">Save</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12 col-xl-4">
+            <div class="card stat-card stat-card-info">
+                <div class="card-header card-header-soft card-header-soft-info">
+                    <span class="h6 mb-0">What this affects</span>
+                </div>
+                <div class="card-body small">
+                    <ul class="mb-0 ps-3">
+                        <li>Publisher node in every Article JSON-LD on post pages.</li>
+                        <li>Standalone Organization JSON-LD on the home page (powers Google sitelinks logo + knowledge panel).</li>
+                        <li>Publisher node on every WebPage JSON-LD on CMS pages.</li>
+                    </ul>
+                    <hr>
+                    <p class="text-muted mb-0">
+                        Verify rendered output with
+                        <a href="https://search.google.com/test/rich-results" target="_blank" rel="noopener">Google&rsquo;s Rich Results Test</a>
+                        once you save.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+</bx:output>

@@ -33,6 +33,7 @@
                         <time datetime="#dateTimeFormat( prc.post.getPublishedAt(), 'yyyy-mm-dd' )#">
                             #dateFormat( prc.post.getPublishedAt(), "mmm d, yyyy" )#
                         </time>
+                        #updatedSinceLabel( prc.post )#
                     </bx:if>
                     <bx:if ( prc.post.getReadingTimeMinutes() ?: 0 ) gt 0>
                         &middot; #prc.post.getReadingTimeMinutes()# min read
