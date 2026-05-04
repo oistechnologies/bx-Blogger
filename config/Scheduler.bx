@@ -103,6 +103,14 @@ class {
         task( "outbound-link-audit-weekly" )
             .call( function() { dispatchJob( "OutboundLinkAuditJob" ); } )
             .onMondays( "05:00" );
+
+        // Daily 04:30 — pull yesterday's GSC search analytics into
+        // `seo_search_analytics`. Job no-ops when GSC isn't
+        // connected so dev/install environments without a Google
+        // hookup don't see error noise.
+        task( "gsc-daily-sync" )
+            .call( function() { dispatchJob( "GscDailySyncJob" ); } )
+            .everyDayAt( "04:30" );
     }
 
     /**

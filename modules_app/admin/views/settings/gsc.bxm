@@ -1,0 +1,5 @@
+<bx:output>
+#view( view = "partials/heading", args = { "title" : "Google Search Console" } )#
+
+#wire( name = "settings.gscIntegration" )#
+</bx:output>

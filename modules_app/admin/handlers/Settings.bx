@@ -84,6 +84,91 @@ class extends="coldbox.system.EventHandler" {
         event.setView( view = "settings/outbound-links" );
     }
 
+    /**
+     * SEO Phase 14 — Google Search Console integration. Wire
+     * walks the operator through the OAuth flow, displays
+     * connection status, and surfaces the last-sync timestamp.
+     * Permission-gated to `seo.gsc.connect` (super_admin).
+     */
+    function gsc( event, rc, prc ) {
+        prc.pageTitle = "Google Search Console";
+        event.setView( view = "settings/gsc" );
+    }
+
+    /**
+     * OAuth callback target. Google redirects here with `code`
+     * and `state` after the operator approves access. We verify
+     * `state` matches the freshly-issued CSRF nonce, exchange
+     * the code for refresh + access tokens via GscService, and
+     * redirect back to the connect wire with a success flash.
+     *
+     * Failures (CSRF mismatch, OAuth denial, network error)
+     * surface a flash.error and bounce back to the connect
+     * wire — the operator sees what went wrong without a 500.
+     */
+    function gscCallback( event, rc, prc ) {
+        var user = getInstance( "AuthenticationService@cbauth" ).getUser();
+        if ( !user.hasPermission( "seo.gsc.connect" ) ) {
+            relocate( url = "/admin" );
+            return;
+        }
+
+        var code  = trim( rc.code  ?: "" );
+        var state = trim( rc.state ?: "" );
+        var err   = trim( rc.error ?: "" );
+
+        if ( len( err ) ) {
+            flash.put( "error", "GSC connection failed: " & err );
+            relocate( url = "/admin/settings/gsc" );
+            return;
+        }
+
+        // CSRF — the connect wire stamps a nonce into a session
+        // entry before redirecting; Google echoes it back in
+        // `state`. Constant-time compare.
+        var expected = session.gsc_oauth_state ?: "";
+        if ( !len( expected ) || compare( state, expected ) != 0 ) {
+            flash.put( "error", "GSC OAuth state mismatch — try the connect flow again." );
+            relocate( url = "/admin/settings/gsc" );
+            return;
+        }
+        structDelete( session, "gsc_oauth_state" );
+
+        if ( !len( code ) ) {
+            flash.put( "error", "GSC OAuth callback missing authorization code." );
+            relocate( url = "/admin/settings/gsc" );
+            return;
+        }
+
+        try {
+            var redirectUri = buildGscRedirectUri( event );
+            getInstance( "GscService" ).exchangeCodeForTokens( code = code, redirectUri = redirectUri );
+            flash.put( "notice", "Connected to Google Search Console." );
+        }
+        catch ( any e ) {
+            flash.put( "error", "GSC token exchange failed: " & e.message );
+        }
+        relocate( url = "/admin/settings/gsc" );
+    }
+
+    /**
+     * Build the absolute redirect URI for the OAuth flow. Google
+     * requires this match the URI registered in the OAuth client
+     * configuration — operators typically register
+     * `${APP_URL}/admin/settings/gsc/callback` in the Google
+     * Cloud Console.
+     */
+    private string function buildGscRedirectUri( required any event ) {
+        var appUrl = getSystemSetting( "APP_URL", "" );
+        if ( !len( appUrl ) ) {
+            // Fall back to the request's own scheme + host so dev
+            // environments work even before APP_URL is set.
+            appUrl = arguments.event.getHTTPHeader( "X-Forwarded-Proto", "http" ) & "://" & arguments.event.getHTTPHeader( "Host", "localhost:8080" );
+        }
+        if ( right( appUrl, 1 ) == "/" ) appUrl = left( appUrl, len( appUrl ) - 1 );
+        return appUrl & "/admin/settings/gsc/callback";
+    }
+
     function ogImage( event, rc, prc ) {
         prc.pageTitle = "OG Image Settings";
         event.setView( view = "settings/og-image" );

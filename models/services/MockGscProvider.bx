@@ -1,0 +1,90 @@
+/**
+ * bx-Blogger — MockGscProvider (SEO Phase 14)
+ *
+ * Stand-in for the live Google Search Console API. Returns
+ * deterministic-ish rows seeded from each post's id so dev
+ * containers + the integration spec render the dashboard +
+ * editor Performance tab without a real GSC connection.
+ *
+ * Activated by `gsc.provider = "mock"` in settings; the
+ * GscService delegates to this when the toggle is on.
+ *
+ * The shape of returned rows matches Google's own — `keys`
+ * array of strings, `clicks`, `impressions`, `ctr`, `position`
+ * — so the calling sync job is provider-agnostic.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox" inject="wirebox";
+
+    /**
+     * Mirror of GscService.searchAnalytics() but returns
+     * fabricated rows. Three queries per post + a homepage
+     * row, with click/impression numbers seeded from the
+     * post id so re-runs are reproducible.
+     */
+    array function searchAnalytics(
+        required string  startDate,
+        required string  endDate,
+                 array   dimensions = [ "page", "query" ],
+                 numeric rowLimit   = 1000,
+                 array   filters    = []
+    ) {
+        var qb = wirebox.getInstance( "QueryBuilder@qb" );
+        var posts = qb.newQuery().from( "posts" )
+            .where( "status", "published" )
+            .where( "post_type", "post" )
+            .select( [ "id", "slug", "title" ] )
+            .limit( 50 )
+            .get();
+
+        var baseUrl = "https://example.com";
+        var rows    = [];
+
+        // Homepage rows (no slug).
+        rows.append( {
+            "keys"        : [ baseUrl & "/", "bx-blogger" ],
+            "clicks"      : 12,
+            "impressions" : 240,
+            "ctr"         : 0.05,
+            "position"    : 4.2
+        } );
+
+        for ( var p in posts ) {
+            // Seed from post id so the same post produces stable
+            // numbers across runs without needing a fixed RNG seed.
+            var seed       = val( p.id );
+            var pageUrl    = baseUrl & "/blog/" & p.slug;
+            var titleQuery = lcase( reReplace( p.title ?: "post " & p.id, "[^A-Za-z0-9 ]", "", "all" ) );
+            if ( !len( titleQuery ) ) titleQuery = "post " & p.id;
+
+            // Three rows per post: a head term + a long-tail variant + a generic.
+            rows.append( {
+                "keys"        : [ pageUrl, titleQuery ],
+                "clicks"      : 8 + ( seed % 30 ),
+                "impressions" : 120 + ( seed % 200 ),
+                "ctr"         : 0.04 + ( ( seed % 7 ) / 100 ),
+                "position"    : 3 + ( seed % 12 )
+            } );
+            rows.append( {
+                "keys"        : [ pageUrl, "how to " & titleQuery ],
+                "clicks"      : 2 + ( seed % 10 ),
+                "impressions" : 60 + ( seed % 100 ),
+                "ctr"         : 0.02 + ( ( seed % 5 ) / 100 ),
+                "position"    : 5 + ( seed % 14 )
+            } );
+            rows.append( {
+                "keys"        : [ pageUrl, "boxlang blog" ],
+                "clicks"      : 1 + ( seed % 5 ),
+                "impressions" : 40 + ( seed % 80 ),
+                "ctr"         : 0.01 + ( ( seed % 4 ) / 100 ),
+                "position"    : 8 + ( seed % 18 )
+            } );
+
+            if ( rows.len() >= arguments.rowLimit ) break;
+        }
+
+        return rows;
+    }
+
+}

@@ -1,0 +1,507 @@
+/**
+ * bx-Blogger — GscService (SEO Phase 14)
+ *
+ * Façade over Google Search Console's `searchanalytics/query`
+ * API. Handles OAuth 2.0 refresh-token bookkeeping, executes
+ * the analytics query, and wraps higher-level reads (top queries
+ * for a single post, 28-day site-wide rollup) the editor +
+ * dashboard need.
+ *
+ * Provider-pluggable: setting `gsc.provider = "mock"` swaps in
+ * MockGscProvider which returns deterministic test data without
+ * any HTTP. Useful for the dev container and the integration
+ * spec — neither has a verified GSC property to point at.
+ *
+ * Why a service vs a job-only integration: the editor's
+ * Performance tab + the dashboard scorecards both need fast
+ * reads. Putting the API call in a job and the cached read
+ * in a service means the live request paths only ever touch
+ * the local `seo_search_analytics` table.
+ *
+ * OAuth flow:
+ *   1. Operator pastes client_id + client_secret in the GSC
+ *      connection wire and clicks "Connect".
+ *   2. The wire builds the auth URL and redirects to Google.
+ *   3. Google redirects back to /admin/settings/gsc/callback
+ *      with `code=...`. Settings.gscCallback exchanges the
+ *      code for refresh_token + access_token and stores both.
+ *   4. Subsequent API calls go through `currentAccessToken()`,
+ *      which auto-refreshes when the cached token is expiring
+ *      within 60 seconds.
+ *
+ * Quota: GSC free tier is 1200 requests/min/property. The
+ * daily sync job throttles to ~60 rps and backs off on 429.
+ */
+class accessors="true" singleton {
+
+    property name="settingService" inject="SettingService";
+    property name="wirebox"        inject="wirebox";
+    property name="log"            inject="logbox:logger:{this}";
+
+    // Google's OAuth + API endpoints. Hardcoded — these are
+    // public, stable, and an operator override would just be
+    // a misconfiguration vector.
+    variables.authUrl     = "https://accounts.google.com/o/oauth2/v2/auth";
+    variables.tokenUrl    = "https://oauth2.googleapis.com/token";
+    variables.apiBase     = "https://searchconsole.googleapis.com/v1";
+    variables.scope       = "https://www.googleapis.com/auth/webmasters.readonly";
+    variables.requestTimeoutS = 30;
+
+    // --------------------------------------------------------------------
+    // OAuth bookkeeping
+    // --------------------------------------------------------------------
+
+    /**
+     * Build the authorization URL. The operator pastes their
+     * client_id, picks a redirect_uri, and we kick them to
+     * Google with the `webmasters.readonly` scope.
+     *
+     * `state` is the operator's CSRF token — Google echoes it
+     * back on the callback so we can verify the redirect
+     * originated from our own initiation.
+     */
+    string function buildAuthUrl( required string redirectUri, required string state ) {
+        var clientId = trim( settingService.get( "gsc.oauth_client_id", "" ) ?: "" );
+        if ( !len( clientId ) ) {
+            throw( type = "bxBlogger.GscNotConfigured", message = "Set gsc.oauth_client_id before initiating the auth flow." );
+        }
+        return variables.authUrl
+             & "?client_id="     & urlEncodedFormat( clientId )
+             & "&redirect_uri="  & urlEncodedFormat( arguments.redirectUri )
+             & "&response_type=code"
+             & "&scope="         & urlEncodedFormat( variables.scope )
+             & "&access_type=offline"
+             & "&prompt=consent"
+             & "&state="         & urlEncodedFormat( arguments.state );
+    }
+
+    /**
+     * Exchange an authorization code for the refresh + access
+     * token pair. Called by Settings.gscCallback after Google
+     * redirects back. Persists both tokens via SettingService.
+     */
+    void function exchangeCodeForTokens( required string code, required string redirectUri ) {
+        if ( provider() == "mock" ) {
+            settingService.set( key = "gsc.refresh_token",    value = "mock-refresh-token", type = "string" );
+            settingService.set( key = "gsc.access_token",     value = "mock-access-token",  type = "string" );
+            settingService.set( key = "gsc.token_expires_at", value = "9999999999",         type = "int"    );
+            return;
+        }
+
+        var clientId     = trim( settingService.get( "gsc.oauth_client_id",     "" ) ?: "" );
+        var clientSecret = trim( settingService.get( "gsc.oauth_client_secret", "" ) ?: "" );
+        if ( !len( clientId ) || !len( clientSecret ) ) {
+            throw( type = "bxBlogger.GscNotConfigured", message = "OAuth client_id/secret must be set before exchanging the code." );
+        }
+
+        var body = "grant_type=authorization_code"
+                & "&code="          & urlEncodedFormat( arguments.code )
+                & "&client_id="     & urlEncodedFormat( clientId )
+                & "&client_secret=" & urlEncodedFormat( clientSecret )
+                & "&redirect_uri="  & urlEncodedFormat( arguments.redirectUri );
+
+        var response = postForm( variables.tokenUrl, body );
+        if ( response.statusCode lt 200 || response.statusCode gte 300 ) {
+            throw( type = "bxBlogger.GscOAuthError", message = "Token exchange failed: " & response.body );
+        }
+        var parsed = jsonDeserialize( response.body );
+        var refresh = parsed.refresh_token ?: "";
+        var access  = parsed.access_token  ?: "";
+        var expIn   = val( parsed.expires_in ?: 0 );
+        if ( !len( refresh ) || !len( access ) ) {
+            throw( type = "bxBlogger.GscOAuthError", message = "Token exchange response missing refresh_token or access_token." );
+        }
+        var expAt = int( now().toUnixTimestamp() ) + int( expIn );
+
+        settingService.set( key = "gsc.refresh_token",    value = refresh, type = "string" );
+        settingService.set( key = "gsc.access_token",     value = access,  type = "string" );
+        settingService.set( key = "gsc.token_expires_at", value = expAt,   type = "int"    );
+    }
+
+    /**
+     * Returns a valid access token. Refreshes from the stored
+     * refresh token if the cached access token is missing or
+     * expiring within 60 seconds. Throws GscNotConnected when
+     * no refresh token exists yet (operator hasn't run the
+     * connect flow).
+     */
+    string function currentAccessToken() {
+        if ( provider() == "mock" ) return "mock-access-token";
+
+        var access  = trim( settingService.get( "gsc.access_token", "" ) ?: "" );
+        var expAt   = val( settingService.get( "gsc.token_expires_at", 0 ) );
+        var nowEpoch = int( now().toUnixTimestamp() );
+
+        if ( len( access ) && expAt > ( nowEpoch + 60 ) ) {
+            return access;
+        }
+        return refreshAccessToken();
+    }
+
+    string function refreshAccessToken() {
+        if ( provider() == "mock" ) return "mock-access-token";
+
+        var refresh      = trim( settingService.get( "gsc.refresh_token",       "" ) ?: "" );
+        var clientId     = trim( settingService.get( "gsc.oauth_client_id",     "" ) ?: "" );
+        var clientSecret = trim( settingService.get( "gsc.oauth_client_secret", "" ) ?: "" );
+        if ( !len( refresh ) ) {
+            throw( type = "bxBlogger.GscNotConnected", message = "GSC is not connected. Visit /admin/settings/gsc and complete the OAuth flow." );
+        }
+        if ( !len( clientId ) || !len( clientSecret ) ) {
+            throw( type = "bxBlogger.GscNotConfigured", message = "OAuth client_id/secret missing." );
+        }
+
+        var body = "grant_type=refresh_token"
+                & "&refresh_token=" & urlEncodedFormat( refresh )
+                & "&client_id="     & urlEncodedFormat( clientId )
+                & "&client_secret=" & urlEncodedFormat( clientSecret );
+
+        var response = postForm( variables.tokenUrl, body );
+        if ( response.statusCode lt 200 || response.statusCode gte 300 ) {
+            throw( type = "bxBlogger.GscOAuthError", message = "Token refresh failed: " & response.body );
+        }
+        var parsed = jsonDeserialize( response.body );
+        var access = parsed.access_token ?: "";
+        var expIn  = val( parsed.expires_in ?: 0 );
+        if ( !len( access ) ) {
+            throw( type = "bxBlogger.GscOAuthError", message = "Token refresh response missing access_token." );
+        }
+        var expAt = int( now().toUnixTimestamp() ) + int( expIn );
+        settingService.set( key = "gsc.access_token",     value = access, type = "string" );
+        settingService.set( key = "gsc.token_expires_at", value = expAt,  type = "int"    );
+        return access;
+    }
+
+    /**
+     * High-level connection status for the admin connect wire.
+     */
+    struct function status() {
+        var prov         = provider();
+        var clientId     = trim( settingService.get( "gsc.oauth_client_id",     "" ) ?: "" );
+        var clientSecret = trim( settingService.get( "gsc.oauth_client_secret", "" ) ?: "" );
+        var refresh      = trim( settingService.get( "gsc.refresh_token",       "" ) ?: "" );
+        var propertyUrl  = trim( settingService.get( "gsc.property_url",        "" ) ?: "" );
+        var lastSync     = trim( settingService.get( "gsc.last_sync_at",        "" ) ?: "" );
+
+        return {
+            "provider"      : prov,
+            "configured"    : len( clientId ) gt 0 && len( clientSecret ) gt 0,
+            "connected"     : prov == "mock" ? true : len( refresh ) gt 0,
+            "propertyUrl"   : propertyUrl,
+            "hasProperty"   : len( propertyUrl ) gt 0,
+            "lastSyncAt"    : lastSync
+        };
+    }
+
+    // --------------------------------------------------------------------
+    // searchanalytics/query
+    // --------------------------------------------------------------------
+
+    /**
+     * Run a `searchanalytics/query` against the configured
+     * GSC property. Returns the raw `rows` array Google returns.
+     *
+     * @startDate / @endDate  — yyyy-mm-dd strings.
+     * @dimensions            — array of "page" | "query" | "device" | "country" | "date".
+     * @rowLimit              — max 25000 per Google.
+     */
+    array function searchAnalytics(
+        required string  startDate,
+        required string  endDate,
+                 array   dimensions = [ "page", "query" ],
+                 numeric rowLimit   = 1000,
+                 array   filters    = []
+    ) {
+        if ( provider() == "mock" ) {
+            return mockProvider().searchAnalytics(
+                startDate  = arguments.startDate,
+                endDate    = arguments.endDate,
+                dimensions = arguments.dimensions,
+                rowLimit   = arguments.rowLimit,
+                filters    = arguments.filters
+            );
+        }
+
+        var propertyUrl = trim( settingService.get( "gsc.property_url", "" ) ?: "" );
+        if ( !len( propertyUrl ) ) {
+            throw( type = "bxBlogger.GscNotConfigured", message = "Set gsc.property_url to your verified GSC property before querying." );
+        }
+
+        var token = currentAccessToken();
+        var endpoint = variables.apiBase
+                     & "/sites/" & urlEncodedFormat( propertyUrl )
+                     & "/searchAnalytics/query";
+
+        var bodyStruct = {
+            "startDate"  : arguments.startDate,
+            "endDate"    : arguments.endDate,
+            "dimensions" : arguments.dimensions,
+            "rowLimit"   : arguments.rowLimit
+        };
+        if ( arguments.filters.len() ) {
+            bodyStruct[ "dimensionFilterGroups" ] = [ { "filters" : arguments.filters } ];
+        }
+
+        var response = postJson( endpoint, jsonSerialize( bodyStruct ), token );
+        if ( response.statusCode == 429 ) {
+            throw( type = "bxBlogger.GscQuotaExceeded", message = "GSC API rate-limited (429). Backing off." );
+        }
+        if ( response.statusCode lt 200 || response.statusCode gte 300 ) {
+            throw( type = "bxBlogger.GscApiError", message = "GSC API call failed (" & response.statusCode & "): " & response.body );
+        }
+        var parsed = jsonDeserialize( response.body );
+        return parsed.rows ?: [];
+    }
+
+    // --------------------------------------------------------------------
+    // Convenience reads — pull from the cached seo_search_analytics table
+    // --------------------------------------------------------------------
+
+    /**
+     * Top N queries for a single post, last `days` days. Reads
+     * from the local table, not Google.
+     */
+    array function topQueriesForPost( required numeric postId, numeric days = 28, numeric n = 10 ) {
+        // Use queryExecute directly — qb's selectRaw + groupBy +
+        // alias-named-same-as-column (e.g. SUM(clicks) AS clicks)
+        // produced an empty result set on this BoxLang/qb pair
+        // even when the underlying SQL was valid. Going around qb
+        // here keeps the read deterministic.
+        var since = dateFormat( dateAdd( "d", -arguments.days, now() ), "yyyy-mm-dd" );
+        var sql = "
+            SELECT query                AS q,
+                   SUM( clicks )        AS clicks,
+                   SUM( impressions )   AS impressions,
+                   AVG( ctr )           AS ctr,
+                   AVG( position )      AS position
+              FROM seo_search_analytics
+             WHERE post_id = ?
+               AND date >= ?
+               AND query <> ''
+             GROUP BY query
+             ORDER BY SUM( clicks ) DESC, SUM( impressions ) DESC
+             LIMIT " & int( arguments.n );
+        var qry = queryExecute( sql, [ arguments.postId, since ] );
+        var out = [];
+        for ( var r in qry ) {
+            out.append( {
+                "query"       : r.q,
+                "clicks"      : val( r.clicks ),
+                "impressions" : val( r.impressions ),
+                "ctr"         : val( r.ctr ),
+                "position"    : val( r.position )
+            } );
+        }
+        return out;
+    }
+
+    /**
+     * 28-day site-wide rollup for the dashboard scorecards.
+     */
+    struct function siteRollup( numeric days = 28 ) {
+        var qb = wirebox.getInstance( "QueryBuilder@qb" );
+        var row = qb.newQuery().from( "seo_search_analytics" )
+            .where( "date", ">=", dateFormat( dateAdd( "d", -arguments.days, now() ), "yyyy-mm-dd" ) )
+            .selectRaw( "
+                COALESCE( SUM( clicks ),      0 ) AS clicks,
+                COALESCE( SUM( impressions ), 0 ) AS impressions,
+                COALESCE( AVG( ctr ),         0 ) AS ctr,
+                COALESCE( AVG( position ),    0 ) AS position
+            " )
+            .first();
+        return {
+            "clicks"       : val( row.clicks      ?: 0 ),
+            "impressions"  : val( row.impressions ?: 0 ),
+            "ctr"          : val( row.ctr         ?: 0 ),
+            "position"     : val( row.position    ?: 0 )
+        };
+    }
+
+    /**
+     * Top performing posts by click volume in the last `days`
+     * window. Powers the dashboard's "Top performing post"
+     * scorecard.
+     */
+    array function topPosts( numeric days = 28, numeric n = 5 ) {
+        var qb = wirebox.getInstance( "QueryBuilder@qb" );
+        return qb.newQuery().from( "seo_search_analytics AS s" )
+            .leftJoin( "posts AS p", "p.id", "s.post_id" )
+            .where( "s.date", ">=", dateFormat( dateAdd( "d", -arguments.days, now() ), "yyyy-mm-dd" ) )
+            .whereNotNull( "s.post_id" )
+            .selectRaw( "
+                s.post_id,
+                p.title AS title,
+                p.slug  AS slug,
+                SUM( s.clicks )      AS clicks,
+                SUM( s.impressions ) AS impressions
+            " )
+            .groupBy( "s.post_id" )
+            .groupBy( "p.title" )
+            .groupBy( "p.slug" )
+            .orderByRaw( "clicks DESC" )
+            .limit( arguments.n )
+            .get();
+    }
+
+    /**
+     * UPSERT a single row into seo_search_analytics. Called by
+     * the daily sync job. Resolves `page` URL → post_id when
+     * the path matches a known /blog/{slug} entry.
+     */
+    void function recordRow(
+        required string date,
+        required string pagePath,
+                 string query = "",
+                 numeric clicks = 0,
+                 numeric impressions = 0,
+                 numeric ctr = 0,
+                 numeric position = 0
+    ) {
+        var qb = wirebox.getInstance( "QueryBuilder@qb" );
+        var postId = resolvePostId( arguments.pagePath );
+
+        var existing = qb.newQuery().from( "seo_search_analytics" )
+            .where( "date",      arguments.date )
+            .where( "page_path", arguments.pagePath )
+            .where( "query",     arguments.query )
+            .first();
+
+        var payload = {
+            "post_id"     : isNull( postId ) ? javaCast( "null", "" ) : postId,
+            "clicks"      : int( arguments.clicks ),
+            "impressions" : int( arguments.impressions ),
+            "ctr"         : arguments.ctr,
+            "position"    : arguments.position,
+            "fetched_at"  : dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" )
+        };
+
+        if ( !isNull( existing ) && !( isStruct( existing ) && structIsEmpty( existing ) ) ) {
+            qb.newQuery().from( "seo_search_analytics" )
+                .where( "id", existing.id )
+                .update( payload );
+        }
+        else {
+            payload[ "date" ]      = arguments.date;
+            payload[ "page_path" ] = arguments.pagePath;
+            payload[ "query" ]     = arguments.query;
+            qb.newQuery().from( "seo_search_analytics" ).insert( payload );
+        }
+    }
+
+    /**
+     * Map a GSC `page` URL to a local post_id when it matches
+     * a published post slug. NULL when the path is non-post
+     * (homepage, /admin, theme demo, etc.) — those rows still
+     * land for site-wide rollups but aren't shown in the
+     * editor's per-post tab.
+     */
+    private any function resolvePostId( required string pagePath ) {
+        var path = arguments.pagePath;
+        // Pull /blog/{slug} or /{slug}.
+        var m = reFindNoCase( "^https?://[^/]+(/.*)$", path, 1, true );
+        if ( m.match.len() >= 2 ) path = m.match[ 2 ];
+        if ( !len( path ) ) return javaCast( "null", "" );
+
+        var slug = "";
+        if ( reFindNoCase( "^/blog/[^/]+/?$", path ) > 0 ) {
+            slug = reReplace( path, "^/blog/([^/]+)/?$", "\1", "one" );
+        } else if ( reFindNoCase( "^/[^/]+/?$", path ) > 0 ) {
+            slug = reReplace( path, "^/([^/]+)/?$", "\1", "one" );
+        }
+        slug = trim( slug );
+        if ( !len( slug ) ) return javaCast( "null", "" );
+
+        try {
+            var qb  = wirebox.getInstance( "QueryBuilder@qb" );
+            var row = qb.newQuery().from( "posts" )
+                .where( "slug", slug )
+                .selectRaw( "id" )
+                .first();
+            if ( !isNull( row ) && !( isStruct( row ) && structIsEmpty( row ) ) ) {
+                return val( row.id );
+            }
+        }
+        catch ( any e ) {}
+        return javaCast( "null", "" );
+    }
+
+    // --------------------------------------------------------------------
+    // Provider plumbing
+    // --------------------------------------------------------------------
+
+    private string function provider() {
+        return trim( settingService.get( "gsc.provider", "live" ) ?: "live" );
+    }
+
+    private any function mockProvider() {
+        return wirebox.getInstance( "MockGscProvider" );
+    }
+
+    // --------------------------------------------------------------------
+    // HTTP plumbing — Java HttpClient (matches the worker-thread
+    // pattern used in PingSearchEnginesJob / WebSubPingJob /
+    // OutboundLinkService)
+    // --------------------------------------------------------------------
+
+    private struct function postForm( required string endpoint, required string body ) {
+        return sendRequest(
+            endpoint    = arguments.endpoint,
+            body        = arguments.body,
+            method      = "POST",
+            contentType = "application/x-www-form-urlencoded; charset=utf-8",
+            authToken   = ""
+        );
+    }
+
+    private struct function postJson( required string endpoint, required string body, required string authToken ) {
+        return sendRequest(
+            endpoint    = arguments.endpoint,
+            body        = arguments.body,
+            method      = "POST",
+            contentType = "application/json; charset=utf-8",
+            authToken   = arguments.authToken
+        );
+    }
+
+    private struct function sendRequest(
+        required string endpoint,
+        required string body,
+        required string method,
+        required string contentType,
+                 string authToken = ""
+    ) {
+        var HttpClient   = createObject( "java", "java.net.http.HttpClient" );
+        var HttpRequest  = createObject( "java", "java.net.http.HttpRequest" );
+        var BodyPubs     = createObject( "java", "java.net.http.HttpRequest$BodyPublishers" );
+        var BodyHandlers = createObject( "java", "java.net.http.HttpResponse$BodyHandlers" );
+        var URI          = createObject( "java", "java.net.URI" );
+        var Duration     = createObject( "java", "java.time.Duration" );
+
+        var client = HttpClient.newBuilder()
+            .connectTimeout( Duration.ofSeconds( javaCast( "long", variables.requestTimeoutS ) ) )
+            .build();
+
+        var builder = HttpRequest.newBuilder()
+            .uri( URI.init( arguments.endpoint ) )
+            .timeout( Duration.ofSeconds( javaCast( "long", variables.requestTimeoutS ) ) )
+            .header( "Content-Type", arguments.contentType )
+            .header( "Accept",       "application/json" );
+
+        if ( len( arguments.authToken ) ) {
+            builder.header( "Authorization", "Bearer " & arguments.authToken );
+        }
+
+        if ( arguments.method == "POST" ) {
+            builder.POST( BodyPubs.ofString( arguments.body ) );
+        } else {
+            builder.GET();
+        }
+
+        var res = client.send( builder.build(), BodyHandlers.ofString() );
+        return {
+            "statusCode" : res.statusCode(),
+            "body"       : res.body() ?: ""
+        };
+    }
+
+}

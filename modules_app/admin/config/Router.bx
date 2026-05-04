@@ -51,6 +51,12 @@ class {
         route( "seo/mark-reviewed" ).to( "Seo.markReviewed" );
         route( "seo" ).to( "Seo.index" );
 
+        // SEO Phase 14 — Google Search Console connection wire +
+        // OAuth callback. Callback URL is what operators register
+        // in the Google Cloud Console for their OAuth client.
+        route( "settings/gsc/callback" ).to( "Settings.gscCallback" );
+        route( "settings/gsc" ).to( "Settings.gsc" );
+
         // Phase UX — self-service account lives inside the admin shell
         // (previously /account at the app root). Specific sub-routes
         // first so the base /admin/account GET/POST pair doesn't

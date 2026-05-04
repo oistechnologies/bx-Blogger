@@ -26,6 +26,7 @@ property name="aiService"            inject="AiAssistantService";
 property name="auditService"         inject="SeoAuditService";
 property name="auditAgentService"    inject="SeoAuditAgentService";
 property name="outboundLinkService"  inject="OutboundLinkService";
+property name="gscService"           inject="GscService";
 property name="settingService"       inject="SettingService";
 property name="aiImageService"       inject="AiImageService";
 property name="themeService"         inject="ThemeService";
@@ -91,6 +92,8 @@ data = {
     "showLinkHealth"     : false,
     "linkHealthBusy"     : false,
     "linkHealthError"    : "",
+    // SEO Phase 14 — GSC performance modal state
+    "showPerformance"    : false,
     // 2.I AI image-gen state
     "showImageModal"  : false,
     "imagePrompt"     : "",
@@ -972,6 +975,57 @@ function auditOutboundLinksNow() {
     }
     finally {
         data.linkHealthBusy = false;
+    }
+}
+
+// --------------------------------------------------------------------
+// SEO Phase 14 — GSC search-performance tab
+// --------------------------------------------------------------------
+
+function openPerformance()  { data.showPerformance = true;  }
+function closePerformance() { data.showPerformance = false; }
+
+/**
+ * Top 10 queries for this post in the last 28 days. Reads
+ * from `seo_search_analytics` (populated by GscDailySyncJob);
+ * empty when the post has never appeared in GSC data or the
+ * sync hasn't run yet.
+ */
+array function performanceQueries() {
+    var pid = val( data.postId ?: 0 );
+    if ( pid <= 0 ) return [];
+    try { return gscService.topQueriesForPost( postId = pid, days = 28, n = 10 ); }
+    catch ( any e ) { return []; }
+}
+
+/**
+ * 28-day rollup for THIS post — totals shown in the
+ * Performance modal header.
+ */
+struct function performanceRollup() {
+    var pid = val( data.postId ?: 0 );
+    if ( pid <= 0 ) return { clicks : 0, impressions : 0, ctr : 0, position : 0 };
+    try {
+        var qb  = getInstance( "QueryBuilder@qb" );
+        var row = qb.newQuery().from( "seo_search_analytics" )
+            .where( "post_id", pid )
+            .where( "date", ">=", dateFormat( dateAdd( "d", -28, now() ), "yyyy-mm-dd" ) )
+            .selectRaw( "
+                COALESCE( SUM( clicks ),      0 ) AS clicks,
+                COALESCE( SUM( impressions ), 0 ) AS impressions,
+                COALESCE( AVG( ctr ),         0 ) AS ctr,
+                COALESCE( AVG( position ),    0 ) AS position
+            " )
+            .first();
+        return {
+            "clicks"      : val( row.clicks      ?: 0 ),
+            "impressions" : val( row.impressions ?: 0 ),
+            "ctr"         : val( row.ctr         ?: 0 ),
+            "position"    : val( row.position    ?: 0 )
+        };
+    }
+    catch ( any e ) {
+        return { clicks : 0, impressions : 0, ctr : 0, position : 0 };
     }
 }
 
@@ -2273,6 +2327,12 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 									</bx:if>
 								</button>
 								<button type="button"
+								        class="btn btn-sm btn-outline-secondary"
+								        wire:click="openPerformance"
+								        title="Search-engine performance — top queries, clicks, impressions">
+									<i class="bi bi-graph-up me-1"></i> Performance
+								</button>
+								<button type="button"
 								        class="btn btn-sm btn-outline-primary"
 								        wire:click="openAuditPanel"
 								        title="Open the AI SEO Audit panel">
@@ -2862,6 +2922,88 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 					</div>
 					<div class="modal-footer">
 						<button type="button" class="btn btn-outline-secondary" wire:click="closeLinkHealth">Close</button>
+					</div>
+				</div>
+			</div>
+		</div>
+	</bx:if>
+
+	<!--- SEO Phase 14 — GSC performance modal ----------------------- --->
+	<bx:if args.showPerformance>
+		<bx:set perfQueries = performanceQueries()>
+		<bx:set perfRollup  = performanceRollup()>
+		<div class="modal show d-block" tabindex="-1" style="background:rgba(0,0,0,.35);">
+			<div class="modal-dialog modal-lg modal-dialog-scrollable">
+				<div class="modal-content">
+					<div class="modal-header">
+						<h5 class="modal-title"><i class="bi bi-graph-up me-1"></i> Search performance — last 28 days</h5>
+						<button type="button" class="btn-close" wire:click="closePerformance"></button>
+					</div>
+					<div class="modal-body">
+						<div class="row g-2 mb-3">
+							<div class="col-6 col-md-3">
+								<div class="border rounded p-2 text-center">
+									<div class="text-muted small">Clicks</div>
+									<div class="h4 mb-0">#numberFormat( perfRollup.clicks )#</div>
+								</div>
+							</div>
+							<div class="col-6 col-md-3">
+								<div class="border rounded p-2 text-center">
+									<div class="text-muted small">Impressions</div>
+									<div class="h4 mb-0">#numberFormat( perfRollup.impressions )#</div>
+								</div>
+							</div>
+							<div class="col-6 col-md-3">
+								<div class="border rounded p-2 text-center">
+									<div class="text-muted small">Avg CTR</div>
+									<div class="h4 mb-0">#numberFormat( perfRollup.ctr * 100, "0.00" )#%</div>
+								</div>
+							</div>
+							<div class="col-6 col-md-3">
+								<div class="border rounded p-2 text-center">
+									<div class="text-muted small">Avg position</div>
+									<div class="h4 mb-0">#numberFormat( perfRollup.position, "0.0" )#</div>
+								</div>
+							</div>
+						</div>
+
+						<h6 class="mb-2 small text-muted text-uppercase">Top 10 queries</h6>
+						<bx:if perfQueries.len() == 0>
+							<p class="small text-muted mb-0">
+								No GSC data yet for this post.
+								Either GSC isn't connected (<a href="/admin/settings/gsc">connect it</a>),
+								the sync hasn't run yet, or this URL hasn't appeared in search results in the
+								last 28 days.
+							</p>
+						<bx:else>
+							<div class="table-responsive">
+								<table class="table table-sm align-middle mb-0">
+									<thead class="small text-muted">
+										<tr>
+											<th>Query</th>
+											<th class="text-end">Clicks</th>
+											<th class="text-end">Impressions</th>
+											<th class="text-end">CTR</th>
+											<th class="text-end">Position</th>
+										</tr>
+									</thead>
+									<tbody>
+										<bx:loop array="#perfQueries#" item="q">
+											<tr>
+												<td class="small">#encodeForHTML( q.query )#</td>
+												<td class="text-end small">#numberFormat( val( q.clicks ) )#</td>
+												<td class="text-end small">#numberFormat( val( q.impressions ) )#</td>
+												<td class="text-end small">#numberFormat( val( q.ctr ) * 100, "0.00" )#%</td>
+												<td class="text-end small">#numberFormat( val( q.position ), "0.0" )#</td>
+											</tr>
+										</bx:loop>
+									</tbody>
+								</table>
+							</div>
+						</bx:if>
+					</div>
+					<div class="modal-footer">
+						<button type="button" class="btn btn-outline-secondary" wire:click="closePerformance">Close</button>
 					</div>
 				</div>
 			</div>

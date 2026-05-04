@@ -1,0 +1,118 @@
+/**
+ * bx-Blogger — GscDailySyncJob (SEO Phase 14)
+ *
+ * Pulls one day of search-analytics data from Google Search
+ * Console (or the mock provider in dev) and writes the rows
+ * to `seo_search_analytics`. Scheduled daily 04:30 from
+ * config/Scheduler.bx; can be dispatched manually with
+ * `{ date: "yyyy-mm-dd" }` to backfill a missing day.
+ *
+ * Dimension shape: `[ "page", "query" ]` — every row has both
+ * the matched URL and the search query, so the per-post tab
+ * + dashboard rollup both work off the same dataset.
+ *
+ * Quota: GSC free tier is 1200 requests/min/property. We
+ * fetch one rowLimit=25000 batch per day per call and don't
+ * paginate, so a single day is one request — well under the
+ * minute quota even at peak. If/when a high-traffic site
+ * needs paging, add a `startRow` loop here.
+ *
+ * Skips gracefully when GSC is not configured / not connected
+ * — the job logs and returns. Lets the dev environment
+ * (no GSC creds) cycle the scheduler without alerting.
+ */
+class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
+
+    function handle() {
+        var props   = variables.properties ?: {};
+        var wirebox = application.wireBox;
+        var gsc     = wirebox.getInstance( "GscService" );
+        var setting = wirebox.getInstance( "SettingService" );
+
+        var st = gsc.status();
+        if ( !st.connected ) {
+            writeLog(
+                file = "bxblogger",
+                type = "information",
+                text = "GscDailySyncJob: GSC not connected — skipping sync"
+            );
+            return;
+        }
+        if ( st.provider != "mock" && !st.hasProperty ) {
+            writeLog(
+                file = "bxblogger",
+                type = "information",
+                text = "GscDailySyncJob: gsc.property_url not set — skipping sync"
+            );
+            return;
+        }
+
+        // Pull yesterday's data by default. GSC has a ~2-day
+        // reporting lag for some metrics, so a "yesterday"
+        // snapshot is what most operators expect (and
+        // matches every other GSC-integrated tool).
+        var targetDate = structKeyExists( props, "date" ) && len( props.date ?: "" )
+            ? props.date
+            : dateFormat( dateAdd( "d", -1, now() ), "yyyy-mm-dd" );
+
+        try {
+            var rows = gsc.searchAnalytics(
+                startDate  = targetDate,
+                endDate    = targetDate,
+                dimensions = [ "page", "query" ],
+                rowLimit   = 25000
+            );
+        }
+        catch ( bxBlogger.GscQuotaExceeded e ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "GscDailySyncJob: hit 429 — aborting today's sync, will retry on next schedule"
+            );
+            return;
+        }
+        catch ( any e ) {
+            writeLog(
+                file = "bxblogger",
+                type = "error",
+                text = "GscDailySyncJob: " & ( e.Message ?: "(no message)" )
+            );
+            return;
+        }
+
+        var written = 0;
+        for ( var r in rows ) {
+            try {
+                var keys  = r.keys ?: [];
+                var page  = keys.len() >= 1 ? keys[ 1 ] : "";
+                var query = keys.len() >= 2 ? keys[ 2 ] : "";
+                if ( !len( page ) ) continue;
+                gsc.recordRow(
+                    date        = targetDate,
+                    pagePath    = page,
+                    query       = query,
+                    clicks      = val( r.clicks      ?: 0 ),
+                    impressions = val( r.impressions ?: 0 ),
+                    ctr         = val( r.ctr         ?: 0 ),
+                    position    = val( r.position    ?: 0 )
+                );
+                written++;
+            }
+            catch ( any rowErr ) {
+                writeLog(
+                    file = "bxblogger",
+                    type = "warning",
+                    text = "GscDailySyncJob: row write failed: " & ( rowErr.Message ?: "" )
+                );
+            }
+        }
+
+        setting.set( key = "gsc.last_sync_at", value = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" ), type = "string" );
+        writeLog(
+            file = "bxblogger",
+            type = "information",
+            text = "GscDailySyncJob: synced " & written & " rows for " & targetDate
+        );
+    }
+
+}

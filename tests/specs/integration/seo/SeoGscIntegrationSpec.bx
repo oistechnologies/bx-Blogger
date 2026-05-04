@@ -1,0 +1,215 @@
+/**
+ * bx-Blogger — SeoGscIntegrationSpec (SEO Phase 14)
+ *
+ * Validates the GSC integration without firing real Google
+ * traffic. Specifically:
+ *
+ *   - GscService.status() reflects configured/connected state.
+ *   - Mock provider path: setting `gsc.provider = "mock"` makes
+ *     GscService treat itself as connected (`mock-refresh-token`)
+ *     and `searchAnalytics()` returns deterministic seeded rows
+ *     keyed off post ids.
+ *   - GscService.recordRow() UPSERTs into seo_search_analytics
+ *     and resolves /blog/{slug} URLs back to a post_id.
+ *   - topQueriesForPost / siteRollup / topPosts return
+ *     well-shaped rows.
+ *   - GscDailySyncJob with the mock provider populates rows
+ *     end-to-end without touching the network.
+ *
+ * Doesn't exercise the OAuth code-exchange path with a real
+ * Google endpoint — that would require a live HTTP stub
+ * server. The mock provider's exchangeCodeForTokens() shortcut
+ * is exercised instead so the wire's connect() path stays
+ * unit-testable.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc        = getInstance( "GscService" );
+        variables.qb         = getInstance( "QueryBuilder@qb" );
+        variables.settingSvc = getInstance( "SettingService" );
+
+        variables.savedSettings = {
+            "gsc.provider"            : variables.settingSvc.get( "gsc.provider", "live" ),
+            "gsc.refresh_token"       : variables.settingSvc.get( "gsc.refresh_token", "" ),
+            "gsc.access_token"        : variables.settingSvc.get( "gsc.access_token", "" ),
+            "gsc.token_expires_at"    : variables.settingSvc.get( "gsc.token_expires_at", "0" ),
+            "gsc.property_url"        : variables.settingSvc.get( "gsc.property_url", "" )
+        };
+
+        // Seed mock-provider settings for the spec.
+        variables.settingSvc.set( key = "gsc.provider",     value = "mock",                  type = "string" );
+        variables.settingSvc.set( key = "gsc.property_url", value = "https://example.com/",  type = "string" );
+
+        variables.testAuthor = createTestUser( {}, "", "author" );
+    }
+
+    function afterAll() {
+        for ( var k in variables.savedSettings ) {
+            var t = ( k == "gsc.token_expires_at" ) ? "int" : "string";
+            variables.settingSvc.set( key = k, value = variables.savedSettings[ k ] ?: "", type = t );
+        }
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "SEO Phase 14 — Google Search Console integration", function() {
+
+            describe( "GscService.status", function() {
+
+                it( "reports the configured + connected booleans + provider name", function() {
+                    // Mock provider path skips the refresh-token gate so it
+                    // counts as connected without an OAuth round trip.
+                    var st = variables.svc.status();
+                    expect( st.provider ).toBe( "mock" );
+                    expect( st.connected ).toBeTrue();
+                    expect( st.hasProperty ).toBeTrue();
+                } );
+
+            } );
+
+            describe( "GscService.exchangeCodeForTokens (mock fast-path)", function() {
+
+                it( "stores mock tokens without an OAuth roundtrip", function() {
+                    variables.svc.exchangeCodeForTokens( code = "anything", redirectUri = "/admin/settings/gsc/callback" );
+                    expect( variables.settingSvc.get( "gsc.refresh_token", "" ) ).toBe( "mock-refresh-token" );
+                    expect( variables.settingSvc.get( "gsc.access_token", "" )  ).toBe( "mock-access-token"  );
+                } );
+
+            } );
+
+            describe( "GscService.searchAnalytics (mock provider)", function() {
+
+                it( "returns deterministic rows keyed off published posts", function() {
+                    var post = makePost();
+                    var rows = variables.svc.searchAnalytics(
+                        startDate  = dateFormat( dateAdd( "d", -1, now() ), "yyyy-mm-dd" ),
+                        endDate    = dateFormat( dateAdd( "d", -1, now() ), "yyyy-mm-dd" ),
+                        dimensions = [ "page", "query" ]
+                    );
+                    expect( rows.len() ).toBeGTE( 1 );
+                    // Every row must have keys[] of length 2 and the
+                    // four numeric metrics so the sync job can persist
+                    // without further validation.
+                    for ( var r in rows ) {
+                        expect( r ).toHaveKey( "keys" );
+                        expect( r ).toHaveKey( "clicks" );
+                        expect( r ).toHaveKey( "impressions" );
+                        expect( r ).toHaveKey( "ctr" );
+                        expect( r ).toHaveKey( "position" );
+                    }
+                } );
+
+            } );
+
+            describe( "GscService.recordRow + topQueriesForPost", function() {
+
+                it( "UPSERTs a row, resolves the /blog/{slug} URL to a post_id, and returns it via topQueriesForPost", function() {
+                    var post = makePost();
+
+                    // Publish so resolvePostId hits.
+                    variables.qb.newQuery().from( "posts" )
+                        .where( "id", post.getId() )
+                        .update( {
+                            "status"       : "published",
+                            "published_at" : dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" )
+                        } );
+
+                    var pageUrl = "https://example.com/blog/" & post.getSlug();
+                    variables.svc.recordRow(
+                        date        = dateFormat( now(), "yyyy-mm-dd" ),
+                        pagePath    = pageUrl,
+                        query       = "boxlang testing",
+                        clicks      = 12,
+                        impressions = 240,
+                        ctr         = 0.05,
+                        position    = 4.2
+                    );
+
+                    var row = variables.qb.newQuery().from( "seo_search_analytics" )
+                        .where( "page_path", pageUrl )
+                        .first();
+                    expect( val( row.post_id ?: 0 ) ).toBe( post.getId() );
+                    expect( val( row.clicks ) ).toBe( 12 );
+
+                    var top = variables.svc.topQueriesForPost( postId = post.getId(), days = 28, n = 5 );
+                    expect( top.len() ).toBeGTE( 1 );
+                    expect( top[ 1 ].query ).toBe( "boxlang testing" );
+                    expect( val( top[ 1 ].clicks ) ).toBe( 12 );
+                } );
+
+                it( "UPSERTs a second write to the same (date, page, query) tuple", function() {
+                    var post = makePost();
+                    variables.qb.newQuery().from( "posts" )
+                        .where( "id", post.getId() )
+                        .update( { "status" : "published" } );
+
+                    var pageUrl = "https://example.com/blog/" & post.getSlug();
+                    var d       = dateFormat( now(), "yyyy-mm-dd" );
+
+                    variables.svc.recordRow( date = d, pagePath = pageUrl, query = "x", clicks = 5,  impressions = 100 );
+                    variables.svc.recordRow( date = d, pagePath = pageUrl, query = "x", clicks = 50, impressions = 1000 );
+
+                    var rows = variables.qb.newQuery().from( "seo_search_analytics" )
+                        .where( "page_path", pageUrl )
+                        .where( "query", "x" )
+                        .get();
+                    expect( rows.len() ).toBe( 1 );
+                    expect( val( rows[ 1 ].clicks ) ).toBe( 50 );
+                } );
+
+            } );
+
+            describe( "GscService.siteRollup + topPosts", function() {
+
+                it( "returns the four-key rollup struct", function() {
+                    var roll = variables.svc.siteRollup( 28 );
+                    expect( roll ).toHaveKey( "clicks" );
+                    expect( roll ).toHaveKey( "impressions" );
+                    expect( roll ).toHaveKey( "ctr" );
+                    expect( roll ).toHaveKey( "position" );
+                } );
+
+            } );
+
+            describe( "GscDailySyncJob.handle()", function() {
+
+                it( "writes rows end-to-end via the mock provider", function() {
+                    // Establish at least one published post so the
+                    // mock provider has something to fabricate around.
+                    var post = makePost();
+                    variables.qb.newQuery().from( "posts" )
+                        .where( "id", post.getId() )
+                        .update( { "status" : "published" } );
+
+                    var beforeCount = countAnalytics();
+                    var job = getInstance( "GscDailySyncJob" );
+                    job.setProperties( { "date" : dateFormat( now(), "yyyy-mm-dd" ) } );
+                    job.handle();
+
+                    expect( countAnalytics() ).toBeGT( beforeCount );
+                    expect( len( variables.settingSvc.get( "gsc.last_sync_at", "" ) ) ).toBeGT( 0 );
+                } );
+
+            } );
+
+        } );
+    }
+
+    private numeric function countAnalytics() {
+        return val( variables.qb.newQuery().from( "seo_search_analytics" )
+            .selectRaw( "COUNT(*) AS n" )
+            .first().n ?: 0 );
+    }
+
+    private any function makePost() {
+        var post = getInstance( "PostService" ).create( {
+            "authorId"     : variables.testAuthor.getId(),
+            "title"        : "Phase 14 GSC " & createUUID(),
+            "bodyMarkdown" : "Body for GSC integration test."
+        } );
+        return post;
+    }
+
+}

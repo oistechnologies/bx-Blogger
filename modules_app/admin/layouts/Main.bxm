@@ -484,6 +484,13 @@
 									<i class="bi bi-card-image nav-icon"></i><span class="nav-label">OG Image Settings</span>
 								</a>
 							</bx:if>
+							<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "seo.gsc.connect" )>
+								<a class="nav-link nav-sub #( currentEvent == 'admin:Settings.gsc' ? 'active' : '' )#"
+								   href="/admin/settings/gsc"
+								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Google Search Console">
+									<i class="bi bi-google nav-icon"></i><span class="nav-label">Search Console</span>
+								</a>
+							</bx:if>
 							<bx:if canSysAiPrompts>
 								<a class="nav-link nav-sub #( currentEvent.startsWith( 'admin:AiPrompts.' ) ? 'active' : '' )#"
 								   href="/admin/ai-prompts"

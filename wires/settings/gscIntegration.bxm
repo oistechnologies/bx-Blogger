@@ -1,0 +1,274 @@
+<bx:script>
+// @startWire
+/**
+ * settings.gscIntegration — SEO Phase 14 admin form for the
+ * Google Search Console OAuth connection.
+ *
+ * Operator flow:
+ *   1. Paste OAuth client_id + client_secret from Google Cloud
+ *      Console (project must have the Search Console API
+ *      enabled and OAuth consent screen configured).
+ *   2. Set the verified GSC property URL (e.g.
+ *      https://example.com/ or sc-domain:example.com).
+ *   3. Click "Connect" — generates a CSRF nonce + redirects
+ *      to Google's consent screen.
+ *   4. Google redirects back to /admin/settings/gsc/callback,
+ *      which exchanges the code for refresh + access tokens.
+ *   5. Status banner flips green; daily sync job picks up
+ *      yesterday's data on the next 04:30 cron.
+ *
+ * The "Run sync now" button dispatches the GscDailySyncJob
+ * for a one-off backfill so the operator doesn't have to
+ * wait until tomorrow morning to see data.
+ *
+ * Permission gate: `seo.gsc.connect` (super_admin). The
+ * provider toggle (live vs mock) is admin-visible too.
+ */
+
+property name="settingService" inject="SettingService";
+property name="gscService"     inject="GscService";
+property name="cbauth"         inject="AuthenticationService@cbauth";
+property name="event"          inject="coldbox:requestContext";
+
+data = {
+    "clientId"      : "",
+    "clientSecret"  : "",
+    "propertyUrl"   : "",
+    "provider"      : "live",
+    "status"        : {},
+    "redirectUri"   : "",
+    "authUrl"       : "",
+    "flashOk"       : "",
+    "flashError"    : "",
+    "canConnect"    : false,
+    "syncBusy"      : false
+};
+
+function onMount( e, rc, prc, params ) {
+    var u = cbauth.isLoggedIn() ? cbauth.getUser() : "";
+    data.canConnect = !isSimpleValue( u ) && u.hasPermission( "seo.gsc.connect" );
+    if ( !data.canConnect ) return;
+
+    data.clientId     = settingService.get( "gsc.oauth_client_id",     "" );
+    data.clientSecret = settingService.get( "gsc.oauth_client_secret", "" );
+    data.propertyUrl  = settingService.get( "gsc.property_url",        "" );
+    data.provider     = settingService.get( "gsc.provider",            "live" );
+    data.status       = gscService.status();
+    data.redirectUri  = computeRedirectUri();
+}
+
+function saveSettings() {
+    if ( !data.canConnect ) return;
+    settingService.set( key = "gsc.oauth_client_id",     value = trim( data.clientId ?: "" ),     type = "string" );
+    settingService.set( key = "gsc.oauth_client_secret", value = trim( data.clientSecret ?: "" ), type = "string" );
+    settingService.set( key = "gsc.property_url",        value = trim( data.propertyUrl ?: "" ),  type = "string" );
+    settingService.set( key = "gsc.provider",            value = trim( data.provider ?: "live" ), type = "string" );
+    onMount( event = "", rc = {}, prc = {}, params = {} );
+    data.flashOk = "Settings saved.";
+}
+
+/**
+ * Kick off the OAuth flow. Stamps a CSRF nonce in the session,
+ * builds the auth URL, and tells the wire to redirect the
+ * browser. CBWIRE's redirect() hands the URL to the client.
+ */
+function connect() {
+    if ( !data.canConnect ) return;
+    if ( data.provider == "mock" ) {
+        try {
+            gscService.exchangeCodeForTokens( code = "mock-code", redirectUri = data.redirectUri );
+            data.flashOk = "Connected to mock GSC provider.";
+            data.status  = gscService.status();
+        }
+        catch ( any e ) {
+            data.flashError = "Mock connect failed: " & e.message;
+        }
+        return;
+    }
+
+    var nonce = createUUID();
+    session.gsc_oauth_state = nonce;
+    try {
+        var url = gscService.buildAuthUrl( redirectUri = data.redirectUri, state = nonce );
+        redirect( url = url );
+    }
+    catch ( bxBlogger.GscNotConfigured e ) {
+        data.flashError = e.message;
+    }
+}
+
+function disconnect() {
+    if ( !data.canConnect ) return;
+    settingService.set( key = "gsc.refresh_token",    value = "", type = "string" );
+    settingService.set( key = "gsc.access_token",     value = "", type = "string" );
+    settingService.set( key = "gsc.token_expires_at", value = "0", type = "int" );
+    data.status   = gscService.status();
+    data.flashOk = "Disconnected.";
+}
+
+/**
+ * Dispatch the daily sync job for an immediate one-off
+ * backfill. Job no-ops gracefully when not connected so
+ * this is safe to invoke even from a half-configured state.
+ */
+function runSyncNow() {
+    if ( !data.canConnect ) return;
+    data.syncBusy = true;
+    try {
+        getInstance( "GscDailySyncJob" ).dispatch();
+        data.flashOk = "Sync queued. Refresh in a few minutes to see updated data.";
+    }
+    catch ( any e ) {
+        data.flashError = "Failed to queue sync: " & e.message;
+    }
+    finally { data.syncBusy = false; }
+}
+
+private string function computeRedirectUri() {
+    var appUrl = getSystemSetting( "APP_URL", "" );
+    if ( !len( appUrl ) ) {
+        try { appUrl = "http://" & event.getHTTPHeader( "Host", "localhost:8080" ); }
+        catch ( any e ) { appUrl = "http://localhost:8080"; }
+    }
+    if ( right( appUrl, 1 ) == "/" ) appUrl = left( appUrl, len( appUrl ) - 1 );
+    return appUrl & "/admin/settings/gsc/callback";
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<div>
+    <bx:if !args.canConnect>
+        <div class="alert alert-warning">
+            <i class="bi bi-shield-lock me-1"></i>
+            You don't have permission to connect Google Search Console.
+        </div>
+    <bx:else>
+        <bx:if len( args.flashOk )>
+            <div class="alert alert-success alert-dismissible">
+                #encodeForHTML( args.flashOk )#
+                <button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+            </div>
+        </bx:if>
+        <bx:if len( args.flashError )>
+            <div class="alert alert-danger alert-dismissible">
+                #encodeForHTML( args.flashError )#
+                <button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+            </div>
+        </bx:if>
+
+        <bx:set st = args.status>
+        <div class="row g-4">
+            <div class="col-12 col-xl-7">
+                <div class="card stat-card stat-card-primary">
+                    <div class="card-header card-header-soft card-header-soft-primary d-flex justify-content-between align-items-center">
+                        <span class="h6 mb-0">Connection status</span>
+                        <bx:if st.connected ?: false>
+                            <span class="badge bg-success"><i class="bi bi-check2-circle me-1"></i>Connected</span>
+                        <bx:elseif st.configured ?: false>
+                            <span class="badge bg-warning text-dark">Configured, not connected</span>
+                        <bx:else>
+                            <span class="badge bg-secondary">Not configured</span>
+                        </bx:if>
+                    </div>
+                    <div class="card-body">
+                        <bx:if ( st.connected ?: false )>
+                            <p class="small mb-2">
+                                Property: <code>#encodeForHTML( st.propertyUrl ?: "(none set)" )#</code><br>
+                                Provider: <code>#encodeForHTML( st.provider ?: "live" )#</code><br>
+                                Last sync: #len( st.lastSyncAt ?: "" ) ? encodeForHTML( st.lastSyncAt ) : "<em>never</em>"#
+                            </p>
+                            <button class="btn btn-sm btn-outline-primary me-2" wire:click="runSyncNow" wire:target="runSyncNow" wire:loading.attr="disabled">
+                                <i class="bi bi-arrow-clockwise me-1" wire:loading.remove wire:target="runSyncNow"></i>
+                                <span class="spinner-border spinner-border-sm me-1" wire:loading wire:target="runSyncNow"></span>
+                                Run sync now
+                            </button>
+                            <button class="btn btn-sm btn-outline-danger" wire:click="disconnect">
+                                <i class="bi bi-x-circle me-1"></i> Disconnect
+                            </button>
+                        <bx:else>
+                            <p class="small text-muted mb-2">
+                                Paste your OAuth client_id + client_secret from <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console</a>,
+                                set the verified property URL, then click <strong>Connect</strong>.
+                            </p>
+                            <button class="btn btn-sm btn-success" wire:click="connect"
+                                    <bx:if !( st.configured ?: false )>disabled</bx:if>>
+                                <i class="bi bi-link-45deg me-1"></i> Connect
+                            </button>
+                            <bx:if !( st.configured ?: false )>
+                                <span class="text-muted small ms-2">Save settings first.</span>
+                            </bx:if>
+                        </bx:if>
+                    </div>
+                </div>
+
+                <div class="card stat-card stat-card-info mt-3">
+                    <div class="card-header card-header-soft card-header-soft-info">
+                        <span class="h6 mb-0">OAuth client + property</span>
+                    </div>
+                    <div class="card-body">
+                        <form wire:submit.prevent="saveSettings">
+                            <div class="mb-3">
+                                <label for="gscClientId" class="form-label small">Client ID</label>
+                                <input id="gscClientId" type="text"
+                                       class="form-control form-control-sm font-monospace"
+                                       wire:model.blur="clientId"
+                                       maxlength="500">
+                            </div>
+                            <div class="mb-3">
+                                <label for="gscClientSecret" class="form-label small">Client Secret</label>
+                                <input id="gscClientSecret" type="password"
+                                       class="form-control form-control-sm font-monospace"
+                                       wire:model.blur="clientSecret"
+                                       maxlength="500">
+                            </div>
+                            <div class="mb-3">
+                                <label for="gscProperty" class="form-label small">Property URL</label>
+                                <input id="gscProperty" type="text"
+                                       class="form-control form-control-sm font-monospace"
+                                       wire:model.blur="propertyUrl"
+                                       placeholder="https://example.com/  or  sc-domain:example.com"
+                                       maxlength="500">
+                                <div class="form-text small">Must match a verified property in Search Console.</div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="gscProvider" class="form-label small">Provider</label>
+                                <select id="gscProvider"
+                                        class="form-select form-select-sm"
+                                        wire:model.blur="provider">
+                                    <option value="live" <bx:if args.provider == "live">selected</bx:if>>Live (Google API)</option>
+                                    <option value="mock" <bx:if args.provider == "mock">selected</bx:if>>Mock (dev / preview only)</option>
+                                </select>
+                                <div class="form-text small">Mock returns deterministic seeded data and is safe for dev.</div>
+                            </div>
+                            <button type="submit" class="btn btn-primary">Save</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-12 col-xl-5">
+                <div class="card stat-card stat-card-warning">
+                    <div class="card-header card-header-soft card-header-soft-warning">
+                        <span class="h6 mb-0">Setup checklist</span>
+                    </div>
+                    <div class="card-body small">
+                        <ol class="ps-3 mb-3">
+                            <li>Open <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console &rarr; Credentials</a> and create a Web application OAuth client.</li>
+                            <li>Add this redirect URI to the client:<br>
+                                <code class="small">#encodeForHTML( args.redirectUri )#</code>
+                            </li>
+                            <li>Enable the <strong>Search Console API</strong> on the project.</li>
+                            <li>Verify the property at <a href="https://search.google.com/search-console" target="_blank" rel="noopener">search.google.com/search-console</a>.</li>
+                            <li>Paste client_id + client_secret + property URL here, save, then click <strong>Connect</strong>.</li>
+                        </ol>
+                        <p class="text-muted mb-0">
+                            The OAuth scope used is <code>webmasters.readonly</code> — bx-Blogger never writes to your GSC account.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </bx:if>
+</div>
+</bx:output>

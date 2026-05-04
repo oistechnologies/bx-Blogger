@@ -32,6 +32,7 @@ property name="qb"                inject="QueryBuilder@qb";
 property name="freshnessService"  inject="SeoFreshnessService";
 property name="auditService"      inject="SeoAuditService";
 property name="aiService"         inject="AiAssistantService";
+property name="gscService"        inject="GscService";
 property name="cacheBox"          inject="cachebox";
 
 variables.cacheKey = "seo.dashboard.overview.v1";
@@ -190,7 +191,10 @@ private struct function computeOverview() {
         "lowScoreCount"     : 0,   // populated below
         "missingFocusKw"    : missingFocusKwCount(),
         "redirectsIdle"     : idleRedirectsCount(),
-        "totalPublished"    : 0
+        "totalPublished"    : 0,
+        "gscRollup"         : gscRollupSafe(),
+        "gscTopPosts"       : gscTopPostsSafe(),
+        "gscStatus"         : gscStatusSafe()
     };
     snap.totalPublished = snap.buckets.total;
 
@@ -434,6 +438,26 @@ private numeric function idleRedirectsCount() {
     catch ( any e ) { return 0; }
 }
 
+// SEO Phase 14 — GSC scorecards. Each helper degrades to an
+// empty value when the seo_search_analytics table is empty
+// or GSC isn't connected, so the dashboard renders cleanly
+// even on installs without the integration wired up.
+
+private struct function gscRollupSafe() {
+    try { return gscService.siteRollup( 28 ); }
+    catch ( any e ) { return { clicks : 0, impressions : 0, ctr : 0, position : 0 }; }
+}
+
+private array function gscTopPostsSafe() {
+    try { return gscService.topPosts( 28, 5 ); }
+    catch ( any e ) { return []; }
+}
+
+private struct function gscStatusSafe() {
+    try { return gscService.status(); }
+    catch ( any e ) { return { connected : false, configured : false, provider : "live", propertyUrl : "", lastSyncAt : "" }; }
+}
+
 // --------------------------------------------------------------
 // Permission helper for per-row mark-reviewed
 // --------------------------------------------------------------
@@ -555,6 +579,61 @@ private boolean function canEditPost( required numeric postId ) {
                             <div class="text-muted small">No unresolved 404 hits.</div>
                         </bx:if>
                     </div></div>
+                </div>
+            </div>
+
+            <bx:set gscR = ov.gscRollup ?: { clicks : 0, impressions : 0, ctr : 0, position : 0 }>
+            <bx:set gscS = ov.gscStatus ?: { connected : false, configured : false, propertyUrl : "", lastSyncAt : "" }>
+            <bx:set gscTops = ov.gscTopPosts ?: []>
+            <div class="card stat-card stat-card-primary mb-3">
+                <div class="card-header card-header-soft card-header-soft-primary d-flex justify-content-between align-items-center flex-wrap gap-2">
+                    <span class="h6 mb-0"><i class="bi bi-google me-1"></i> Search performance — last 28 days</span>
+                    <bx:if gscS.connected>
+                        <span class="small text-muted">
+                            <bx:if len( gscS.lastSyncAt ?: "" )>Last sync: #encodeForHTML( gscS.lastSyncAt )#<bx:else>No sync yet</bx:if>
+                        </span>
+                    <bx:else>
+                        <a class="small" href="/admin/settings/gsc">Connect GSC →</a>
+                    </bx:if>
+                </div>
+                <div class="card-body">
+                    <div class="row g-2 mb-3">
+                        <div class="col-6 col-md-3">
+                            <div class="border rounded p-2 text-center">
+                                <div class="text-muted small">Clicks</div>
+                                <div class="h4 mb-0">#numberFormat( val( gscR.clicks ) )#</div>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="border rounded p-2 text-center">
+                                <div class="text-muted small">Impressions</div>
+                                <div class="h4 mb-0">#numberFormat( val( gscR.impressions ) )#</div>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="border rounded p-2 text-center">
+                                <div class="text-muted small">Avg CTR</div>
+                                <div class="h4 mb-0">#numberFormat( val( gscR.ctr ) * 100, "0.00" )#%</div>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-3">
+                            <div class="border rounded p-2 text-center">
+                                <div class="text-muted small">Avg position</div>
+                                <div class="h4 mb-0">#numberFormat( val( gscR.position ), "0.0" )#</div>
+                            </div>
+                        </div>
+                    </div>
+                    <bx:if gscTops.len() gt 0>
+                        <h6 class="mb-2 small text-muted text-uppercase">Top performing posts</h6>
+                        <ul class="list-unstyled mb-0 small">
+                            <bx:loop array="#gscTops#" item="r">
+                                <li class="mb-1">
+                                    <a href="/admin/posts/editor?id=#r.post_id#">#encodeForHTML( r.title ?: ( "Post " & r.post_id ) )#</a>
+                                    <span class="text-muted">— #numberFormat( val( r.clicks ) )# clicks / #numberFormat( val( r.impressions ) )# impressions</span>
+                                </li>
+                            </bx:loop>
+                        </ul>
+                    </bx:if>
                 </div>
             </div>
 
