@@ -43,6 +43,8 @@ data = {
     "seoTitle"       : "",
     "seoDescription" : "",
     "focusKeyword"   : "",
+    "schemaType"     : "",      // SEO Phase 7 — empty = default Article
+    "schemaDataJson" : "{}",    // SEO Phase 7 — type-specific data, edited as JSON
     "allowIndexing"  : true,
     "templateOverride" : "",
     "scheduledAt"    : "",
@@ -138,6 +140,9 @@ private function loadFromDb( required id ) {
     data.seoTitle       = post.getSeoTitle() ?: "";
     data.seoDescription = post.getSeoDescription() ?: "";
     data.focusKeyword   = post.getFocusKeyword() ?: "";
+    data.schemaType     = post.getSchemaType() ?: "";
+    var rawSchemaData   = post.getSchemaData() ?: "";
+    data.schemaDataJson = len( rawSchemaData ) ? rawSchemaData : "{}";
     data.allowIndexing  = !!( post.getAllowIndexing() ?: 1 );
     data.templateOverride = post.getTemplateOverride() ?: "";
     data.scheduledAt    = len( post.getScheduledAt() ?: "" )
@@ -799,6 +804,81 @@ string function renderAuditMarkdown() {
 function openPreviewPanel()  { data.showPreviewPanel = true;  }
 function closePreviewPanel() { data.showPreviewPanel = false; }
 
+// --------------------------------------------------------------------
+// SEO Phase 7 — schema.org type picker + AI suggest
+// --------------------------------------------------------------------
+
+/**
+ * Whitelist of schema types the picker offers. Anything else stored
+ * in posts.schema_type is preserved on save (no destructive sync)
+ * but the picker will display "(custom)" so the admin can change it
+ * via direct DB tooling without the wire reverting.
+ */
+array function schemaTypeOptions() {
+    return [
+        { "value" : "",            "label" : "Article (default)" },
+        { "value" : "BlogPosting", "label" : "BlogPosting" },
+        { "value" : "NewsArticle", "label" : "NewsArticle" },
+        { "value" : "FAQPage",     "label" : "FAQ" },
+        { "value" : "HowTo",       "label" : "HowTo" },
+        { "value" : "Recipe",      "label" : "Recipe" },
+        { "value" : "Product",     "label" : "Product" },
+        { "value" : "VideoObject", "label" : "VideoObject" }
+    ];
+}
+
+function aiSuggestSchemaType() {
+    data.aiError = "";
+    if ( !len( trim( data.title ?: "" ) ) && !len( trim( data.bodyMarkdown ?: "" ) ) ) {
+        data.aiError = "Add a title or body before asking for a schema-type suggestion.";
+        return;
+    }
+    try {
+        var result = aiService.suggestSchemaType(
+            title  = data.title ?: "",
+            body   = data.bodyMarkdown ?: "",
+            userId = cbauth.getUser().getId()
+        );
+        // Apply the suggestion; the user can change via the picker.
+        data.schemaType = result.schemaType;
+        // Default-fill schemaData with an empty type-specific shape
+        // so the JSON editor doesn't sit on `{}` after a switch.
+        data.schemaDataJson = defaultSchemaDataFor( result.schemaType );
+        data.flashOk = "Schema suggested: " & result.schemaType;
+    }
+    catch ( bxBlogger.AiUnavailable e )    { data.aiError = e.message; }
+    catch ( bxBlogger.AiBudgetExceeded e ) { data.aiError = e.message; }
+    catch ( bxBlogger.AiInvalidInput e )   { data.aiError = e.message; }
+    catch ( bxBlogger.AiProviderError e )  { data.aiError = "The AI provider failed: " & e.message; }
+    catch ( any e )                         { data.aiError = "Unexpected failure: " & e.message; }
+}
+
+/**
+ * Whenever the picker changes type, swap the JSON editor's
+ * placeholder so the user has a working starting struct.
+ */
+function onSchemaTypeChange() {
+    var current = trim( data.schemaDataJson ?: "" );
+    if ( !len( current ) || current == "{}" || current == "" ) {
+        data.schemaDataJson = defaultSchemaDataFor( data.schemaType );
+    }
+}
+
+/**
+ * Default empty shape for each schema type — gives the admin a
+ * starting struct to fill out instead of an empty `{}`.
+ */
+private string function defaultSchemaDataFor( required string sType ) {
+    switch ( arguments.sType ) {
+        case "FAQPage":     return jsonSerialize( { "items" : [ { "question" : "", "answer" : "" } ] } );
+        case "HowTo":       return jsonSerialize( { "totalTime" : "", "steps" : [ { "name" : "", "text" : "" } ] } );
+        case "Recipe":      return jsonSerialize( { "prepTime" : "", "cookTime" : "", "recipeYield" : "", "ingredients" : [ "" ], "instructions" : [ "" ] } );
+        case "Product":     return jsonSerialize( { "sku" : "", "brand" : "", "price" : "", "priceCurrency" : "USD", "availability" : "InStock" } );
+        case "VideoObject": return jsonSerialize( { "contentUrl" : "", "embedUrl" : "", "duration" : "PT0M0S", "uploadDate" : "", "thumbnailUrl" : "" } );
+        default: return "{}";
+    }
+}
+
 /**
  * Build the data struct the preview cards render — same fallback
  * chain SeoService.buildForPost uses (seo_title || title;
@@ -982,6 +1062,8 @@ private struct function collectAttrs() {
         "seoTitle"       : data.seoTitle,
         "seoDescription" : data.seoDescription,
         "focusKeyword"   : trim( data.focusKeyword ?: "" ),
+        "schemaType"     : trim( data.schemaType ?: "" ),
+        "schemaData"     : trim( data.schemaDataJson ?: "" ) == "{}" ? "" : trim( data.schemaDataJson ?: "" ),
         "allowIndexing"  : data.allowIndexing ? 1 : 0,
         // 4.C — Theme.templateView() treats empty and the literal
         // "default" interchangeably as "render the base view", so we
@@ -1939,6 +2021,46 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 							       wire:model.blur="focusKeyword" maxlength="120"
 							       placeholder="e.g. BoxLang adoption">
 							<div class="form-text small">Drives the keyword-specific audit checks below + AI generators.</div>
+						</div>
+
+						<div class="mb-2">
+							<label for="postSchemaType" class="form-label small d-flex justify-content-between align-items-center">
+								<span>Schema.org type</span>
+								<button type="button"
+								        class="btn btn-sm btn-link p-0 small text-decoration-none"
+								        wire:click="aiSuggestSchemaType"
+								        wire:target="aiSuggestSchemaType"
+								        wire:loading.attr="disabled"
+								        title="Use AI to classify this post">
+									<i class="bi bi-magic"
+									   wire:loading.remove wire:target="aiSuggestSchemaType"></i>
+									<span class="spinner-border spinner-border-sm"
+									      wire:loading wire:target="aiSuggestSchemaType"></span>
+									Suggest
+								</button>
+							</label>
+							<select id="postSchemaType"
+							        class="form-select form-select-sm"
+							        wire:model.live="schemaType"
+							        wire:change="onSchemaTypeChange">
+								<bx:loop array="#schemaTypeOptions()#" item="opt">
+									<option value="#encodeForHTMLAttribute( opt.value )#"
+									        <bx:if args.schemaType == opt.value>selected</bx:if>>
+										#encodeForHTML( opt.label )#
+									</option>
+								</bx:loop>
+							</select>
+							<bx:if len( args.schemaType )>
+								<div class="mt-2">
+									<label for="postSchemaData" class="form-label small mb-1">Schema data (JSON)</label>
+									<textarea id="postSchemaData"
+									          class="form-control form-control-sm font-monospace"
+									          rows="6"
+									          wire:model.blur="schemaDataJson"
+									          spellcheck="false"></textarea>
+									<div class="form-text small">Type-specific fields. Picker resets the shape on type change; edit in place to fill the values.</div>
+								</div>
+							</bx:if>
 						</div>
 
 						<div class="form-check">

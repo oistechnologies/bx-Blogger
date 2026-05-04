@@ -123,6 +123,13 @@ class accessors="true" singleton {
         };
         if ( !isNull( arguments.authorEntity ) ) articleArgs[ "authorEntity" ] = arguments.authorEntity;
         var jsonLd = [ buildArticleJsonLd( argumentCollection = articleArgs ) ];
+
+        // SEO Phase 7 — type-specific schema (FAQ, HowTo, Product,
+        // Video, NewsArticle, Recipe). Appended alongside Article so
+        // Google can use either node depending on the search intent.
+        var typedNode = buildTypedSchemaForPost( arguments.post, canonical, arguments.baseUrl, arguments.siteName );
+        if ( !isNull( typedNode ) ) jsonLd.append( typedNode );
+
         if ( arguments.categories.len() ) {
             jsonLd.append( buildBreadcrumbsForPost( arguments.post, arguments.categories, arguments.baseUrl ) );
         }
@@ -734,6 +741,225 @@ class accessors="true" singleton {
         }
     }
 
+    // --------------------------------------------------------------------
+    // SEO Phase 7 — type-specific schema.org builders. Dispatch is
+    // by `posts.schema_type`; null/empty falls through to nothing,
+    // so the Article schema (always emitted) stays the only payload
+    // for default posts.
+    // --------------------------------------------------------------------
+
+    /**
+     * Build the type-specific schema node for a post when its
+     * `schema_type` column is set + populates valid data. Returns
+     * NULL when the post has no override or the data payload is
+     * missing/malformed (Article schema is still emitted separately
+     * so an empty FAQ doesn't lose schema markup).
+     */
+    private any function buildTypedSchemaForPost(
+        required any    post,
+        required string canonical,
+        required string baseUrl,
+        required string siteName
+    ) {
+        var sType = trim( arguments.post.getSchemaType() ?: "" );
+        if ( !len( sType ) ) return javaCast( "null", "" );
+
+        var raw = arguments.post.getSchemaData() ?: "";
+        var sData = {};
+        if ( len( raw ) ) {
+            try {
+                var parsed = jsonDeserialize( raw );
+                if ( isStruct( parsed ) ) sData = parsed;
+            }
+            catch ( any e ) {
+                log.warn( "SeoService: invalid schema_data on post=" & arguments.post.getId() & ": " & e.message );
+                return javaCast( "null", "" );
+            }
+        }
+
+        switch ( sType ) {
+            case "FAQPage":     return buildFaqJsonLd( sData );
+            case "HowTo":       return buildHowToJsonLd( sData, arguments.post.getTitle() ?: "", arguments.canonical );
+            case "Product":     return buildProductJsonLd( sData, arguments.post.getTitle() ?: "", arguments.canonical );
+            case "VideoObject": return buildVideoJsonLd( sData, arguments.post.getTitle() ?: "" );
+            case "Recipe":      return buildRecipeJsonLd( sData, arguments.post.getTitle() ?: "" );
+            case "NewsArticle":
+            case "Article":
+            case "BlogPosting":
+                // These are the same shape as the existing Article
+                // node — no separate typed payload needed.
+                return javaCast( "null", "" );
+            default:
+                return javaCast( "null", "" );
+        }
+    }
+
+    /**
+     * FAQPage — { items: [ { question, answer } ] } → schema with
+     * mainEntity Question[] / Answer pairs. Drops invalid entries
+     * silently rather than emitting an empty / malformed node.
+     */
+    private any function buildFaqJsonLd( required struct data ) {
+        var items = arguments.data.items ?: [];
+        if ( !isArray( items ) || !items.len() ) return javaCast( "null", "" );
+        var qaList = [];
+        for ( var item in items ) {
+            if ( !isStruct( item ) ) continue;
+            var q = trim( item.question ?: "" );
+            var a = trim( item.answer ?: "" );
+            if ( !len( q ) || !len( a ) ) continue;
+            qaList.append( {
+                "@type"          : "Question",
+                "name"           : q,
+                "acceptedAnswer" : {
+                    "@type" : "Answer",
+                    "text"  : a
+                }
+            } );
+        }
+        if ( !qaList.len() ) return javaCast( "null", "" );
+        return {
+            "@context"   : "https://schema.org",
+            "@type"      : "FAQPage",
+            "mainEntity" : qaList
+        };
+    }
+
+    /**
+     * HowTo — { totalTime, steps: [ { name, text, image? } ] }
+     */
+    private any function buildHowToJsonLd( required struct data, required string defaultName, required string canonical ) {
+        var steps = arguments.data.steps ?: [];
+        if ( !isArray( steps ) || !steps.len() ) return javaCast( "null", "" );
+        var stepNodes = [];
+        var pos = 1;
+        for ( var s in steps ) {
+            if ( !isStruct( s ) ) continue;
+            var name = trim( s.name ?: "" );
+            var text = trim( s.text ?: "" );
+            if ( !len( text ) ) continue;
+            var node = {
+                "@type"    : "HowToStep",
+                "position" : pos++,
+                "text"     : text
+            };
+            if ( len( name ) ) node[ "name" ] = name;
+            if ( len( s.image ?: "" ) ) node[ "image" ] = s.image;
+            stepNodes.append( node );
+        }
+        if ( !stepNodes.len() ) return javaCast( "null", "" );
+        var ld = {
+            "@context" : "https://schema.org",
+            "@type"    : "HowTo",
+            "name"     : len( arguments.data.name ?: "" ) ? arguments.data.name : arguments.defaultName,
+            "step"     : stepNodes,
+            "url"      : arguments.canonical
+        };
+        if ( len( arguments.data.totalTime ?: "" ) ) ld[ "totalTime" ] = arguments.data.totalTime;
+        return ld;
+    }
+
+    /**
+     * Product — { sku, brand, price, priceCurrency, availability,
+     * rating? }
+     */
+    private any function buildProductJsonLd( required struct data, required string defaultName, required string canonical ) {
+        var ld = {
+            "@context" : "https://schema.org",
+            "@type"    : "Product",
+            "name"     : len( arguments.data.name ?: "" ) ? arguments.data.name : arguments.defaultName,
+            "url"      : arguments.canonical
+        };
+        if ( len( arguments.data.sku ?: "" ) )   ld[ "sku" ]   = arguments.data.sku;
+        if ( len( arguments.data.brand ?: "" ) ) ld[ "brand" ] = { "@type" : "Brand", "name" : arguments.data.brand };
+        if ( len( arguments.data.image ?: "" ) ) ld[ "image" ] = arguments.data.image;
+        if ( len( arguments.data.description ?: "" ) ) ld[ "description" ] = arguments.data.description;
+
+        var price = arguments.data.price ?: "";
+        if ( len( price ) ) {
+            var offers = {
+                "@type"    : "Offer",
+                "price"    : toString( price ),
+                "priceCurrency" : arguments.data.priceCurrency ?: "USD"
+            };
+            if ( len( arguments.data.availability ?: "" ) ) offers[ "availability" ] = "https://schema.org/" & arguments.data.availability;
+            if ( len( arguments.data.url ?: "" ) ) offers[ "url" ] = arguments.data.url;
+            ld[ "offers" ] = offers;
+        }
+
+        if ( isStruct( arguments.data.rating ?: {} ) && structKeyExists( arguments.data, "rating" ) ) {
+            var r = arguments.data.rating;
+            if ( len( r.ratingValue ?: "" ) ) {
+                ld[ "aggregateRating" ] = {
+                    "@type"       : "AggregateRating",
+                    "ratingValue" : toString( r.ratingValue ),
+                    "reviewCount" : val( r.reviewCount ?: 0 )
+                };
+            }
+        }
+        return ld;
+    }
+
+    /**
+     * VideoObject — { contentUrl, embedUrl, duration (ISO 8601),
+     * uploadDate, thumbnailUrl }
+     */
+    private any function buildVideoJsonLd( required struct data, required string defaultName ) {
+        var contentUrl = trim( arguments.data.contentUrl ?: "" );
+        var embedUrl   = trim( arguments.data.embedUrl ?: "" );
+        if ( !len( contentUrl ) && !len( embedUrl ) ) return javaCast( "null", "" );
+
+        var ld = {
+            "@context"     : "https://schema.org",
+            "@type"        : "VideoObject",
+            "name"         : len( arguments.data.name ?: "" ) ? arguments.data.name : arguments.defaultName,
+            "description"  : arguments.data.description ?: arguments.defaultName,
+            "thumbnailUrl" : arguments.data.thumbnailUrl ?: ""
+        };
+        if ( len( contentUrl ) ) ld[ "contentUrl" ] = contentUrl;
+        if ( len( embedUrl   ) ) ld[ "embedUrl"   ] = embedUrl;
+        if ( len( arguments.data.duration ?: "" )   ) ld[ "duration"   ] = arguments.data.duration;
+        if ( len( arguments.data.uploadDate ?: "" ) ) ld[ "uploadDate" ] = arguments.data.uploadDate;
+        return ld;
+    }
+
+    /**
+     * Recipe — { prepTime, cookTime, recipeYield, ingredients[],
+     * instructions[] }
+     */
+    private any function buildRecipeJsonLd( required struct data, required string defaultName ) {
+        var ingredients  = arguments.data.ingredients  ?: [];
+        var instructions = arguments.data.instructions ?: [];
+        if ( !isArray( ingredients ) ) ingredients  = [];
+        if ( !isArray( instructions ) ) instructions = [];
+        if ( !ingredients.len() || !instructions.len() ) return javaCast( "null", "" );
+
+        var instrNodes = [];
+        var pos = 1;
+        for ( var s in instructions ) {
+            var text = isStruct( s ) ? trim( s.text ?: "" ) : trim( s ?: "" );
+            if ( !len( text ) ) continue;
+            instrNodes.append( {
+                "@type"    : "HowToStep",
+                "position" : pos++,
+                "text"     : text
+            } );
+        }
+        if ( !instrNodes.len() ) return javaCast( "null", "" );
+
+        var ld = {
+            "@context"          : "https://schema.org",
+            "@type"             : "Recipe",
+            "name"              : len( arguments.data.name ?: "" ) ? arguments.data.name : arguments.defaultName,
+            "recipeIngredient"  : ingredients,
+            "recipeInstructions": instrNodes
+        };
+        if ( len( arguments.data.prepTime ?: "" )    ) ld[ "prepTime"    ] = arguments.data.prepTime;
+        if ( len( arguments.data.cookTime ?: "" )    ) ld[ "cookTime"    ] = arguments.data.cookTime;
+        if ( len( arguments.data.recipeYield ?: "" ) ) ld[ "recipeYield" ] = arguments.data.recipeYield;
+        return ld;
+    }
+
     /**
      * schema.org Article JSON-LD for a published post. `author`
      * becomes a Person node; published_at + updated_at go in
@@ -749,9 +975,18 @@ class accessors="true" singleton {
         required string baseUrl,
                  any    authorEntity
     ) {
+        // SEO Phase 7 — let the post override the @type for
+        // Article-class schemas. Only NewsArticle / Article /
+        // BlogPosting share Article's exact field shape; other
+        // overrides (FAQ, HowTo, etc.) emit a separate node via
+        // buildTypedSchemaForPost.
+        var sType = trim( arguments.post.getSchemaType() ?: "" );
+        var articleType = "Article";
+        if ( sType == "NewsArticle" || sType == "BlogPosting" ) articleType = sType;
+
         var ld = {
             "@context"      : "https://schema.org",
-            "@type"         : "Article",
+            "@type"         : articleType,
             "headline"      : arguments.post.getTitle(),
             "mainEntityOfPage" : {
                 "@type" : "WebPage",

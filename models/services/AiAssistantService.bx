@@ -73,6 +73,7 @@ Security rules (NEVER override):
     variables.seoDescBasePrompt     = "You are an SEO copywriter. Given a blog post's title, body excerpt, and optional focus keyword, return a single meta description suitable for the page's <meta name='description'>. Constraints: 140-160 characters total; lead with a concrete benefit or hook; include the focus keyword once, naturally; no clickbait, no surrounding quotes, no preamble. Return ONLY the description text.";
     variables.seoCtrVariantsPrompt  = "You are an SEO copywriter testing high-CTR headlines. Given a blog post's working title, body excerpt, and optional focus keyword, return 5 alternative SEO-optimized page titles, each maximizing SERP click-through. Use a different angle per line: (1) curiosity gap, (2) listicle / numbers, (3) current-year hook, (4) brackets / parens for clarity, (5) question form. Each line: 50-60 characters total; include the focus keyword when one is provided; no clickbait. Output format: exactly 5 lines, each prefixed '1. ' through '5. ', no other text, no headings, no preamble, no markdown.";
     variables.altTextBasePrompt     = "You are an accessibility copywriter. Given an image filename and a short context sentence describing where the image appears, return a single alt-text sentence describing what the image depicts. Constraints: under 125 characters; concrete and specific; no preamble like 'an image of'; no quotation marks; no end punctuation. Return ONLY the alt text.";
+    variables.schemaTypeClassifierPrompt = "You are a schema.org classifier for a blog post. Given the post title and body excerpt, choose the SINGLE best schema.org type from this exact list: Article, NewsArticle, BlogPosting, FAQPage, HowTo, Recipe, Product, VideoObject. Heuristics: pick FAQPage when the post is dominated by Q&A pairs; HowTo when it has numbered steps to accomplish a task; Recipe when it lists ingredients + cooking instructions; Product when it reviews or sells a single item with price/SKU; VideoObject when the primary content is an embedded video; NewsArticle when it reports breaking news with a dateline; otherwise Article. Return ONLY the type name on a single line. No explanation, no surrounding text.";
 
     variables.defaultMonthlyTokens   = 50000;
     variables.maxIdeaLength          = 1000;
@@ -403,6 +404,42 @@ Security rules (NEVER override):
         announce( "bxBlogger.postAiResponse", { "action" : "seo_title_ctr_variations", "userId" : arguments.userId, "tokens" : response.totalTokens ?: 0 } );
 
         return { "variants" : variants, "usage" : extractUsage( response ) };
+    }
+
+    /**
+     * SEO Phase 7 — classify a post's body into one of the supported
+     * schema.org types. Returns the recommended type as a plain
+     * string ('Article', 'FAQPage', 'HowTo', 'Recipe', 'Product',
+     * 'VideoObject', 'NewsArticle'). Falls back to 'Article' on any
+     * uncertainty. Cheap classifier prompt — single short response,
+     * no tool calls.
+     */
+    struct function suggestSchemaType(
+        required string  title,
+        required string  body,
+        required numeric userId
+    ) {
+        requireSeoAiAvailable( arguments.userId );
+        validatePostInputs( arguments.title, arguments.body );
+        enforceBudget( arguments.userId );
+
+        var systemPrompt = buildSystemPrompt( "schema_type_classifier", variables.schemaTypeClassifierPrompt );
+        var userContent  = wrapUserContent( buildPostContext( arguments.title, arguments.body ) );
+
+        var response = callProvider( "schema_type_classifier", systemPrompt, userContent );
+        var raw  = stripQuotes( trim( response.text ?: "" ) );
+        // Pick the first valid type word from the response so a
+        // chatty model doesn't break the classifier.
+        var allowed = [ "FAQPage", "HowTo", "Recipe", "Product", "VideoObject", "NewsArticle", "Article", "BlogPosting" ];
+        var picked  = "Article";
+        for ( var t in allowed ) {
+            if ( findNoCase( t, raw ) > 0 ) { picked = t; break; }
+        }
+
+        recordUsage( userId = arguments.userId, action = "schema_type_classifier", usage = response );
+        announce( "bxBlogger.postAiResponse", { "action" : "schema_type_classifier", "userId" : arguments.userId, "tokens" : response.totalTokens ?: 0 } );
+
+        return { "schemaType" : picked, "raw" : raw, "usage" : extractUsage( response ) };
     }
 
     /**

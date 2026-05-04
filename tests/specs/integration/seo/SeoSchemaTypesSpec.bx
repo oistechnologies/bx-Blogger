@@ -1,0 +1,241 @@
+/**
+ * bx-Blogger — SeoSchemaTypesSpec (SEO Phase 7)
+ *
+ * Validates that SeoService emits the correct type-specific
+ * JSON-LD node alongside Article when a post's schema_type +
+ * schema_data are set. Each spec sets the override on a real
+ * persisted post and inspects buildForPost's jsonLd output for
+ * the expected secondary node.
+ *
+ * Also covers the AiAssistantService.suggestSchemaType classifier
+ * against the mock provider's deterministic responses.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function afterAll() {
+        clearSystemProp( "AI_ENABLED"  );
+        clearSystemProp( "AI_PROVIDER" );
+        clearSystemProp( "AI_MODEL"    );
+        clearSystemProp( "AI_API_KEY"  );
+        super.afterAll();
+    }
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc        = getInstance( "SeoService" );
+        variables.aiSvc      = getInstance( "AiAssistantService" );
+        variables.postSvc    = getInstance( "PostService" );
+        variables.settingSvc = getInstance( "SettingService" );
+    }
+
+    function run() {
+        describe( "SEO Phase 7 — schema.org types", function() {
+
+            describe( "buildTypedSchemaForPost dispatch", function() {
+
+                it( "emits FAQPage JSON-LD with mainEntity Question/Answer pairs", function() {
+                    var post = persistPost( {
+                        "schemaType" : "FAQPage",
+                        "schemaData" : jsonSerialize( {
+                            "items" : [
+                                { "question" : "What is BoxLang?", "answer" : "A modern CFML runtime." },
+                                { "question" : "Does it run on the JVM?", "answer" : "Yes." }
+                            ]
+                        } )
+                    } );
+
+                    var meta = variables.svc.buildForPost(
+                        post       = post,
+                        authorName = "Spec",
+                        baseUrl    = "https://example.com"
+                    );
+
+                    var faq = findLd( meta.jsonLd, "FAQPage" );
+                    expect( isNull( faq ) ).toBeFalse();
+                    expect( faq.mainEntity.len() ).toBe( 2 );
+                    expect( faq.mainEntity[ 1 ].name ).toBe( "What is BoxLang?" );
+                    expect( faq.mainEntity[ 1 ].acceptedAnswer.text ).toBe( "A modern CFML runtime." );
+                } );
+
+                it( "emits HowTo JSON-LD with positioned step nodes", function() {
+                    var post = persistPost( {
+                        "schemaType" : "HowTo",
+                        "schemaData" : jsonSerialize( {
+                            "totalTime" : "PT15M",
+                            "steps" : [
+                                { "name" : "Install", "text" : "Run the installer." },
+                                { "name" : "Configure", "text" : "Edit config.json." }
+                            ]
+                        } )
+                    } );
+
+                    var meta = variables.svc.buildForPost(
+                        post = post, authorName = "Spec", baseUrl = "https://example.com"
+                    );
+
+                    var howTo = findLd( meta.jsonLd, "HowTo" );
+                    expect( isNull( howTo ) ).toBeFalse();
+                    expect( howTo.totalTime ).toBe( "PT15M" );
+                    expect( howTo.step.len() ).toBe( 2 );
+                    expect( howTo.step[ 1 ].position ).toBe( 1 );
+                    expect( howTo.step[ 2 ].position ).toBe( 2 );
+                } );
+
+                it( "emits Product JSON-LD with offers + brand", function() {
+                    var post = persistPost( {
+                        "schemaType" : "Product",
+                        "schemaData" : jsonSerialize( {
+                            "sku"           : "BX-100",
+                            "brand"         : "BoxLang",
+                            "price"         : "29.00",
+                            "priceCurrency" : "USD",
+                            "availability"  : "InStock"
+                        } )
+                    } );
+
+                    var meta = variables.svc.buildForPost(
+                        post = post, authorName = "Spec", baseUrl = "https://example.com"
+                    );
+
+                    var p = findLd( meta.jsonLd, "Product" );
+                    expect( isNull( p ) ).toBeFalse();
+                    expect( p.sku ).toBe( "BX-100" );
+                    expect( p.brand.name ).toBe( "BoxLang" );
+                    expect( p.offers.price ).toBe( "29.00" );
+                    expect( p.offers.priceCurrency ).toBe( "USD" );
+                    expect( p.offers.availability ).toInclude( "InStock" );
+                } );
+
+                it( "emits VideoObject when contentUrl OR embedUrl is set", function() {
+                    var post = persistPost( {
+                        "schemaType" : "VideoObject",
+                        "schemaData" : jsonSerialize( {
+                            "embedUrl"     : "https://www.youtube.com/embed/abc",
+                            "duration"     : "PT5M30S",
+                            "uploadDate"   : "2026-05-01",
+                            "thumbnailUrl" : "https://example.com/thumb.jpg"
+                        } )
+                    } );
+
+                    var meta = variables.svc.buildForPost(
+                        post = post, authorName = "Spec", baseUrl = "https://example.com"
+                    );
+
+                    var v = findLd( meta.jsonLd, "VideoObject" );
+                    expect( isNull( v ) ).toBeFalse();
+                    expect( v.embedUrl ).toBe( "https://www.youtube.com/embed/abc" );
+                    expect( v.duration ).toBe( "PT5M30S" );
+                } );
+
+                it( "promotes Article @type to NewsArticle when set", function() {
+                    var post = persistPost( { "schemaType" : "NewsArticle" } );
+
+                    var meta = variables.svc.buildForPost(
+                        post = post, authorName = "Spec", baseUrl = "https://example.com"
+                    );
+
+                    for ( var ld in meta.jsonLd ) {
+                        if ( ld[ "@type" ] == "NewsArticle" ) return;
+                    }
+                    fail( "Expected an LD node with @type=NewsArticle" );
+                } );
+
+                it( "emits no typed node when schema_type blank (default Article only)", function() {
+                    var post = persistPost( {} );
+                    var meta = variables.svc.buildForPost(
+                        post = post, authorName = "Spec", baseUrl = "https://example.com"
+                    );
+                    // Article + (BreadcrumbList? no, no categories passed) = 1 node
+                    expect( meta.jsonLd.len() ).toBe( 1 );
+                    expect( meta.jsonLd[ 1 ][ "@type" ] ).toBe( "Article" );
+                } );
+
+                it( "drops malformed schema_data quietly (no FAQPage emitted)", function() {
+                    var post = persistPost( {
+                        "schemaType" : "FAQPage",
+                        "schemaData" : "this is not json"
+                    } );
+                    var meta = variables.svc.buildForPost(
+                        post = post, authorName = "Spec", baseUrl = "https://example.com"
+                    );
+                    var faq = findLd( meta.jsonLd, "FAQPage" );
+                    expect( isNull( faq ) ).toBeTrue();
+                } );
+
+            } );
+
+            describe( "AiAssistantService.suggestSchemaType", function() {
+
+                beforeEach( function() {
+                    primeAi();
+                } );
+
+                it( "returns a struct with 'schemaType' picked from the model output", function() {
+                    var u = createTestUser( {}, "", "author" );
+                    var result = variables.aiSvc.suggestSchemaType(
+                        title  = "How to deploy BoxLang",
+                        body   = "Step 1: install. Step 2: configure. Step 3: ship.",
+                        userId = u.getId()
+                    );
+                    expect( result ).toHaveKey( "schemaType" );
+                    // Mock provider returns the default 'Mock SEO Title…'
+                    // text, which doesn't contain any allowed type, so
+                    // the classifier falls back to Article.
+                    expect( result.schemaType ).toBe( "Article" );
+                } );
+
+                it( "throws AiUnavailable when the gate fails", function() {
+                    setEnv( "AI_ENABLED", "false" );
+                    var u = createTestUser( {}, "", "author" );
+                    var threw = false;
+                    try { variables.aiSvc.suggestSchemaType( title = "x", body = "y", userId = u.getId() ); }
+                    catch ( bxBlogger.AiUnavailable e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+            } );
+
+        } );
+    }
+
+    private any function persistPost( required struct overrides ) {
+        var u = createTestUser( {}, "", "author" );
+        var defaults = {
+            "authorId"     : u.getId(),
+            "title"        : "Schema spec post",
+            "slug"         : "schema-spec-" & lCase( replace( createUUID(), "-", "", "all" ) ),
+            "bodyMarkdown" : "Body content."
+        };
+        structAppend( defaults, arguments.overrides, true );
+        var post = variables.postSvc.create( defaults );
+        variables.postSvc.publish( post );
+        return post;
+    }
+
+    private any function findLd( required array jsonLd, required string targetType ) {
+        for ( var ld in arguments.jsonLd ) {
+            if ( ld[ "@type" ] == arguments.targetType ) return ld;
+        }
+        return javaCast( "null", "" );
+    }
+
+    private void function primeAi() {
+        setEnv( "AI_ENABLED",  "true"            );
+        setEnv( "AI_PROVIDER", "openrouter"      );
+        setEnv( "AI_MODEL",    "qwen/qwen-turbo" );
+        setEnv( "AI_API_KEY",  "sk-test-key"     );
+        variables.settingSvc.set( key = "ai.seo.enabled", value = "true", type = "bool" );
+    }
+
+    private void function setEnv( required string key, required string value ) {
+        createObject( "java", "java.lang.System" ).setProperty( arguments.key, arguments.value );
+    }
+
+    private void function clearSystemProp( required string key ) {
+        try {
+            createObject( "java", "java.lang.System" ).clearProperty( arguments.key );
+        }
+        catch ( any e ) {}
+    }
+
+}
