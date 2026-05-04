@@ -1,6 +1,7 @@
 <bx:output>
-<link rel="alternate" type="application/rss+xml" title="#encodeForHTMLAttribute( getSetting( "AppName" ) )#" href="/feed.xml">
-<link rel="sitemap" type="application/xml" title="Sitemap" href="/sitemap.xml">
+<link rel="alternate" type="application/rss+xml"  title="#encodeForHTMLAttribute( getSetting( "AppName" ) )#" href="/feed.xml">
+<link rel="alternate" type="application/feed+json" title="#encodeForHTMLAttribute( getSetting( "AppName" ) )#" href="/feed.json">
+<link rel="sitemap"   type="application/xml"      title="Sitemap" href="/sitemap.xml">
 
 <bx:set faviconUrl = prc.theme.imageUrl( "favicon_image" )>
 <bx:if len( faviconUrl )>

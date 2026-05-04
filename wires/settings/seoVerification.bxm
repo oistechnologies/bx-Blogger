@@ -24,6 +24,8 @@ data = {
     "yandex"              : "",
     "pinterest"           : "",
     "facebook"            : "",
+    "websubEnabled"       : false,
+    "websubHubUrl"        : "",
     "flashOk"             : "",
     "flashError"          : ""
 };
@@ -34,6 +36,8 @@ function onMount( event, rc, prc, params ) {
     data.yandex              = settingService.get( "verification.yandex", "" );
     data.pinterest           = settingService.get( "verification.pinterest", "" );
     data.facebook            = settingService.get( "verification.facebook", "" );
+    data.websubEnabled       = !!settingService.get( "seo.websub_enabled", false );
+    data.websubHubUrl        = settingService.get( "seo.websub_hub_url", "" );
 }
 
 function save() {
@@ -46,8 +50,19 @@ function save() {
     settingService.set( key = "verification.pinterest",             value = trim( data.pinterest ?: "" ),           type = "string" );
     settingService.set( key = "verification.facebook",              value = trim( data.facebook ?: "" ),            type = "string" );
 
+    // WebSub fields. Hub URL is required when toggle is on so the
+    // job has somewhere to ping; we silently coerce on otherwise.
+    var hubUrl = trim( data.websubHubUrl ?: "" );
+    var wantOn = !!( data.websubEnabled ?: false );
+    if ( wantOn && !len( hubUrl ) ) {
+        data.flashError = "Enable WebSub requires a hub URL. The default public hub is https://pubsubhubbub.appspot.com/.";
+        return;
+    }
+    settingService.set( key = "seo.websub_enabled", value = wantOn ? "true" : "false", type = "bool" );
+    settingService.set( key = "seo.websub_hub_url", value = hubUrl, type = "string" );
+
     onMount();
-    data.flashOk = "Verification tokens saved. Crawlers will see the new meta tags on next render.";
+    data.flashOk = "Verification + WebSub settings saved. Public pages will pick up changes on next render.";
 }
 
 private void function clearFlashes() {
@@ -164,6 +179,48 @@ private boolean function requirePerm() {
                             <div class="form-text">Emits <code>&lt;meta name="facebook-domain-verification" content="..."&gt;</code></div>
                         </div>
 
+                        <hr class="my-4">
+
+                        <h6 class="mb-1">WebSub (instant feed push)</h6>
+                        <p class="text-muted small mb-3">
+                            When a post publishes, ping a WebSub /
+                            PubSubHubbub hub so feed readers
+                            (Inoreader, NewsBlur, Slack RSS) get
+                            the update in seconds instead of waiting
+                            for their next poll.
+                        </p>
+
+                        <div class="form-check form-switch mb-3">
+                            <input id="websubEnabled"
+                                   type="checkbox"
+                                   class="form-check-input"
+                                   role="switch"
+                                   wire:model.blur="websubEnabled">
+                            <label for="websubEnabled" class="form-check-label">
+                                Enable WebSub publishing
+                            </label>
+                            <div class="form-text">Outbound HTTP POST per publish — leave off if you don't want third-party fan-out.</div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="websubHubUrl" class="form-label">
+                                Hub URL
+                            </label>
+                            <input id="websubHubUrl"
+                                   type="url"
+                                   class="form-control font-monospace"
+                                   maxlength="500"
+                                   wire:model.blur="websubHubUrl"
+                                   placeholder="https://pubsubhubbub.appspot.com/">
+                            <div class="form-text">
+                                Default Google public hub:
+                                <code>https://pubsubhubbub.appspot.com/</code>.
+                                The hub URL is also advertised in
+                                <code>/feed.json</code> via the
+                                <code>hubs[]</code> array when enabled.
+                            </div>
+                        </div>
+
                         <button type="submit" class="btn btn-primary">Save</button>
                     </form>
                 </div>
@@ -184,6 +241,29 @@ private boolean function requirePerm() {
                     </ol>
                     <p class="text-muted mb-0">
                         Tokens stay even after verification — the consoles re-check periodically.
+                    </p>
+                </div>
+            </div>
+
+            <div class="card stat-card stat-card-warning mt-3">
+                <div class="card-header card-header-soft card-header-soft-warning">
+                    <span class="h6 mb-0">About WebSub</span>
+                </div>
+                <div class="card-body small">
+                    <p class="mb-2">
+                        WebSub (formerly PubSubHubbub) is a
+                        publish/subscribe protocol for feeds.
+                        We POST <code>hub.mode=publish</code> to
+                        the hub each time a post lands; the hub
+                        re-fetches the affected feeds and pushes
+                        them to its subscribers.
+                    </p>
+                    <p class="mb-0 text-muted">
+                        Pings cover the site feed plus each of
+                        the post's category, tag, and author
+                        feeds. Failures retry only on 5xx — 4xx
+                        means the hub rejected the payload and
+                        another attempt won't help.
                     </p>
                 </div>
             </div>

@@ -1,0 +1,134 @@
+/**
+ * bx-Blogger — SeoJsonFeedAndWebSubSpec (SEO Phase 11)
+ *
+ * Validates:
+ *   - FeedService.siteFeedJson() emits JSON Feed v1.1 spec shape
+ *     (`version`, `title`, `home_page_url`, `feed_url`, `items`)
+ *   - The `hubs` array is included only when seo.websub_enabled is
+ *     true AND seo.websub_hub_url is non-empty
+ *   - WebSubPingJob.handle() refuses an empty/missing feedUrls
+ *     payload (throws MalformedPayload)
+ *   - WebSubPingJob.handle() no-ops cleanly when WebSub is disabled
+ *     or no hub URL is set — no outbound HTTP, no exception
+ *
+ * Doesn't exercise the live HTTP path: that would need a stub hub
+ * server, which is out of scope for this spec. The job's gating
+ * behaviour is the part that's actually load-bearing.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.feedSvc    = getInstance( "FeedService" );
+        variables.settingSvc = getInstance( "SettingService" );
+
+        variables.savedSettings = {
+            "seo.websub_enabled" : variables.settingSvc.get( "seo.websub_enabled", false ),
+            "seo.websub_hub_url" : variables.settingSvc.get( "seo.websub_hub_url", "" )
+        };
+    }
+
+    function afterAll() {
+        // Restore preserved settings.
+        variables.settingSvc.set( key = "seo.websub_enabled", value = variables.savedSettings[ "seo.websub_enabled" ] ? "true" : "false", type = "bool" );
+        variables.settingSvc.set( key = "seo.websub_hub_url", value = variables.savedSettings[ "seo.websub_hub_url" ] ?: "", type = "string" );
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "SEO Phase 11 — JSON Feed + WebSub", function() {
+
+            describe( "FeedService.siteFeedJson", function() {
+
+                it( "emits JSON Feed v1.1 with the spec-required keys", function() {
+                    variables.settingSvc.set( key = "seo.websub_enabled", value = "false", type = "bool" );
+                    var jsonStr = variables.feedSvc.siteFeedJson( baseUrl = "https://example.com" );
+                    var feed    = jsonDeserialize( jsonStr );
+
+                    expect( feed ).toHaveKey( "version" );
+                    expect( feed.version ).toBe( "https://jsonfeed.org/version/1.1" );
+                    expect( feed ).toHaveKey( "title" );
+                    expect( feed ).toHaveKey( "home_page_url" );
+                    expect( feed.home_page_url ).toBe( "https://example.com/" );
+                    expect( feed ).toHaveKey( "feed_url" );
+                    expect( feed.feed_url ).toBe( "https://example.com/feed.json" );
+                    expect( feed ).toHaveKey( "items" );
+                    expect( isArray( feed.items ) ).toBeTrue();
+                } );
+
+                it( "omits the hubs array when WebSub is disabled", function() {
+                    variables.settingSvc.set( key = "seo.websub_enabled", value = "false", type = "bool" );
+                    variables.settingSvc.set( key = "seo.websub_hub_url", value = "https://pubsubhubbub.appspot.com/", type = "string" );
+                    var feed = jsonDeserialize( variables.feedSvc.siteFeedJson( baseUrl = "https://example.com" ) );
+                    expect( structKeyExists( feed, "hubs" ) ).toBeFalse();
+                } );
+
+                it( "omits the hubs array when no hub URL is configured (even if enabled)", function() {
+                    variables.settingSvc.set( key = "seo.websub_enabled", value = "true", type = "bool" );
+                    variables.settingSvc.set( key = "seo.websub_hub_url", value = "",     type = "string" );
+                    var feed = jsonDeserialize( variables.feedSvc.siteFeedJson( baseUrl = "https://example.com" ) );
+                    expect( structKeyExists( feed, "hubs" ) ).toBeFalse();
+                } );
+
+                it( "includes the hubs array when WebSub is enabled AND a hub URL is set", function() {
+                    variables.settingSvc.set( key = "seo.websub_enabled", value = "true", type = "bool" );
+                    variables.settingSvc.set( key = "seo.websub_hub_url", value = "https://pubsubhubbub.appspot.com/", type = "string" );
+                    var feed = jsonDeserialize( variables.feedSvc.siteFeedJson( baseUrl = "https://example.com" ) );
+                    expect( feed ).toHaveKey( "hubs" );
+                    expect( isArray( feed.hubs ) ).toBeTrue();
+                    expect( feed.hubs.len() ).toBe( 1 );
+                    expect( feed.hubs[ 1 ].type ).toBe( "WebSub" );
+                    expect( feed.hubs[ 1 ].url ).toBe( "https://pubsubhubbub.appspot.com/" );
+                } );
+
+            } );
+
+            describe( "WebSubPingJob.handle()", function() {
+
+                it( "throws MalformedPayload when feedUrls is missing", function() {
+                    var job = getInstance( "WebSubPingJob" );
+                    job.setProperties( {} );
+                    var threw = false;
+                    try { job.handle(); }
+                    catch ( bxBlogger.WebSubPingJob.MalformedPayload e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+                it( "throws MalformedPayload when feedUrls is empty", function() {
+                    var job = getInstance( "WebSubPingJob" );
+                    job.setProperties( { "feedUrls" : [] } );
+                    var threw = false;
+                    try { job.handle(); }
+                    catch ( bxBlogger.WebSubPingJob.MalformedPayload e ) { threw = true; }
+                    expect( threw ).toBeTrue();
+                } );
+
+                it( "no-ops cleanly when WebSub is disabled (no exception, no HTTP)", function() {
+                    variables.settingSvc.set( key = "seo.websub_enabled", value = "false", type = "bool" );
+                    variables.settingSvc.set( key = "seo.websub_hub_url", value = "https://pubsubhubbub.appspot.com/", type = "string" );
+                    var job = getInstance( "WebSubPingJob" );
+                    job.setProperties( { "feedUrls" : [ "https://example.com/feed" ] } );
+                    // Should NOT throw — handle() must short-circuit.
+                    var threw = false;
+                    try { job.handle(); }
+                    catch ( any e ) { threw = true; }
+                    expect( threw ).toBeFalse();
+                } );
+
+                it( "no-ops cleanly when no hub URL is configured (even if enabled)", function() {
+                    variables.settingSvc.set( key = "seo.websub_enabled", value = "true", type = "bool" );
+                    variables.settingSvc.set( key = "seo.websub_hub_url", value = "",     type = "string" );
+                    var job = getInstance( "WebSubPingJob" );
+                    job.setProperties( { "feedUrls" : [ "https://example.com/feed" ] } );
+                    var threw = false;
+                    try { job.handle(); }
+                    catch ( any e ) { threw = true; }
+                    expect( threw ).toBeFalse();
+                } );
+
+            } );
+
+        } );
+    }
+
+}

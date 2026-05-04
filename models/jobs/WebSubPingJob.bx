@@ -1,0 +1,117 @@
+/**
+ * bx-Blogger — WebSubPingJob (SEO Phase 11)
+ *
+ * Tells a WebSub (PubSubHubbub) hub that a feed has new content.
+ * Subscribers (Inoreader, NewsBlur, Slack RSS readers, Google's
+ * historical PubSubHubbub clients) get pushed the update in
+ * seconds instead of waiting for their next polling cycle.
+ *
+ * The protocol: form-encoded POST to the configured hub URL with
+ * `hub.mode=publish` and one or more `hub.url=` parameters listing
+ * the feeds that changed. The hub fetches each feed and fans out
+ * the updates to its subscribers.
+ *
+ * Dispatched from `SearchEnginePingInterceptor` on `postPostPublish`
+ * (alongside the existing IndexNow ping). Job no-ops when WebSub
+ * is disabled or no hub URL is configured — keeps a fresh install
+ * silent when the operator hasn't opted in.
+ *
+ * Single attempt with a short timeout; retrying a hub failure
+ * doesn't help because the hub will catch up on the next /feed
+ * fetch from a polling subscriber regardless.
+ */
+class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
+
+    variables.requestTimeoutS = 10;
+
+    function handle() {
+        var props = variables.properties ?: {};
+
+        var feedUrls = structKeyExists( props, "feedUrls" ) && isArray( props.feedUrls )
+            ? props.feedUrls : [];
+        if ( !feedUrls.len() ) {
+            throw(
+                type    = "bxBlogger.WebSubPingJob.MalformedPayload",
+                message = "WebSubPingJob requires a non-empty feedUrls property."
+            );
+        }
+
+        var settings = application.wireBox.getInstance( "SettingService" );
+        var enabled  = !!settings.get( "seo.websub_enabled", false );
+        var hubUrl   = trim( settings.get( "seo.websub_hub_url", "" ) ?: "" );
+        if ( !enabled || !len( hubUrl ) ) {
+            writeLog(
+                file = "bxblogger",
+                type = "information",
+                text = "WebSubPingJob: WebSub disabled or no hub URL — skipping ping for " & feedUrls.toList( ", " )
+            );
+            return;
+        }
+
+        // Form-encoded body: hub.mode=publish&hub.url=<feed1>&hub.url=<feed2>
+        var bodyParts = [ "hub.mode=publish" ];
+        for ( var fu in feedUrls ) {
+            if ( !isSimpleValue( fu ) || !len( fu ) ) continue;
+            bodyParts.append( "hub.url=" & urlEncodedFormat( fu ) );
+        }
+        var body = bodyParts.toList( "&" );
+
+        var status = postForm( hubUrl, body );
+        if ( status >= 200 && status < 300 ) {
+            writeLog(
+                file = "bxblogger",
+                type = "information",
+                text = "WebSubPingJob: hub " & hubUrl & " accepted publish for " & feedUrls.toList( ", " ) & " (returned " & status & ")"
+            );
+            return;
+        }
+
+        // 4xx = malformed payload or bad hub URL — retrying won't help.
+        if ( status >= 400 && status < 500 ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "WebSubPingJob: hub " & hubUrl & " rejected publish with " & status & " — not retrying."
+            );
+            return;
+        }
+
+        // 5xx = upstream problem; cbq retry policy decides if we
+        // come back. Throwing surfaces the error to cbq.
+        throw(
+            type    = "bxBlogger.WebSubPingJob.UpstreamError",
+            message = "WebSub hub " & hubUrl & " returned " & status
+        );
+    }
+
+    /**
+     * Java 11+ HttpClient form POST. Same pattern as
+     * PingSearchEnginesJob.postJson — we use Java directly instead
+     * of Hyper because cbq jobs run on a non-CFML thread that
+     * doesn't always have the WireBox-backed Hyper client wired
+     * up (see the existing job comment for the long version).
+     */
+    private numeric function postForm( required string endpoint, required string body ) {
+        var HttpClient   = createObject( "java", "java.net.http.HttpClient" );
+        var HttpRequest  = createObject( "java", "java.net.http.HttpRequest" );
+        var BodyPubs     = createObject( "java", "java.net.http.HttpRequest$BodyPublishers" );
+        var BodyHandlers = createObject( "java", "java.net.http.HttpResponse$BodyHandlers" );
+        var URI          = createObject( "java", "java.net.URI" );
+        var Duration     = createObject( "java", "java.time.Duration" );
+
+        var httpClient = HttpClient.newBuilder()
+            .connectTimeout( Duration.ofSeconds( javaCast( "long", variables.requestTimeoutS ) ) )
+            .build();
+
+        var req = HttpRequest.newBuilder()
+            .uri( URI.init( arguments.endpoint ) )
+            .timeout( Duration.ofSeconds( javaCast( "long", variables.requestTimeoutS ) ) )
+            .header( "Content-Type", "application/x-www-form-urlencoded; charset=utf-8" )
+            .POST( BodyPubs.ofString( arguments.body ) )
+            .build();
+
+        var res = httpClient.send( req, BodyHandlers.discarding() );
+        return res.statusCode();
+    }
+
+}

@@ -149,6 +149,11 @@ class {
 		// Site-wide RSS. Scope-specific variants map to dedicated
 		// actions below — keeps each feed handler small instead of
 		// dispatching on an rc param.
+		// SEO Phase 11 — JSON Feed v1.1 (.json) is registered ahead
+		// of the .xml route because ColdBox strips the .xml extension
+		// before matching; the .json action stays separate so the
+		// content-type header doesn't have to dispatch on rc.
+		route( "/feed.json" ).to( "blog.feedJson" );
 		route( "/feed" ).to( "blog.feed" );
 
 		// /blog family — most-specific first. ColdBox matches routes
@@ -167,14 +172,16 @@ class {
 		// `/categories` is the listing of every category — declared
 		// BEFORE `/category/:slug` (and using the plural form) so the
 		// two patterns never collide.
-		route( "/categories"          ).to( "blog.categories" );
-		route( "/category/:slug/feed" ).to( "blog.categoryFeed" );
-		route( "/category/:slug"      ).to( "blog.category"     );
+		route( "/categories"               ).to( "blog.categories" );
+		route( "/category/:slug/feed.json" ).to( "blog.categoryFeedJson" );
+		route( "/category/:slug/feed"      ).to( "blog.categoryFeed" );
+		route( "/category/:slug"           ).to( "blog.category"     );
 
 		// Tag — same plural-listing-first ordering as categories above.
-		route( "/tags"           ).to( "blog.tags" );
-		route( "/tag/:slug/feed" ).to( "blog.tagFeed" );
-		route( "/tag/:slug"      ).to( "blog.tag"     );
+		route( "/tags"               ).to( "blog.tags" );
+		route( "/tag/:slug/feed.json" ).to( "blog.tagFeedJson" );
+		route( "/tag/:slug/feed"      ).to( "blog.tagFeed" );
+		route( "/tag/:slug"           ).to( "blog.tag"     );
 
 		// Author — public author page + RSS feed. The `:slug`
 		// param is the user's `author_slug` column (auto-generated
@@ -187,8 +194,9 @@ class {
 		// or the slug pattern (which is greedier than it looks because
 		// "authors" is a valid slug) would swallow the literal path.
 		route( "/authors" ).to( "blog.authors" );
-		route( "/author/:slug/feed" ).to( "blog.authorFeed" );
-		route( "/author/:slug"      ).to( "blog.author"     );
+		route( "/author/:slug/feed.json" ).to( "blog.authorFeedJson" );
+		route( "/author/:slug/feed"      ).to( "blog.authorFeed" );
+		route( "/author/:slug"           ).to( "blog.author"     );
 
 		// Date archive — year, then year+month. Handler validates the
 		// numeric shape so no regex constraint is needed at the route

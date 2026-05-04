@@ -1,7 +1,8 @@
 <bx:output>
-<!-- RSS auto-discovery — feed readers pick this up without a per-page nav link -->
-<link rel="alternate" type="application/rss+xml" title="#encodeForHTMLAttribute( getSetting( "AppName" ) )#" href="/feed.xml">
-<link rel="sitemap" type="application/xml" title="Sitemap" href="/sitemap.xml">
+<!-- Feed auto-discovery — readers pick these up without a per-page nav link -->
+<link rel="alternate" type="application/rss+xml"  title="#encodeForHTMLAttribute( getSetting( "AppName" ) )#" href="/feed.xml">
+<link rel="alternate" type="application/feed+json" title="#encodeForHTMLAttribute( getSetting( "AppName" ) )#" href="/feed.json">
+<link rel="sitemap"   type="application/xml"      title="Sitemap" href="/sitemap.xml">
 
 <!-- Favicon — operator-supplied image-type theme option. Renders only
      when the option resolves to a live media row. -->

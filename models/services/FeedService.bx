@@ -30,6 +30,7 @@ class accessors="true" singleton {
     property name="controller"         inject="coldbox";
     property name="publicPostService"  inject="PublicPostService";
     property name="interceptorService" inject="coldbox:InterceptorService";
+    property name="settingService"     inject="SettingService";
     property name="log"                inject="logbox:logger:{this}";
 
     variables.defaultLimit = 25;
@@ -100,6 +101,77 @@ class accessors="true" singleton {
             title       = displayName & " — " & variables.controller.getSetting( "AppName" ),
             description = "Posts by " & displayName,
             posts       = posts
+        );
+    }
+
+    // --------------------------------------------------------------------
+    // SEO Phase 11 — JSON Feed v1.1 (https://jsonfeed.org/version/1.1)
+    // Same scopes as the RSS variants; modern feed readers (NetNewsWire,
+    // Inoreader, Feedbin) prefer JSON over Atom/RSS.
+    // --------------------------------------------------------------------
+
+    string function siteFeedJson( required string baseUrl, numeric limit ) {
+        var posts = variables.publicPostService.listPublished(
+            page    = 1,
+            perPage = resolveLimit( arguments.limit )
+        ).posts;
+
+        return buildJsonFeed(
+            baseUrl     = arguments.baseUrl,
+            selfPath    = "/feed.json",
+            title       = variables.controller.getSetting( "AppName" ),
+            description = "Latest posts from " & variables.controller.getSetting( "AppName" ),
+            posts       = posts
+        );
+    }
+
+    string function categoryFeedJson( required any category, required string baseUrl, numeric limit ) {
+        var posts = variables.publicPostService.listPublishedByCategory(
+            category = arguments.category,
+            page     = 1,
+            perPage  = resolveLimit( arguments.limit )
+        ).posts;
+
+        return buildJsonFeed(
+            baseUrl     = arguments.baseUrl,
+            selfPath    = "/category/" & arguments.category.getSlug() & "/feed.json",
+            title       = arguments.category.getName() & " — " & variables.controller.getSetting( "AppName" ),
+            description = arguments.category.getDescription() ?: ( "Posts in category " & arguments.category.getName() ),
+            posts       = posts
+        );
+    }
+
+    string function tagFeedJson( required any tag, required string baseUrl, numeric limit ) {
+        var posts = variables.publicPostService.listPublishedByTag(
+            tag     = arguments.tag,
+            page    = 1,
+            perPage = resolveLimit( arguments.limit )
+        ).posts;
+
+        return buildJsonFeed(
+            baseUrl     = arguments.baseUrl,
+            selfPath    = "/tag/" & arguments.tag.getSlug() & "/feed.json",
+            title       = "##" & arguments.tag.getSlug() & " — " & variables.controller.getSetting( "AppName" ),
+            description = "Posts tagged ##" & arguments.tag.getSlug(),
+            posts       = posts
+        );
+    }
+
+    string function authorFeedJson( required any author, required string baseUrl, numeric limit ) {
+        var posts = variables.publicPostService.listPublishedByAuthor(
+            author  = arguments.author,
+            page    = 1,
+            perPage = resolveLimit( arguments.limit )
+        ).posts;
+
+        var displayName = arguments.author.getDisplayName() ?: arguments.author.getUsername();
+        return buildJsonFeed(
+            baseUrl     = arguments.baseUrl,
+            selfPath    = "/author/" & arguments.author.getUsername() & "/feed.json",
+            title       = displayName & " — " & variables.controller.getSetting( "AppName" ),
+            description = "Posts by " & displayName,
+            posts       = posts,
+            authorName  = displayName
         );
     }
 
@@ -186,6 +258,74 @@ class accessors="true" singleton {
         data.xml = xml;
         variables.interceptorService.announce( state = "postRssGenerate", data = data );
         return data.xml;
+    }
+
+    /**
+     * SEO Phase 11 — render a JSON Feed v1.1 document. Spec:
+     * https://jsonfeed.org/version/1.1
+     *
+     * Includes a WebSub `hubs` block when seo.websub_enabled is true
+     * and seo.websub_hub_url is set, so feed readers that follow
+     * the spec subscribe to push notifications instead of polling.
+     */
+    private string function buildJsonFeed(
+        required string baseUrl,
+        required string selfPath,
+        required string title,
+        required string description,
+        required array  posts,
+                 string authorName = ""
+    ) {
+        var feedUrl = arguments.baseUrl & arguments.selfPath;
+
+        var feed = {
+            "version"       : "https://jsonfeed.org/version/1.1",
+            "title"         : arguments.title,
+            "home_page_url" : arguments.baseUrl & "/",
+            "feed_url"      : feedUrl,
+            "description"   : arguments.description,
+            "language"      : "en-US",
+            "items"         : []
+        };
+        if ( len( arguments.authorName ) ) {
+            feed[ "authors" ] = [ { "name" : arguments.authorName } ];
+        }
+
+        // WebSub hubs block — when configured, every JSON Feed
+        // entry gets a `hubs` array so subscribers know where to
+        // register for push updates.
+        var hubUrl = trim( settingService.get( "seo.websub_hub_url", "" ) ?: "" );
+        var hubOn  = !!settingService.get( "seo.websub_enabled", false );
+        if ( hubOn && len( hubUrl ) ) {
+            feed[ "hubs" ] = [ { "type" : "WebSub", "url" : hubUrl } ];
+        }
+
+        for ( var post in arguments.posts ) {
+            var slug    = post.getSlug() & "";
+            var url_    = arguments.baseUrl & "/blog/" & slug;
+            var pubAt   = isNull( post.getPublishedAt() ) ? now() : post.getPublishedAt();
+            var modAt   = isNull( post.getUpdatedAt() ) ? pubAt : post.getUpdatedAt();
+            var bodyHtml = post.getBodyHtml() ?: "";
+            var excerpt  = post.getExcerpt() ?: "";
+
+            var item = {
+                "id"             : url_,
+                "url"            : url_,
+                "title"          : post.getTitle() ?: "",
+                "date_published" : iso8601( pubAt ),
+                "date_modified"  : iso8601( modAt )
+            };
+            if ( len( bodyHtml ) ) item[ "content_html" ] = bodyHtml;
+            if ( len( excerpt ) )  item[ "summary" ]      = excerpt;
+            feed.items.append( item );
+        }
+
+        return jsonSerialize( feed );
+    }
+
+    private string function iso8601( required any dt ) {
+        var d = isDate( arguments.dt ) ? arguments.dt : parseDateTime( arguments.dt );
+        return dateTimeFormat( d, "iso" );
     }
 
     /**

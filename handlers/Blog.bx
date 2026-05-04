@@ -494,6 +494,89 @@ class extends="coldbox.system.EventHandler" {
         );
     }
 
+    // --------------------------------------------------------------------
+    // SEO Phase 11 — JSON Feed v1.1 endpoints
+    // --------------------------------------------------------------------
+
+    function feedJson( event, rc, prc ) {
+        var json = getInstance( "FeedService" ).siteFeedJson(
+            baseUrl = siteBaseUrl( event ),
+            limit   = themePerPage( prc )
+        );
+        writeJsonFeedResponse( event, json );
+    }
+
+    function categoryFeedJson( event, rc, prc ) {
+        var slug   = trim( rc.slug ?: "" );
+        var catRow = getInstance( "QueryBuilder@qb" ).newQuery()
+            .from( "categories" )
+            .where( "slug", slug )
+            .first();
+        if ( !hasRow( catRow ) ) {
+            renderJsonFeedNotFound( event );
+            return;
+        }
+        var foundCategory = getInstance( "Category" ).find( catRow.id );
+        var json = getInstance( "FeedService" ).categoryFeedJson(
+            category = foundCategory,
+            baseUrl  = siteBaseUrl( event ),
+            limit    = themePerPage( prc )
+        );
+        writeJsonFeedResponse( event, json );
+    }
+
+    function tagFeedJson( event, rc, prc ) {
+        var slug     = trim( rc.slug ?: "" );
+        var foundTag = getInstance( "Tag" ).where( "slug", slug ).first();
+        if ( isNull( foundTag ) ) {
+            renderJsonFeedNotFound( event );
+            return;
+        }
+        var json = getInstance( "FeedService" ).tagFeedJson(
+            tag     = foundTag,
+            baseUrl = siteBaseUrl( event ),
+            limit   = themePerPage( prc )
+        );
+        writeJsonFeedResponse( event, json );
+    }
+
+    function authorFeedJson( event, rc, prc ) {
+        var slug        = trim( rc.slug ?: "" );
+        var foundAuthor = getInstance( "UserService" ).findByAuthorSlug( slug );
+        if ( isNull( foundAuthor ) || !foundAuthor.getPublicAuthorPageEnabled() ) {
+            renderJsonFeedNotFound( event );
+            return;
+        }
+        var json = getInstance( "FeedService" ).authorFeedJson(
+            author  = foundAuthor,
+            baseUrl = siteBaseUrl( event ),
+            limit   = themePerPage( prc )
+        );
+        writeJsonFeedResponse( event, json );
+    }
+
+    private void function writeJsonFeedResponse( required any event, required string json ) {
+        arguments.event.renderData(
+            type        = "plain",
+            data        = arguments.json,
+            contentType = "application/feed+json; charset=utf-8"
+        );
+    }
+
+    private void function renderJsonFeedNotFound( required any event ) {
+        arguments.event.renderData(
+            type        = "plain",
+            statusCode  = 404,
+            statusText  = "Not Found",
+            contentType = "application/feed+json; charset=utf-8",
+            data        = jsonSerialize( {
+                "version" : "https://jsonfeed.org/version/1.1",
+                "title"   : "Not Found",
+                "items"   : []
+            } )
+        );
+    }
+
     private void function renderFeedNotFound( required any event ) {
         arguments.event.renderData(
             type        = "plain",

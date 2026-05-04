@@ -1,22 +1,27 @@
 /**
- * bx-Blogger — SearchEnginePingInterceptor (Phase 6.H)
+ * bx-Blogger — SearchEnginePingInterceptor (Phase 6.H, extended in
+ * SEO Phase 11 with WebSub).
  *
- * Subscribes to `postPostPublish` and dispatches a
- * `PingSearchEnginesJob` for the freshly-published post's
- * canonical URL. The job itself no-ops when the IndexNow key
- * isn't configured, so sites that don't care about IndexNow
- * never see any network traffic — the interceptor stays wired
- * regardless.
+ * Subscribes to `postPostPublish` and fires two parallel jobs for
+ * the freshly-published post:
+ *
+ *   1. `PingSearchEnginesJob` — IndexNow URL submission. No-ops
+ *      when the IndexNow key isn't configured.
+ *   2. `WebSubPingJob` — POSTs `hub.mode=publish` to the configured
+ *      WebSub hub for every feed the post appears in (site, each
+ *      of its categories, each of its tags, its author). No-ops
+ *      when `seo.websub_enabled` is false or no hub URL is set.
  *
  * Only fires for `post_type = "post"`. Pages don't get
  * submitted to IndexNow by convention — the site owner rarely
  * wants a "Contact" or "About" page indexed independently of
- * their normal sitemap submission.
+ * their normal sitemap submission. Pages also don't appear in
+ * any of the feeds we'd ping a hub for.
  *
  * URL construction: `APP_URL/blog/{slug}` when `APP_URL` is set
  * (dev + prod both seed this env var). Missing `APP_URL` = skip
- * — IndexNow needs an absolute URL and we'd rather no-op than
- * ping with a bogus origin.
+ * — IndexNow + WebSub both need absolute URLs and we'd rather
+ * no-op than ping with a bogus origin.
  */
 class extends="coldbox.system.Interceptor" {
 
@@ -38,7 +43,7 @@ class extends="coldbox.system.Interceptor" {
                 writeLog(
                     file = "bxblogger",
                     type = "information",
-                    text = "SearchEnginePingInterceptor: APP_URL not set — skipping IndexNow ping for post=" & post.getId()
+                    text = "SearchEnginePingInterceptor: APP_URL not set — skipping ping fan-out for post=" & post.getId()
                 );
                 return;
             }
@@ -47,11 +52,27 @@ class extends="coldbox.system.Interceptor" {
             // slash when concatenating the post path.
             if ( right( appUrl, 1 ) == "/" ) appUrl = left( appUrl, len( appUrl ) - 1 );
 
+            // 1) IndexNow — pings the post's canonical URL.
             getInstance( "PingSearchEnginesJob" )
                 .setProperties( {
                     "postUrl" : appUrl & "/blog/" & post.getSlug()
                 } )
                 .dispatch();
+
+            // 2) WebSub — pings every feed the post just landed in,
+            //    so subscribers get the update in seconds rather
+            //    than waiting for their next polling cycle. Job
+            //    no-ops when WebSub is disabled or no hub URL is
+            //    set, so the call is safe even on installs that
+            //    don't opt in.
+            var feedUrls = collectFeedUrls( post, appUrl );
+            if ( feedUrls.len() ) {
+                getInstance( "WebSubPingJob" )
+                    .setProperties( {
+                        "feedUrls" : feedUrls
+                    } )
+                    .dispatch();
+            }
         }
         catch ( any e ) {
             writeLog(
@@ -60,6 +81,51 @@ class extends="coldbox.system.Interceptor" {
                 text = "SearchEnginePingInterceptor: " & ( e.Message ?: "(no message)" )
             );
         }
+    }
+
+    /**
+     * Build the array of feed URLs the post just changed:
+     * the site feed plus every category / tag / author feed
+     * that includes this post. Each as `/feed` (Atom — the
+     * canonical site feed URL); the WebSub hub fetches whichever
+     * feed it knows about and refreshes its subscribers.
+     */
+    private array function collectFeedUrls( required any post, required string appUrl ) {
+        var urls = [ arguments.appUrl & "/feed" ];
+
+        try {
+            for ( var cat in arguments.post.categories().get() ) {
+                var slug = cat.getSlug() ?: "";
+                if ( len( slug ) ) urls.append( arguments.appUrl & "/category/" & slug & "/feed" );
+            }
+        }
+        catch ( any catErr ) {
+            // Relation hydration failure is non-fatal — we still
+            // publish the site-level feed which is what most
+            // hubs care about.
+        }
+
+        try {
+            for ( var tag in arguments.post.tags().get() ) {
+                var tslug = tag.getSlug() ?: "";
+                if ( len( tslug ) ) urls.append( arguments.appUrl & "/tag/" & tslug & "/feed" );
+            }
+        }
+        catch ( any tagErr ) {}
+
+        try {
+            var author = arguments.post.author();
+            if ( !isNull( author ) ) {
+                var authorSlug = author.getAuthorSlug() ?: "";
+                var publicEnabled = !!( author.getPublicAuthorPageEnabled() ?: false );
+                if ( publicEnabled && len( authorSlug ) ) {
+                    urls.append( arguments.appUrl & "/author/" & authorSlug & "/feed" );
+                }
+            }
+        }
+        catch ( any authorErr ) {}
+
+        return urls;
     }
 
 }
