@@ -25,6 +25,7 @@ property name="draftPreviewService"  inject="DraftPreviewService";
 property name="aiService"            inject="AiAssistantService";
 property name="auditService"         inject="SeoAuditService";
 property name="auditAgentService"    inject="SeoAuditAgentService";
+property name="settingService"       inject="SettingService";
 property name="aiImageService"       inject="AiImageService";
 property name="themeService"         inject="ThemeService";
 property name="cbauth"               inject="AuthenticationService@cbauth";
@@ -77,6 +78,8 @@ data = {
     "auditTokens"     : 0,
     "auditError"      : "",
     "auditFollowUpQ"  : "",
+    // SEO Phase 6 — SERP/social preview modal state
+    "showPreviewPanel" : false,
     // 2.I AI image-gen state
     "showImageModal"  : false,
     "imagePrompt"     : "",
@@ -787,6 +790,47 @@ string function renderAuditMarkdown() {
     catch ( any e ) {
         return "<pre>" & encodeForHTML( md ) & "</pre>";
     }
+}
+
+// --------------------------------------------------------------------
+// SEO Phase 6 — SERP + social card preview
+// --------------------------------------------------------------------
+
+function openPreviewPanel()  { data.showPreviewPanel = true;  }
+function closePreviewPanel() { data.showPreviewPanel = false; }
+
+/**
+ * Build the data struct the preview cards render — same fallback
+ * chain SeoService.buildForPost uses (seo_title || title;
+ * seo_description || excerpt) and the same 60/160 truncation. Pure
+ * function of wire data + a single OgImageService lookup; runs on
+ * every modal render so the previews update as the user types.
+ */
+struct function previewData() {
+    var titleRaw = len( trim( data.seoTitle ?: "" ) ) ? data.seoTitle : ( data.title ?: "Untitled" );
+    var descRaw  = len( trim( data.seoDescription ?: "" ) ) ? data.seoDescription : ( data.excerpt ?: "" );
+
+    var siteHost = cgi.http_host ?: ( cgi.server_name ?: "localhost" );
+    var slug     = data.slug ?: "";
+    var url      = "https://" & siteHost & "/blog/" & slug;
+
+    return {
+        "title"     : truncateForSerp( titleRaw, 60 ),
+        "titleFull" : titleRaw,
+        "desc"      : truncateForSerp( descRaw, 160 ),
+        "descFull"  : descRaw,
+        "url"       : url,
+        "host"      : siteHost,
+        "slug"      : slug,
+        "image"     : ogImageUrl(),
+        "twitter"   : settingService.get( "social.twitter_handle", "" )
+    };
+}
+
+private string function truncateForSerp( required string raw, required numeric max ) {
+    var t = trim( arguments.raw );
+    if ( len( t ) <= arguments.max ) return t;
+    return left( t, arguments.max - 1 ) & "…";
 }
 
 /**
@@ -1910,12 +1954,20 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 						<hr class="my-3">
 						<div class="d-flex justify-content-between align-items-center mb-2">
 							<span class="h6 mb-0">SEO audit</span>
-							<button type="button"
-							        class="btn btn-sm btn-outline-primary"
-							        wire:click="openAuditPanel"
-							        title="Open the AI SEO Audit panel">
-								<i class="bi bi-robot me-1"></i> AI Audit
-							</button>
+							<span class="d-flex gap-1">
+								<button type="button"
+								        class="btn btn-sm btn-outline-secondary"
+								        wire:click="openPreviewPanel"
+								        title="Preview how this post will appear in Google, Twitter, and Facebook">
+									<i class="bi bi-eye me-1"></i> Preview
+								</button>
+								<button type="button"
+								        class="btn btn-sm btn-outline-primary"
+								        wire:click="openAuditPanel"
+								        title="Open the AI SEO Audit panel">
+									<i class="bi bi-robot me-1"></i> AI Audit
+								</button>
+							</span>
 						</div>
 						<div class="d-flex justify-content-between align-items-center mb-2">
 							<span class="text-muted small">Live deterministic score</span>
@@ -2219,6 +2271,113 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 					</div>
 					<div class="modal-footer">
 						<button type="button" class="btn btn-outline-secondary" wire:click="closeAuditPanel">Close</button>
+					</div>
+				</div>
+			</div>
+		</div>
+	</bx:if>
+
+	<!--- SEO Phase 6 — SERP + social card preview modal -------------- --->
+	<bx:if args.showPreviewPanel>
+		<bx:set pv = previewData()>
+		<div class="modal show d-block" tabindex="-1" style="background:rgba(0,0,0,.35);">
+			<div class="modal-dialog modal-xl modal-dialog-scrollable">
+				<div class="modal-content">
+					<div class="modal-header">
+						<h5 class="modal-title">
+							<i class="bi bi-eye me-1"></i> SERP &amp; Social Preview
+						</h5>
+						<button type="button" class="btn-close" wire:click="closePreviewPanel"></button>
+					</div>
+					<div class="modal-body">
+						<p class="text-muted small mb-4">
+							Live previews of how this post appears in Google, Twitter / X, and Facebook / LinkedIn.
+							Values reflect the current editor state with the same fallbacks <code>SeoService</code> applies
+							(seo title falls back to title; seo description falls back to excerpt) and the same 60 / 160 character truncation.
+							Edit fields and reopen this panel to refresh.
+						</p>
+
+						<!--- Google SERP --->
+						<h6 class="text-muted text-uppercase small mb-2">
+							<i class="bi bi-google me-1"></i> Google search result
+						</h6>
+						<div class="card mb-4">
+							<div class="card-body">
+								<div class="small text-muted mb-1">
+									<i class="bi bi-globe2 me-1"></i> #encodeForHTML( pv.host )#
+									<span class="text-muted"> &rsaquo; </span>
+									blog
+									<span class="text-muted"> &rsaquo; </span>
+									#encodeForHTML( pv.slug )#
+								</div>
+								<a href="##" class="d-block fs-5 fw-normal text-decoration-none" style="color:##1a0dab;" onclick="return false;">
+									#encodeForHTML( pv.title )#
+								</a>
+								<div class="text-secondary small">
+									#encodeForHTML( pv.desc )#
+								</div>
+							</div>
+						</div>
+
+						<!--- Twitter / X --->
+						<h6 class="text-muted text-uppercase small mb-2">
+							<i class="bi bi-twitter-x me-1"></i> Twitter / X card
+						</h6>
+						<div class="card mb-4" style="max-width: 540px;">
+							<bx:if len( pv.image )>
+								<img src="#encodeForHTMLAttribute( pv.image )#"
+								     alt="#encodeForHTMLAttribute( pv.title )#"
+								     class="card-img-top"
+								     style="aspect-ratio: 1.91/1; object-fit: cover; background:##eee;">
+							<bx:else>
+								<div class="card-img-top d-flex align-items-center justify-content-center text-muted small bg-light"
+								     style="aspect-ratio: 1.91/1;">
+									(no OG image &mdash; will use text-only summary card)
+								</div>
+							</bx:if>
+							<div class="card-body">
+								<div class="small text-muted">#encodeForHTML( pv.host )#</div>
+								<div class="fw-semibold">#encodeForHTML( pv.title )#</div>
+								<div class="small text-secondary">#encodeForHTML( pv.desc )#</div>
+								<bx:if len( pv.twitter )>
+									<div class="small text-muted mt-1">via #encodeForHTML( pv.twitter )#</div>
+								</bx:if>
+							</div>
+						</div>
+
+						<!--- Facebook / LinkedIn --->
+						<h6 class="text-muted text-uppercase small mb-2">
+							<i class="bi bi-facebook me-1"></i> Facebook / LinkedIn share
+						</h6>
+						<div class="card" style="max-width: 600px;">
+							<bx:if len( pv.image )>
+								<img src="#encodeForHTMLAttribute( pv.image )#"
+								     alt="#encodeForHTMLAttribute( pv.title )#"
+								     class="card-img-top"
+								     style="aspect-ratio: 1.91/1; object-fit: cover; background:##eee;">
+							<bx:else>
+								<div class="card-img-top d-flex align-items-center justify-content-center text-muted small bg-light"
+								     style="aspect-ratio: 1.91/1;">
+									(no OG image)
+								</div>
+							</bx:if>
+							<div class="card-body" style="background:##f0f2f5;">
+								<div class="small text-uppercase text-muted">#encodeForHTML( pv.host )#</div>
+								<div class="fs-5 fw-semibold">#encodeForHTML( pv.title )#</div>
+								<div class="small text-secondary">#encodeForHTML( pv.desc )#</div>
+							</div>
+						</div>
+
+						<!--- Truncation hint --->
+						<div class="alert alert-info small mt-4 mb-0">
+							<strong>Truncation:</strong>
+							title is shown at #len( pv.title )# / 60 chars,
+							description at #len( pv.desc )# / 160 chars
+							(full title #len( pv.titleFull )# chars, full description #len( pv.descFull )# chars).
+						</div>
+					</div>
+					<div class="modal-footer">
+						<button type="button" class="btn btn-outline-secondary" wire:click="closePreviewPanel">Close</button>
 					</div>
 				</div>
 			</div>
