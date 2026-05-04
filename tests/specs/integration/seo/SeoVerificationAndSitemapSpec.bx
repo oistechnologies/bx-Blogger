@@ -1,0 +1,102 @@
+/**
+ * bx-Blogger — SeoVerificationAndSitemapSpec (SEO Phase 9)
+ *
+ * Validates the verification meta tag emission paths and the image
+ * sitemap's xmlns:image declaration. The IndexNow file route is
+ * env-gated at app boot so it's not exercised here (a separate
+ * functional test would need a hot reload).
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc        = getInstance( "SeoService" );
+        variables.sitemapSvc = getInstance( "SitemapService" );
+        variables.settingSvc = getInstance( "SettingService" );
+
+        variables.savedSettings = {
+            "verification.google_search_console" : variables.settingSvc.get( "verification.google_search_console", "" ),
+            "verification.bing"                  : variables.settingSvc.get( "verification.bing", "" ),
+            "verification.yandex"                : variables.settingSvc.get( "verification.yandex", "" ),
+            "verification.pinterest"             : variables.settingSvc.get( "verification.pinterest", "" ),
+            "verification.facebook"              : variables.settingSvc.get( "verification.facebook", "" )
+        };
+    }
+
+    function afterAll() {
+        for ( var k in variables.savedSettings ) {
+            variables.settingSvc.set( key = k, value = variables.savedSettings[ k ] ?: "", type = "string" );
+        }
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "SEO Phase 9 — verification meta + image sitemap", function() {
+
+            describe( "renderHead emits domain verification meta tags", function() {
+
+                it( "emits google-site-verification when set", function() {
+                    variables.settingSvc.set( key = "verification.google_search_console", value = "gsc-token-123", type = "string" );
+                    var meta = variables.svc.buildForHome( baseUrl = "https://example.com", siteName = "X" );
+                    var html = variables.svc.renderHead( meta );
+                    expect( html ).toInclude( '<meta name="google-site-verification" content="gsc-token-123">' );
+                } );
+
+                it( "emits msvalidate.01 when bing token set", function() {
+                    variables.settingSvc.set( key = "verification.bing", value = "bing-token-456", type = "string" );
+                    var html = variables.svc.renderHead( variables.svc.buildForHome( baseUrl = "https://example.com", siteName = "X" ) );
+                    expect( html ).toInclude( '<meta name="msvalidate.01" content="bing-token-456">' );
+                } );
+
+                it( "emits all five tags when all are set", function() {
+                    variables.settingSvc.set( key = "verification.google_search_console", value = "g-1", type = "string" );
+                    variables.settingSvc.set( key = "verification.bing",                  value = "b-2", type = "string" );
+                    variables.settingSvc.set( key = "verification.yandex",                value = "y-3", type = "string" );
+                    variables.settingSvc.set( key = "verification.pinterest",             value = "p-4", type = "string" );
+                    variables.settingSvc.set( key = "verification.facebook",              value = "f-5", type = "string" );
+                    var html = variables.svc.renderHead( variables.svc.buildForHome( baseUrl = "https://example.com", siteName = "X" ) );
+                    expect( html ).toInclude( "google-site-verification" );
+                    expect( html ).toInclude( "msvalidate.01" );
+                    expect( html ).toInclude( "yandex-verification" );
+                    expect( html ).toInclude( "p:domain_verify" );
+                    expect( html ).toInclude( "facebook-domain-verification" );
+                } );
+
+                it( "skips a tag entirely when its setting is blank", function() {
+                    variables.settingSvc.set( key = "verification.google_search_console", value = "", type = "string" );
+                    var html = variables.svc.renderHead( variables.svc.buildForHome( baseUrl = "https://example.com", siteName = "X" ) );
+                    expect( html ).notToInclude( '<meta name="google-site-verification"' );
+                } );
+
+            } );
+
+            describe( "Image sitemap header", function() {
+
+                it( "declares xmlns:image on the urlset root", function() {
+                    var xml = variables.sitemapSvc.forBaseUrl( "https://example.com" );
+                    expect( xml ).toInclude( 'xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"' );
+                } );
+
+            } );
+
+            describe( "buildForArchive image override (smoke)", function() {
+
+                it( "ogImageUrl arg → og:image + summary_large_image", function() {
+                    var meta = variables.svc.buildForArchive(
+                        title       = "x",
+                        description = "y",
+                        canonical   = "https://example.com/tag/x",
+                        breadcrumbs = [],
+                        baseUrl     = "https://example.com",
+                        ogImageUrl  = "https://cdn.example.com/share.png"
+                    );
+                    expect( meta.og.image ).toBe( "https://cdn.example.com/share.png" );
+                    expect( meta.twitter.card ).toBe( "summary_large_image" );
+                } );
+
+            } );
+
+        } );
+    }
+
+}

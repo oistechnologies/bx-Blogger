@@ -1,0 +1,193 @@
+<bx:script>
+// @startWire
+/**
+ * settings.seoVerification — SEO Phase 9 admin form for the five
+ * domain-verification tokens that flow into <head> via SeoService:
+ *
+ *   verification.google_search_console → google-site-verification
+ *   verification.bing                  → msvalidate.01
+ *   verification.yandex                → yandex-verification
+ *   verification.pinterest             → p:domain_verify
+ *   verification.facebook              → facebook-domain-verification
+ *
+ * The admin pastes the content value (just the token) from each
+ * console; we wrap it in the right meta tag at render time. Empty
+ * fields skip the meta entirely.
+ */
+
+property name="settingService" inject="SettingService";
+property name="cbauth"         inject="AuthenticationService@cbauth";
+
+data = {
+    "googleSearchConsole" : "",
+    "bing"                : "",
+    "yandex"              : "",
+    "pinterest"           : "",
+    "facebook"            : "",
+    "flashOk"             : "",
+    "flashError"          : ""
+};
+
+function onMount( event, rc, prc, params ) {
+    data.googleSearchConsole = settingService.get( "verification.google_search_console", "" );
+    data.bing                = settingService.get( "verification.bing", "" );
+    data.yandex              = settingService.get( "verification.yandex", "" );
+    data.pinterest           = settingService.get( "verification.pinterest", "" );
+    data.facebook            = settingService.get( "verification.facebook", "" );
+}
+
+function save() {
+    clearFlashes();
+    if ( !requirePerm() ) return;
+
+    settingService.set( key = "verification.google_search_console", value = trim( data.googleSearchConsole ?: "" ), type = "string" );
+    settingService.set( key = "verification.bing",                  value = trim( data.bing ?: "" ),                type = "string" );
+    settingService.set( key = "verification.yandex",                value = trim( data.yandex ?: "" ),              type = "string" );
+    settingService.set( key = "verification.pinterest",             value = trim( data.pinterest ?: "" ),           type = "string" );
+    settingService.set( key = "verification.facebook",              value = trim( data.facebook ?: "" ),            type = "string" );
+
+    onMount();
+    data.flashOk = "Verification tokens saved. Crawlers will see the new meta tags on next render.";
+}
+
+private void function clearFlashes() {
+    data.flashOk    = "";
+    data.flashError = "";
+}
+
+private boolean function requirePerm() {
+    var user = cbauth.getUser();
+    if ( user.hasPermission( "settings.manage" ) ) return true;
+    data.flashError = "You don't have permission to edit settings.";
+    return false;
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<div>
+    <bx:if len( args.flashOk )>
+        <div class="alert alert-success alert-dismissible">
+            #encodeForHTML( args.flashOk )#
+            <button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+        </div>
+    </bx:if>
+    <bx:if len( args.flashError )>
+        <div class="alert alert-danger alert-dismissible">
+            #encodeForHTML( args.flashError )#
+            <button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+        </div>
+    </bx:if>
+
+    <div class="row g-4">
+        <div class="col-12 col-xl-8">
+            <div class="card stat-card stat-card-primary">
+                <div class="card-header card-header-soft card-header-soft-primary">
+                    <span class="h6 mb-0">Domain Verification</span>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted small mb-3">
+                        Paste just the token (the <code>content</code> attribute of the
+                        meta tag each console gives you). bx-Blogger wraps it in the
+                        correct <code>&lt;meta&gt;</code> tag and emits it on every
+                        public page. Empty fields skip the meta entirely.
+                    </p>
+
+                    <form wire:submit.prevent="save">
+                        <div class="mb-3">
+                            <label for="vGsc" class="form-label">
+                                Google Search Console
+                                <a href="https://search.google.com/search-console/welcome" target="_blank" rel="noopener" class="small ms-2">(get token)</a>
+                            </label>
+                            <input id="vGsc"
+                                   type="text"
+                                   class="form-control font-monospace"
+                                   maxlength="255"
+                                   wire:model.blur="googleSearchConsole"
+                                   placeholder="abc123...">
+                            <div class="form-text">Emits <code>&lt;meta name="google-site-verification" content="..."&gt;</code></div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="vBing" class="form-label">
+                                Bing Webmaster Tools
+                                <a href="https://www.bing.com/webmasters/" target="_blank" rel="noopener" class="small ms-2">(get token)</a>
+                            </label>
+                            <input id="vBing"
+                                   type="text"
+                                   class="form-control font-monospace"
+                                   maxlength="255"
+                                   wire:model.blur="bing"
+                                   placeholder="abc123...">
+                            <div class="form-text">Emits <code>&lt;meta name="msvalidate.01" content="..."&gt;</code></div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="vYandex" class="form-label">
+                                Yandex Webmaster
+                                <a href="https://webmaster.yandex.com/" target="_blank" rel="noopener" class="small ms-2">(get token)</a>
+                            </label>
+                            <input id="vYandex"
+                                   type="text"
+                                   class="form-control font-monospace"
+                                   maxlength="255"
+                                   wire:model.blur="yandex"
+                                   placeholder="abc123...">
+                            <div class="form-text">Emits <code>&lt;meta name="yandex-verification" content="..."&gt;</code></div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="vPinterest" class="form-label">
+                                Pinterest
+                                <a href="https://www.pinterest.com/business/claim/" target="_blank" rel="noopener" class="small ms-2">(get token)</a>
+                            </label>
+                            <input id="vPinterest"
+                                   type="text"
+                                   class="form-control font-monospace"
+                                   maxlength="255"
+                                   wire:model.blur="pinterest"
+                                   placeholder="abc123...">
+                            <div class="form-text">Emits <code>&lt;meta name="p:domain_verify" content="..."&gt;</code></div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="vFb" class="form-label">
+                                Facebook Domain
+                                <a href="https://business.facebook.com/" target="_blank" rel="noopener" class="small ms-2">(get token)</a>
+                            </label>
+                            <input id="vFb"
+                                   type="text"
+                                   class="form-control font-monospace"
+                                   maxlength="255"
+                                   wire:model.blur="facebook"
+                                   placeholder="abc123...">
+                            <div class="form-text">Emits <code>&lt;meta name="facebook-domain-verification" content="..."&gt;</code></div>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary">Save</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12 col-xl-4">
+            <div class="card stat-card stat-card-info">
+                <div class="card-header card-header-soft card-header-soft-info">
+                    <span class="h6 mb-0">How verification works</span>
+                </div>
+                <div class="card-body small">
+                    <ol class="mb-3 ps-3">
+                        <li>Each console gives you a token (or the full meta tag).</li>
+                        <li>If they give the full tag, copy <strong>only</strong> the <code>content="..."</code> value.</li>
+                        <li>Paste here and save.</li>
+                        <li>In each console, click "Verify" — they fetch your home page, parse the meta tag, and confirm ownership.</li>
+                    </ol>
+                    <p class="text-muted mb-0">
+                        Tokens stay even after verification — the consoles re-check periodically.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+</bx:output>

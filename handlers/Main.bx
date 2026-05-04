@@ -83,6 +83,26 @@ class extends="coldbox.system.EventHandler" {
 	 * retype their own hostname after a domain change.
 	 */
 	function robots( event, rc, prc ) {
+		// SEO Phase 9 — environment guard. If APP_ENV is anything
+		// other than "production" (dev / staging / qa / etc), force
+		// a hardcoded Disallow: / regardless of the admin-edited
+		// body. Prevents non-prod sites from leaking into search
+		// indexes when an operator mirrors prod data into staging.
+		var appEnv = lCase( trim( getSystemSetting( "APP_ENV", "production" ) ) );
+		if ( appEnv != "production" ) {
+			var nl = char( 10 );
+			event.setHTTPHeader( name = "Content-Type", value = "text/plain; charset=utf-8" );
+			event.renderData(
+				type       = "plain",
+				data       = "## bx-Blogger non-production environment (APP_ENV=" & appEnv & ")" & nl
+					& "## Admin-edited body is suppressed to keep this site out of search indexes." & nl
+					& "User-agent: *" & nl
+					& "Disallow: /" & nl,
+				statusCode = 200
+			);
+			return;
+		}
+
 		var body = getInstance( "SettingService" ).get( "seo.robots_txt", defaultRobotsBody() );
 		if ( !len( trim( body ) ) ) body = defaultRobotsBody();
 
@@ -98,6 +118,34 @@ class extends="coldbox.system.EventHandler" {
 		event.renderData(
 			type       = "plain",
 			data       = body,
+			statusCode = 200
+		);
+	}
+
+	/**
+	 * SEO Phase 9 — IndexNow key-file endpoint. The IndexNow
+	 * protocol (used by Bing, Yandex, Seznam, Cloudflare) requires
+	 * the configured key be served as plain text at /{key}.txt at
+	 * the site root so the search engine can verify ownership
+	 * before accepting URL-submission pings.
+	 *
+	 * Route: /{indexnowKey}.txt — the actual key text matches a
+	 * dynamic segment we extract from the requested filename. We
+	 * compare against the configured `seo.indexnow_key` and 404
+	 * on mismatch so the file isn't discoverable for arbitrary keys.
+	 */
+	function indexNowKey( event, rc, prc ) {
+		var configured = trim( getInstance( "SettingService" ).get( "seo.indexnow_key", "" ) ?: "" );
+		var requested  = trim( rc.key ?: "" );
+		if ( !len( configured ) || !len( requested ) || configured != requested ) {
+			event.setHTTPHeader( statusCode = 404, statusText = "Not Found" );
+			event.renderData( type = "plain", data = "Not Found", statusCode = 404 );
+			return;
+		}
+		event.setHTTPHeader( name = "Content-Type", value = "text/plain; charset=utf-8" );
+		event.renderData(
+			type       = "plain",
+			data       = configured,
 			statusCode = 200
 		);
 	}

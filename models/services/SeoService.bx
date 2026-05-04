@@ -558,6 +558,23 @@ class accessors="true" singleton {
             b.append( '<meta name="twitter:site" content="' & encodeForHTMLAttribute( twSite ) & '">' & nl );
         }
 
+        // SEO Phase 9 — search-engine + social platform domain
+        // verification meta tags. Each emits only when its setting
+        // has a value; admin pastes the token from the relevant
+        // console (no need to wrap in the full <meta> tag).
+        var verifMap = {
+            "google-site-verification"      : verificationSetting( "verification.google_search_console" ),
+            "msvalidate.01"                 : verificationSetting( "verification.bing" ),
+            "yandex-verification"           : verificationSetting( "verification.yandex" ),
+            "p:domain_verify"               : verificationSetting( "verification.pinterest" ),
+            "facebook-domain-verification"  : verificationSetting( "verification.facebook" )
+        };
+        for ( var metaName in structKeyArray( verifMap ) ) {
+            var content = verifMap[ metaName ];
+            if ( !len( content ) ) continue;
+            b.append( '<meta name="' & metaName & '" content="' & encodeForHTMLAttribute( content ) & '">' & nl );
+        }
+
         // Additional <link> elements (feeds, etc.) — rel / type / href
         // are all structured tokens or URLs.
         if ( isArray( arguments.meta.links ?: "" ) ) {
@@ -621,6 +638,18 @@ class accessors="true" singleton {
     private string function facebookPublisherSetting() {
         try {
             return settingService.get( "social.facebook_publisher", "" ) ?: "";
+        }
+        catch ( any e ) { return ""; }
+    }
+
+    /**
+     * SEO Phase 9 — generic verification.* setting accessor.
+     * Returns the token text or empty string. Used by renderHead to
+     * emit the five domain-verification meta tags.
+     */
+    private string function verificationSetting( required string key ) {
+        try {
+            return trim( settingService.get( arguments.key, "" ) ?: "" );
         }
         catch ( any e ) { return ""; }
     }

@@ -58,6 +58,15 @@ class extends="coldbox.system.EventHandler" {
         event.setView( view = "settings/organization" );
     }
 
+    /**
+     * SEO Phase 9 — domain-verification tokens (Google Search
+     * Console / Bing / Yandex / Pinterest / Facebook).
+     */
+    function verification( event, rc, prc ) {
+        prc.pageTitle = "Search-Engine Verification";
+        event.setView( view = "settings/verification" );
+    }
+
     function seo( event, rc, prc ) {
         prc.pageTitle = "SEO Settings";
         event.setView( view = "settings/seo" );

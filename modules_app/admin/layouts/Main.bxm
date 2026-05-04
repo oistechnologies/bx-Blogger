@@ -460,6 +460,11 @@
 								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Organization">
 									<i class="bi bi-building nav-icon"></i><span class="nav-label">Organization</span>
 								</a>
+								<a class="nav-link nav-sub #( currentEvent == 'admin:Settings.verification' ? 'active' : '' )#"
+								   href="#event.buildLink( 'admin:Settings.verification' )#"
+								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Search-Engine Verification">
+									<i class="bi bi-patch-check nav-icon"></i><span class="nav-label">Verification</span>
+								</a>
 								<a class="nav-link nav-sub #( currentEvent == 'admin:Settings.seo' ? 'active' : '' )#"
 								   href="#event.buildLink( 'admin:Settings.seo' )#"
 								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="SEO Settings">

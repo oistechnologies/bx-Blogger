@@ -75,7 +75,28 @@ function resetToDefault() {
  * panel never drifts from reality. Uses `cgi.http_host` because the
  * wire's own request is the admin page — same host either way.
  */
+/**
+ * SEO Phase 9 — surface the environment-guard state so the admin
+ * sees that the robots.txt body they're editing is overridden in
+ * non-production. Returns the lower-cased APP_ENV (e.g. "staging")
+ * or "production".
+ */
+string function appEnvironment() {
+    return lCase( trim( getSystemSetting( "APP_ENV", "production" ) ) );
+}
+
+boolean function envGuardActive() {
+    return appEnvironment() != "production";
+}
+
 string function preview() {
+    if ( envGuardActive() ) {
+        var nl = char( 10 );
+        return "## bx-Blogger non-production environment (APP_ENV=" & appEnvironment() & ")" & nl
+            & "## Admin-edited body is suppressed to keep this site out of search indexes." & nl
+            & "User-agent: *" & nl
+            & "Disallow: /" & nl;
+    }
     var body = trim( data.robotsTxt ?: "" );
     if ( !len( body ) ) body = defaultRobotsBody();
     if ( !reFindNoCase( "(?m)^\s*Sitemap\s*:", body ) ) {
@@ -125,6 +146,18 @@ private string function defaultRobotsBody() {
 
 <bx:output>
 <div>
+    <bx:if envGuardActive()>
+        <div class="alert alert-warning d-flex align-items-center small">
+            <i class="bi bi-shield-exclamation me-2 fs-4"></i>
+            <div>
+                <strong>robots.txt is locked to disallow-all in non-production.</strong>
+                <code>APP_ENV=#encodeForHTML( appEnvironment() )#</code> &mdash; the body you edit below is
+                suppressed at request time so search crawlers can&rsquo;t index this environment.
+                Set <code>APP_ENV=production</code> on the production deployment to serve the real body.
+            </div>
+        </div>
+    </bx:if>
+
     <bx:if len( args.flashOk )>
         <div class="alert alert-success alert-dismissible">
             #encodeForHTML( args.flashOk )#

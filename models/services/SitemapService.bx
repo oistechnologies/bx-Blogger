@@ -235,7 +235,7 @@ class accessors="true" singleton {
      */
     private array function postUrls( required string baseUrl, numeric year ) {
         var q = freshQb().from( "posts" )
-            .select( [ "slug", "updated_at" ] )
+            .select( [ "id", "slug", "updated_at", "featured_media_id", "og_image_id" ] )
             .where( "post_type",  "post" )
             .where( "status",     "published" )
             .where( "visibility", "public" )
@@ -252,14 +252,56 @@ class accessors="true" singleton {
         var rows = q.get();
         var out  = [];
         for ( var p in rows ) {
-            out.append( {
+            var entry = {
                 "loc"        : arguments.baseUrl & "/blog/" & p.slug,
                 "lastmod"    : w3cDate( p.updated_at ),
                 "changefreq" : "weekly",
                 "priority"   : "0.8"
-            } );
+            };
+            // SEO Phase 9 — image sitemap. Prefer og_image_id, then
+            // featured_media_id. Single <image:image> per URL is
+            // enough for Google; sitemaps spec allows up to 1000
+            // per URL but most posts have one hero image.
+            var imageUrl = imageUrlForPost(
+                arguments.baseUrl,
+                val( p.og_image_id ?: 0 ),
+                val( p.featured_media_id ?: 0 )
+            );
+            if ( len( imageUrl ) ) entry[ "images" ] = [ imageUrl ];
+            out.append( entry );
         }
         return out;
+    }
+
+    /**
+     * SEO Phase 9 — resolve a post's primary sitemap image URL.
+     * Falls back: og_image_id → featured_media_id → "" (no image
+     * tag emitted). Best-effort; a missing media row returns "".
+     *
+     * Uses MediaService.urlFor exactly the way every other caller
+     * does (loads the Quick Media entity then asks the service for
+     * the disk's public URL). Anything that throws inside the chain
+     * (e.g. transient Quick hydration cast issues on this BoxLang
+     * driver, deleted media row, disk misconfiguration) returns ""
+     * silently — image-sitemap entries are nice-to-have; the
+     * surrounding <urlset> entry MUST always render.
+     */
+    private string function imageUrlForPost( required string baseUrl, required numeric ogImageId, required numeric featuredMediaId ) {
+        var mediaId = arguments.ogImageId > 0 ? arguments.ogImageId : arguments.featuredMediaId;
+        if ( mediaId <= 0 ) return "";
+        try {
+            var media = variables.wirebox.getInstance( "Media" ).find( mediaId );
+            if ( isNull( media ) ) return "";
+            var url = variables.wirebox.getInstance( "MediaService" ).urlFor( media );
+            if ( isSimpleValue( url ) && len( url ) ) {
+                return ( left( url, 1 ) == "/" ) ? ( arguments.baseUrl & url ) : url;
+            }
+            return "";
+        }
+        catch ( any e ) {
+            log.warn( "SitemapService.imageUrlForPost mediaId=" & mediaId & " skipped: " & e.message );
+            return "";
+        }
     }
 
     /**
@@ -364,7 +406,11 @@ class accessors="true" singleton {
         var buf = createObject( "java", "java.lang.StringBuilder" ).init();
         buf.append( '<?xml version="1.0" encoding="UTF-8"?>' );
         buf.append( char( 10 ) );
-        buf.append( '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' );
+        // SEO Phase 9 — declare the image-sitemap namespace so
+        // <image:image> blocks below validate. The xmlns is harmless
+        // when no <url> entry has images (Google ignores unused
+        // namespaces) so we can declare it unconditionally.
+        buf.append( '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">' );
         buf.append( char( 10 ) );
 
         for ( var u in data.urls ) {
@@ -378,6 +424,15 @@ class accessors="true" singleton {
             }
             if ( structKeyExists( u, "priority" ) && len( u.priority ) ) {
                 buf.append( "    <priority>" & xmlSafe( u.priority ) & "</priority>" & char( 10 ) );
+            }
+            // SEO Phase 9 — image-sitemap entries.
+            if ( structKeyExists( u, "images" ) && isArray( u.images ) && u.images.len() ) {
+                for ( var imgUrl in u.images ) {
+                    if ( !len( imgUrl ) ) continue;
+                    buf.append( "    <image:image>" & char( 10 ) );
+                    buf.append( "      <image:loc>" & xmlSafe( imgUrl ) & "</image:loc>" & char( 10 ) );
+                    buf.append( "    </image:image>" & char( 10 ) );
+                }
             }
             buf.append( "  </url>" & char( 10 ) );
         }

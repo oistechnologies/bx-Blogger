@@ -133,6 +133,17 @@ class {
 		// `/sitemap` so the year variant wins.
 		route( "/sitemap-:year" ).to( "main.sitemapYear" );
 		route( "/sitemap" ).to( "main.sitemap" );
+		// SEO Phase 9 — IndexNow key file at /{configured-key}.txt.
+		// Reads the env var directly (NOT the SettingService — the
+		// router runs before the WireBox cache is populated). Set
+		// SEO_INDEXNOW_KEY in .env to register the route; keep it
+		// in sync with the `seo.indexnow_key` setting that drives
+		// the publish-time ping. Restart the app after changing
+		// either value.
+		var indexNowKey = trim( getSystemSetting( "SEO_INDEXNOW_KEY", "" ) );
+		if ( len( indexNowKey ) ) {
+			route( "/" & indexNowKey & ".txt" ).to( "main.indexNowKey" );
+		}
 		route( "/search"     ).to( "main.search"  );
 
 		// Site-wide RSS. Scope-specific variants map to dedicated
