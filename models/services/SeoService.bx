@@ -38,8 +38,9 @@
  */
 class accessors="true" singleton {
 
-    property name="wirebox" inject="wirebox";
-    property name="log"     inject="logbox:logger:{this}";
+    property name="wirebox"        inject="wirebox";
+    property name="log"            inject="logbox:logger:{this}";
+    property name="settingService" inject="SettingService";
 
     // --------------------------------------------------------------------
     // Builders — one per page type
@@ -259,27 +260,33 @@ class accessors="true" singleton {
     ) {
         var canonical = arguments.baseUrl & "/";
 
+        // SEO Phase 2 — fall back to admin-editable site defaults when
+        // the caller didn't pass explicit values. Caller args still
+        // override (specs and one-off renders pass values directly).
+        var siteTitle = len( arguments.siteName ) ? arguments.siteName : siteTitleSetting( arguments.siteName );
+        var siteDesc  = len( arguments.siteDescription ) ? arguments.siteDescription : siteDescriptionSetting();
+
         var og = {
-            "title"       : arguments.siteName,
-            "description" : arguments.siteDescription,
+            "title"       : siteTitle,
+            "description" : siteDesc,
             "type"        : "website",
             "url"         : canonical,
-            "site_name"   : arguments.siteName,
+            "site_name"   : siteTitle,
             "locale"      : arguments.siteLocale
         };
         var tw = {
             "card"        : "summary",
-            "title"       : arguments.siteName,
-            "description" : arguments.siteDescription
+            "title"       : siteTitle,
+            "description" : siteDesc
         };
 
         var webSiteLd = {
             "@context" : "https://schema.org",
             "@type"    : "WebSite",
-            "name"     : arguments.siteName,
+            "name"     : siteTitle,
             "url"      : canonical
         };
-        if ( len( arguments.siteDescription ) ) webSiteLd[ "description" ] = arguments.siteDescription;
+        if ( len( siteDesc ) ) webSiteLd[ "description" ] = siteDesc;
         webSiteLd[ "potentialAction" ] = {
             "@type"       : "SearchAction",
             "target"      : {
@@ -290,8 +297,8 @@ class accessors="true" singleton {
         };
 
         return {
-            "title"       : arguments.siteName,
-            "description" : arguments.siteDescription,
+            "title"       : siteTitle,
+            "description" : siteDesc,
             "canonical"   : canonical,
             "robots"      : "index, follow",
             "og"          : og,
@@ -362,6 +369,18 @@ class accessors="true" singleton {
             }
         }
 
+        // SEO Phase 2 — site-wide Facebook tags from settings.
+        // Emitted once per page as global identifiers (not per-page
+        // OG attributes), so they live outside meta.og.
+        var fbAppId = facebookAppIdSetting();
+        if ( len( fbAppId ) ) {
+            b.append( '<meta property="fb:app_id" content="' & encodeForHTMLAttribute( fbAppId ) & '">' & nl );
+        }
+        var fbPub = facebookPublisherSetting();
+        if ( len( fbPub ) ) {
+            b.append( '<meta property="article:publisher" content="' & attrSafe( fbPub ) & '">' & nl );
+        }
+
         // Twitter Card — same split as OG.
         if ( isStruct( arguments.meta.twitter ?: "" ) ) {
             for ( var k in structKeyArray( arguments.meta.twitter ) ) {
@@ -370,6 +389,15 @@ class accessors="true" singleton {
                 var encoded = isUrlishTwitterKey( k ) ? attrSafe( v ) : encodeForHTMLAttribute( v );
                 b.append( '<meta name="twitter:' & attrSafe( k ) & '" content="' & encoded & '">' & nl );
             }
+        }
+
+        // SEO Phase 2 — site-wide twitter:site handle from settings.
+        // Emitted once per page; not part of meta.twitter so callers
+        // don't have to know about the global handle to render a
+        // page-specific Twitter card.
+        var twSite = twitterSiteSetting();
+        if ( len( twSite ) ) {
+            b.append( '<meta name="twitter:site" content="' & encodeForHTMLAttribute( twSite ) & '">' & nl );
         }
 
         // Additional <link> elements (feeds, etc.) — rel / type / href
@@ -397,6 +425,47 @@ class accessors="true" singleton {
     // --------------------------------------------------------------------
     // Private helpers
     // --------------------------------------------------------------------
+
+    // SEO Phase 2 — site-wide setting accessors. Each one tolerates
+    // a missing SettingService (e.g. specs that build the SeoService
+    // without a wire) by returning the fallback. Calling settings
+    // for every render is cheap — SettingService caches per key.
+
+    private string function siteTitleSetting( string fallback = "" ) {
+        try {
+            var v = settingService.get( "site.title", "" );
+            return len( v ) ? v : arguments.fallback;
+        }
+        catch ( any e ) { return arguments.fallback; }
+    }
+
+    private string function siteDescriptionSetting() {
+        try {
+            return settingService.get( "site.description", "" ) ?: "";
+        }
+        catch ( any e ) { return ""; }
+    }
+
+    private string function twitterSiteSetting() {
+        try {
+            return settingService.get( "social.twitter_handle", "" ) ?: "";
+        }
+        catch ( any e ) { return ""; }
+    }
+
+    private string function facebookAppIdSetting() {
+        try {
+            return settingService.get( "social.facebook_app_id", "" ) ?: "";
+        }
+        catch ( any e ) { return ""; }
+    }
+
+    private string function facebookPublisherSetting() {
+        try {
+            return settingService.get( "social.facebook_publisher", "" ) ?: "";
+        }
+        catch ( any e ) { return ""; }
+    }
 
     /**
      * Per-post robots directive. `allow_indexing = 0` → noindex,

@@ -1,0 +1,269 @@
+<bx:script>
+// @startWire
+/**
+ * settings.seoDefaults — SEO Phase 2 admin form for site-wide
+ * defaults (site title, tagline, description, default author,
+ * twitter handle, FB app id, FB publisher).
+ *
+ * Loads each setting via SettingService.get() with a sane fallback,
+ * lets the admin edit, and saves via SettingService.set() — which
+ * already invalidates the per-setting cache + page cache so
+ * downstream meta renders pick up new values on next request.
+ *
+ * Site title falls back to the existing `AppName` ColdBox setting so
+ * a fresh install never shows blank chrome; the migration seeds
+ * `site.title` to "bx-Blogger" by default.
+ */
+
+property name="settingService" inject="SettingService";
+property name="cbauth"         inject="AuthenticationService@cbauth";
+
+data = {
+    "siteTitle"          : "",
+    "siteTagline"        : "",
+    "siteDescription"    : "",
+    "defaultAuthorId"    : 0,
+    "twitterHandle"      : "",
+    "facebookAppId"      : "",
+    "facebookPublisher"  : "",
+    "flashOk"            : "",
+    "flashError"         : ""
+};
+
+function onMount( event, rc, prc, params ) {
+    data.siteTitle         = settingService.get( "site.title", "" );
+    data.siteTagline       = settingService.get( "site.tagline", "" );
+    data.siteDescription   = settingService.get( "site.description", "" );
+    data.defaultAuthorId   = settingService.get( "site.default_author_id", 0 );
+    data.twitterHandle     = settingService.get( "social.twitter_handle", "" );
+    data.facebookAppId     = settingService.get( "social.facebook_app_id", "" );
+    data.facebookPublisher = settingService.get( "social.facebook_publisher", "" );
+}
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function save() {
+    clearFlashes();
+    if ( !requirePerm() ) return;
+
+    var siteTitle = trim( data.siteTitle ?: "" );
+    if ( !len( siteTitle ) ) {
+        data.flashError = "Site title can't be empty — it drives the home page title and og:site_name on every public page.";
+        return;
+    }
+    if ( len( siteTitle ) > 120 ) {
+        data.flashError = "Site title is too long (120 chars max).";
+        return;
+    }
+
+    var siteDesc = trim( data.siteDescription ?: "" );
+    if ( len( siteDesc ) > 320 ) {
+        data.flashError = "Site description is too long (320 chars max — Google truncates around 160).";
+        return;
+    }
+
+    // Twitter handle: allow with-or-without leading @, normalize to with-@.
+    var twitter = trim( data.twitterHandle ?: "" );
+    if ( len( twitter ) ) {
+        if ( left( twitter, 1 ) != "@" ) twitter = "@" & twitter;
+        if ( !reFindNoCase( "^@[A-Z0-9_]{1,15}$", twitter ) ) {
+            data.flashError = "Twitter handle should be 1-15 letters / digits / underscores after the @.";
+            return;
+        }
+        data.twitterHandle = twitter;
+    }
+
+    var fbAppId = trim( data.facebookAppId ?: "" );
+    if ( len( fbAppId ) && !reFindNoCase( "^[0-9]{6,32}$", fbAppId ) ) {
+        data.flashError = "Facebook App ID should be a 6-32 digit numeric ID.";
+        return;
+    }
+
+    var fbPublisher = trim( data.facebookPublisher ?: "" );
+    if ( len( fbPublisher ) && !reFindNoCase( "^https?://", fbPublisher ) ) {
+        data.flashError = "Facebook publisher must be a full URL starting with http:// or https://.";
+        return;
+    }
+
+    var defaultAuthor = val( data.defaultAuthorId ?: 0 );
+
+    settingService.set( key = "site.title",               value = siteTitle,            type = "string" );
+    settingService.set( key = "site.tagline",             value = trim( data.siteTagline ?: "" ), type = "string" );
+    settingService.set( key = "site.description",         value = siteDesc,             type = "string" );
+    settingService.set( key = "site.default_author_id",   value = defaultAuthor,        type = "int"    );
+    settingService.set( key = "social.twitter_handle",    value = twitter,              type = "string" );
+    settingService.set( key = "social.facebook_app_id",   value = fbAppId,              type = "string" );
+    settingService.set( key = "social.facebook_publisher", value = fbPublisher,         type = "string" );
+
+    // Re-read to reflect any normalization the service applied.
+    onMount();
+    data.flashOk = "Site defaults saved. Public pages will pick up the new values on next request.";
+}
+
+// --------------------------------------------------------------------
+// Private
+// --------------------------------------------------------------------
+
+private void function clearFlashes() {
+    data.flashOk    = "";
+    data.flashError = "";
+}
+
+private boolean function requirePerm() {
+    var user = cbauth.getUser();
+    if ( user.hasPermission( "settings.manage" ) ) return true;
+    data.flashError = "You don't have permission to edit settings.";
+    return false;
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<div>
+    <bx:if len( args.flashOk )>
+        <div class="alert alert-success alert-dismissible">
+            #encodeForHTML( args.flashOk )#
+            <button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+        </div>
+    </bx:if>
+    <bx:if len( args.flashError )>
+        <div class="alert alert-danger alert-dismissible">
+            #encodeForHTML( args.flashError )#
+            <button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+        </div>
+    </bx:if>
+
+    <div class="row g-4">
+        <div class="col-12 col-xl-8">
+            <div class="card stat-card stat-card-primary">
+                <div class="card-header card-header-soft card-header-soft-primary">
+                    <span class="h6 mb-0">Site Identity</span>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted small mb-3">
+                        These values flow into the home page <code>&lt;title&gt;</code>,
+                        <code>og:site_name</code> on every public page, and the WebSite
+                        JSON-LD that powers Google&rsquo;s sitelinks search box. Edits
+                        are picked up on the next request &mdash; no rebuild needed.
+                    </p>
+
+                    <form wire:submit.prevent="save">
+                        <div class="mb-3">
+                            <label for="seo-site-title" class="form-label">Site title <span class="text-danger">*</span></label>
+                            <input id="seo-site-title"
+                                   type="text"
+                                   class="form-control"
+                                   maxlength="120"
+                                   wire:model.blur="siteTitle"
+                                   placeholder="e.g. bx-Blogger">
+                            <div class="form-text">Drives the home page <code>&lt;title&gt;</code> and <code>og:site_name</code> everywhere.</div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="seo-site-tagline" class="form-label">Tagline</label>
+                            <input id="seo-site-tagline"
+                                   type="text"
+                                   class="form-control"
+                                   maxlength="160"
+                                   wire:model.blur="siteTagline"
+                                   placeholder="A short one-line marketing line.">
+                            <div class="form-text">Optional. Renders below the site title in supported themes.</div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="seo-site-description" class="form-label">Site description</label>
+                            <textarea id="seo-site-description"
+                                      class="form-control"
+                                      rows="3"
+                                      maxlength="320"
+                                      wire:model.blur="siteDescription"
+                                      placeholder="A 140-160 character meta description for the home page."></textarea>
+                            <div class="form-text d-flex justify-content-between">
+                                <span>Used as the home page <code>&lt;meta name="description"&gt;</code>. Google truncates around 160.</span>
+                                <span class="font-monospace">#args.siteDescription IS NULL ? 0 : len( args.siteDescription )#&nbsp;/&nbsp;320</span>
+                            </div>
+                        </div>
+
+                        <hr class="my-4">
+
+                        <h6 class="mb-3">Social</h6>
+
+                        <div class="mb-3">
+                            <label for="seo-twitter-handle" class="form-label">Twitter / X handle</label>
+                            <input id="seo-twitter-handle"
+                                   type="text"
+                                   class="form-control"
+                                   maxlength="20"
+                                   wire:model.blur="twitterHandle"
+                                   placeholder="@yoursite">
+                            <div class="form-text">Drives <code>twitter:site</code>. With or without the leading <code>@</code> &mdash; we&rsquo;ll normalize.</div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="seo-fb-app" class="form-label">Facebook App ID</label>
+                            <input id="seo-fb-app"
+                                   type="text"
+                                   class="form-control"
+                                   maxlength="32"
+                                   wire:model.blur="facebookAppId"
+                                   placeholder="e.g. 1234567890">
+                            <div class="form-text">Optional. Drives <code>fb:app_id</code> for FB Insights integration.</div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label for="seo-fb-publisher" class="form-label">Facebook publisher URL</label>
+                            <input id="seo-fb-publisher"
+                                   type="url"
+                                   class="form-control"
+                                   maxlength="500"
+                                   wire:model.blur="facebookPublisher"
+                                   placeholder="https://facebook.com/yoursite">
+                            <div class="form-text">Optional. Drives <code>article:publisher</code> on Article schema.</div>
+                        </div>
+
+                        <hr class="my-4">
+
+                        <h6 class="mb-3">Default Author</h6>
+
+                        <div class="mb-3">
+                            <label for="seo-default-author" class="form-label">Default author user ID</label>
+                            <input id="seo-default-author"
+                                   type="number"
+                                   class="form-control"
+                                   min="0"
+                                   max="9999999"
+                                   wire:model.blur="defaultAuthorId"
+                                   placeholder="0 = no default">
+                            <div class="form-text">Falls back as the author for posts that have no explicit author. <code>0</code> = no default. (Picker UI lands in a later phase.)</div>
+                        </div>
+
+                        <div class="d-flex gap-2">
+                            <button type="submit" class="btn btn-primary">Save</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12 col-xl-4">
+            <div class="card stat-card stat-card-info">
+                <div class="card-header card-header-soft card-header-soft-info">
+                    <span class="h6 mb-0">Where these show up</span>
+                </div>
+                <div class="card-body small">
+                    <ul class="mb-0 ps-3">
+                        <li><strong>Site title</strong> &rarr; home <code>&lt;title&gt;</code>, <code>og:site_name</code> on every public page, WebSite JSON-LD on home.</li>
+                        <li><strong>Tagline</strong> &rarr; theme header partial (theme-dependent).</li>
+                        <li><strong>Site description</strong> &rarr; home <code>&lt;meta name="description"&gt;</code> + <code>og:description</code> on home.</li>
+                        <li><strong>Twitter handle</strong> &rarr; <code>twitter:site</code> on every public page.</li>
+                        <li><strong>FB App ID</strong> &rarr; <code>fb:app_id</code> on every public page.</li>
+                        <li><strong>FB publisher</strong> &rarr; <code>article:publisher</code> on Article schema.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+</bx:output>

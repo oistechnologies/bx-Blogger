@@ -58,7 +58,11 @@ class extends="coldbox.system.Interceptor" {
 
             var svc        = getInstance( "SeoService" );
             var baseUrl    = resolveBaseUrl( arguments.event );
-            var siteName   = arguments.event.getController().getSetting( "AppName" );
+            // SEO Phase 2 — `site.title` setting is the canonical site
+            // name driving og:site_name on every public page. Falls
+            // back to ColdBox's `AppName` for environments where the
+            // setting hasn't been seeded yet.
+            var siteName   = resolveSiteName( arguments.event );
             var siteLocale = localeTag();
 
             // --- 404 page --- //
@@ -169,6 +173,24 @@ class extends="coldbox.system.Interceptor" {
             return reReplace( arguments.raw, "\s*\&middot;\s*" & reEscape( arguments.siteName ) & "$", "", "one" );
         }
         return arguments.raw;
+    }
+
+    /**
+     * SEO Phase 2 — resolve the site name from the `site.title`
+     * setting, falling back to ColdBox's `AppName` if the setting
+     * is blank or the SettingService is unavailable. Lazy-resolved
+     * via getInstance() (interceptors run before WireBox's full
+     * model scan completes; see CLAUDE.md gotcha note).
+     */
+    private string function resolveSiteName( required any event ) {
+        var fallback = arguments.event.getController().getSetting( "AppName" );
+        try {
+            var v = getInstance( "SettingService" ).get( "site.title", "" );
+            return len( v ) ? v : fallback;
+        }
+        catch ( any e ) {
+            return fallback;
+        }
     }
 
     /**

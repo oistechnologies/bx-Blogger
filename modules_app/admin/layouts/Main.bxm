@@ -450,7 +450,12 @@
 								</a>
 							</bx:if>
 							<bx:if canSysSettings>
-								<a class="nav-link nav-sub #( ( currentEvent == 'admin:Settings.seo' || currentEvent == 'admin:Settings.index' ) ? 'active' : '' )#"
+								<a class="nav-link nav-sub #( ( currentEvent == 'admin:Settings.defaults' || currentEvent == 'admin:Settings.index' ) ? 'active' : '' )#"
+								   href="#event.buildLink( 'admin:Settings.defaults' )#"
+								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Site Defaults">
+									<i class="bi bi-gear nav-icon"></i><span class="nav-label">Site Defaults</span>
+								</a>
+								<a class="nav-link nav-sub #( currentEvent == 'admin:Settings.seo' ? 'active' : '' )#"
 								   href="#event.buildLink( 'admin:Settings.seo' )#"
 								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="SEO Settings">
 									<i class="bi bi-search nav-icon"></i><span class="nav-label">SEO Settings</span>

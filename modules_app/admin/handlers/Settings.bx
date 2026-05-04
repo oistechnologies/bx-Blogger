@@ -35,7 +35,17 @@ class extends="coldbox.system.EventHandler" {
     }
 
     function index( event, rc, prc ) {
-        relocate( event = "admin:Settings.seo" );
+        relocate( event = "admin:Settings.defaults" );
+    }
+
+    /**
+     * SEO Phase 2 — site-wide defaults (site title, tagline,
+     * description, default-author, twitter handle, FB app id).
+     * These feed SeoService.buildForHome() and renderHead().
+     */
+    function defaults( event, rc, prc ) {
+        prc.pageTitle = "Site Defaults";
+        event.setView( view = "settings/defaults" );
     }
 
     function seo( event, rc, prc ) {

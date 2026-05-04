@@ -1,0 +1,155 @@
+/**
+ * bx-Blogger — SeoDefaultsSettingsSpec (SEO Phase 2)
+ *
+ * Validates that SeoService consumes the new site-wide default
+ * settings (`site.title`, `site.description`, `social.twitter_handle`,
+ * `social.facebook_app_id`, `social.facebook_publisher`) and that
+ * renderHead emits the corresponding meta tags when the settings
+ * have values.
+ *
+ * Each spec mutates the relevant setting and reads back via the
+ * service; the afterAll() block restores values so subsequent
+ * specs in the same test run aren't affected.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc        = getInstance( "SeoService" );
+        variables.settingSvc = getInstance( "SettingService" );
+
+        // Snapshot existing values so afterAll can restore them.
+        variables.savedSettings = {
+            "site.title"                : variables.settingSvc.get( "site.title", "" ),
+            "site.description"          : variables.settingSvc.get( "site.description", "" ),
+            "social.twitter_handle"     : variables.settingSvc.get( "social.twitter_handle", "" ),
+            "social.facebook_app_id"    : variables.settingSvc.get( "social.facebook_app_id", "" ),
+            "social.facebook_publisher" : variables.settingSvc.get( "social.facebook_publisher", "" )
+        };
+    }
+
+    function afterAll() {
+        // Restore each setting to its pre-spec value so the next
+        // test run starts clean.
+        for ( var k in variables.savedSettings ) {
+            variables.settingSvc.set( key = k, value = variables.savedSettings[ k ] ?: "", type = "string" );
+        }
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "SEO Phase 2 — site-wide defaults", function() {
+
+            describe( "buildForHome falls back to settings", function() {
+
+                it( "uses site.title for home title + og:site_name when caller passes blank", function() {
+                    variables.settingSvc.set( key = "site.title", value = "Phase2 Title", type = "string" );
+
+                    var meta = variables.svc.buildForHome(
+                        baseUrl = "https://example.com"
+                        // siteName intentionally omitted — settings should fill in.
+                    );
+
+                    expect( meta.title         ).toBe( "Phase2 Title" );
+                    expect( meta.og.site_name  ).toBe( "Phase2 Title" );
+                    expect( meta.og.title      ).toBe( "Phase2 Title" );
+                } );
+
+                it( "uses site.description for home meta description when caller passes blank", function() {
+                    variables.settingSvc.set( key = "site.description", value = "Phase2 description for home page meta tags.", type = "string" );
+
+                    var meta = variables.svc.buildForHome(
+                        baseUrl  = "https://example.com",
+                        siteName = "Phase2 Title"
+                    );
+
+                    expect( meta.description ).toBe( "Phase2 description for home page meta tags." );
+                    expect( meta.og.description ).toBe( "Phase2 description for home page meta tags." );
+                } );
+
+                it( "explicit caller args still win over settings", function() {
+                    variables.settingSvc.set( key = "site.title", value = "From Settings", type = "string" );
+
+                    var meta = variables.svc.buildForHome(
+                        baseUrl  = "https://example.com",
+                        siteName = "Explicit Override"
+                    );
+
+                    expect( meta.title ).toBe( "Explicit Override" );
+                } );
+
+            } );
+
+            describe( "renderHead emits site-wide social meta", function() {
+
+                it( "emits <meta name='twitter:site'> when social.twitter_handle is set", function() {
+                    variables.settingSvc.set( key = "social.twitter_handle", value = "@phase2test", type = "string" );
+
+                    var meta = variables.svc.buildForHome(
+                        baseUrl  = "https://example.com",
+                        siteName = "Phase2"
+                    );
+                    var html = variables.svc.renderHead( meta );
+
+                    expect( html ).toInclude( '<meta name="twitter:site"' );
+                    // ESAPI HTML-attr encoder turns @ into &##x40; (hex)
+                    // or &##64; (decimal) depending on flavor; the bare
+                    // "phase2test" suffix is always present.
+                    expect( html ).toInclude( "phase2test" );
+                } );
+
+                it( "skips twitter:site when social.twitter_handle is blank", function() {
+                    variables.settingSvc.set( key = "social.twitter_handle", value = "", type = "string" );
+
+                    var meta = variables.svc.buildForHome(
+                        baseUrl  = "https://example.com",
+                        siteName = "Phase2"
+                    );
+                    var html = variables.svc.renderHead( meta );
+
+                    expect( html ).notToInclude( '<meta name="twitter:site"' );
+                } );
+
+                it( "emits <meta property='fb:app_id'> when social.facebook_app_id is set", function() {
+                    variables.settingSvc.set( key = "social.facebook_app_id", value = "1234567890", type = "string" );
+
+                    var meta = variables.svc.buildForHome(
+                        baseUrl  = "https://example.com",
+                        siteName = "Phase2"
+                    );
+                    var html = variables.svc.renderHead( meta );
+
+                    expect( html ).toInclude( '<meta property="fb:app_id" content="1234567890">' );
+                } );
+
+                it( "skips fb:app_id when social.facebook_app_id is blank", function() {
+                    variables.settingSvc.set( key = "social.facebook_app_id", value = "", type = "string" );
+
+                    var meta = variables.svc.buildForHome(
+                        baseUrl  = "https://example.com",
+                        siteName = "Phase2"
+                    );
+                    var html = variables.svc.renderHead( meta );
+
+                    expect( html ).notToInclude( '<meta property="fb:app_id"' );
+                } );
+
+                it( "emits <meta property='article:publisher'> when social.facebook_publisher is set", function() {
+                    variables.settingSvc.set( key = "social.facebook_publisher", value = "https://facebook.com/phase2", type = "string" );
+
+                    var meta = variables.svc.buildForHome(
+                        baseUrl  = "https://example.com",
+                        siteName = "Phase2"
+                    );
+                    var html = variables.svc.renderHead( meta );
+
+                    expect( html ).toInclude( 'property="article:publisher"' );
+                    expect( html ).toInclude( 'https://facebook.com/phase2' );
+                } );
+
+            } );
+
+        } );
+    }
+
+}
