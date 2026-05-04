@@ -240,7 +240,13 @@ private function clearFlashes() {
 		</bx:if>
 	</bx:if>
 
-	<!--- Inline editor pane — opens below the grid when openId > 0 --->
+	<!--- Inline editor pane — opens below the grid when openId > 0.
+	      Wrapped in a stable slot div so Livewire's morph keeps the
+	      number of wire-root children constant (form, grid, slot,
+	      wire:ignore lightbox). Without the wrapper, the new editor
+	      card collides positionally with the wire:ignore lightbox
+	      sibling and morph silently drops it. --->
+	<div>
 	<bx:if ( args.openId ?: 0 ) gt 0>
 		<bx:script>
 			openRow = getInstance( "Media" ).find( args.openId );
@@ -316,6 +322,7 @@ private function clearFlashes() {
 			</div>
 		</bx:if>
 	</bx:if>
+	</div>
 
 	<!---
 		Lightbox modal. Wrapped in wire:ignore so CBWIRE's morph doesn't
