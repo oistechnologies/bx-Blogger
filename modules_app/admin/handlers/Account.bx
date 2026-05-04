@@ -86,10 +86,14 @@ class extends="coldbox.system.EventHandler" {
      * `author_slug` doesn't discard a good bio edit.
      */
     function updateProfile( event, rc, prc ) {
-        param name="rc.displayName" default="";
-        param name="rc.bioShort"    default="";
-        param name="rc.bio"         default="";
-        param name="rc.authorSlug"  default="";
+        param name="rc.displayName"    default="";
+        param name="rc.bioShort"       default="";
+        param name="rc.bio"            default="";
+        param name="rc.authorSlug"     default="";
+        // SEO Phase 8 — per-author archive overrides
+        param name="rc.seoTitle"       default="";
+        param name="rc.seoDescription" default="";
+        param name="rc.ogImageId"      default="0";
 
         var user    = cbauth.getUser();
         var newName = trim( rc.displayName );
@@ -124,9 +128,27 @@ class extends="coldbox.system.EventHandler" {
             }
         }
 
+        // SEO Phase 8 — validate per-author archive overrides.
+        var seoT = trim( rc.seoTitle );
+        var seoD = trim( rc.seoDescription );
+        if ( len( seoT ) > 255 ) {
+            flash.put( "accountError", "SEO title is limited to 255 characters." );
+            relocate( event = "admin:Account.show" );
+            return;
+        }
+        if ( len( seoD ) > 320 ) {
+            flash.put( "accountError", "SEO description is limited to 320 characters." );
+            relocate( event = "admin:Account.show" );
+            return;
+        }
+        var ogMediaId = val( rc.ogImageId );
+
         user.setDisplayName( newName );
         user.setBioShort( bioShort );
         user.setBio( rc.bio ?: "" );    // long markdown — no length cap beyond TEXT
+        user.setSeoTitle( len( seoT ) ? seoT : javaCast( "null", "" ) );
+        user.setSeoDescription( len( seoD ) ? seoD : javaCast( "null", "" ) );
+        user.setOgImageId( ogMediaId > 0 ? ogMediaId : javaCast( "null", "" ) );
         user.save();
 
         // Auto-generate a slug if the user left the field blank AND

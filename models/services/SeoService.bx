@@ -227,7 +227,8 @@ class accessors="true" singleton {
         required string baseUrl,
                  string siteName    = "",
                  string siteLocale  = "en_US",
-                 string robots      = "index, follow"
+                 string robots      = "index, follow",
+                 string ogImageUrl  = ""
     ) {
         var og = {
             "title"       : arguments.title,
@@ -237,11 +238,15 @@ class accessors="true" singleton {
             "site_name"   : arguments.siteName,
             "locale"      : arguments.siteLocale
         };
+        // SEO Phase 8 — per-tag / per-author OG image override.
+        if ( len( arguments.ogImageUrl ) ) og[ "image" ] = arguments.ogImageUrl;
+
         var tw = {
-            "card"        : "summary",
+            "card"        : len( arguments.ogImageUrl ) ? "summary_large_image" : "summary",
             "title"       : arguments.title,
             "description" : arguments.description
         };
+        if ( len( arguments.ogImageUrl ) ) tw[ "image" ] = arguments.ogImageUrl;
 
         var jsonLd = [];
         if ( arguments.breadcrumbs.len() ) {
@@ -260,6 +265,25 @@ class accessors="true" singleton {
                 { "rel" : "alternate", "type" : "application/rss+xml", "href" : arguments.baseUrl & "/feed.xml" }
             ]
         };
+    }
+
+    /**
+     * SEO Phase 8 — resolve a Media row id to its public URL via
+     * MediaService. Callers (interceptor, buildForArchive) use this
+     * to turn a `tag.og_image_id` / `user.og_image_id` / category
+     * `og_image_id` into the absolute URL the OG / Twitter Card
+     * meta tags need. Returns "" on missing media row.
+     */
+    public string function resolveMediaUrl( required numeric mediaId, required string baseUrl ) {
+        if ( arguments.mediaId <= 0 ) return "";
+        try {
+            var media = variables.wirebox.getInstance( "Media" ).find( arguments.mediaId );
+            if ( isNull( media ) ) return "";
+            var url = variables.wirebox.getInstance( "MediaService" ).urlFor( media );
+            if ( !len( url ) ) return "";
+            return ( left( url, 1 ) == "/" ) ? ( arguments.baseUrl & url ) : url;
+        }
+        catch ( any e ) { return ""; }
     }
 
     /**

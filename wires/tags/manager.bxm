@@ -14,14 +14,17 @@ property name="tagService" inject="TagService";
 property name="cbauth"     inject="AuthenticationService@cbauth";
 
 data = {
-    "newName"    : "",
-    "editingId"  : 0,
-    "editName"   : "",
-    "editSlug"   : "",
-    "mergeSourceId" : 0,
-    "mergeTargetId" : 0,
-    "flashOk"    : "",
-    "flashError" : ""
+    "newName"           : "",
+    "editingId"         : 0,
+    "editName"          : "",
+    "editSlug"          : "",
+    "editSeoTitle"      : "",
+    "editSeoDescription": "",
+    "editOgImageId"     : 0,
+    "mergeSourceId"     : 0,
+    "mergeTargetId"     : 0,
+    "flashOk"           : "",
+    "flashError"        : ""
 };
 
 // --------------------------------------------------------------------
@@ -45,15 +48,21 @@ function startEdit( required id ) {
     clearFlashes();
     var tag = getInstance( "Tag" ).find( arguments.id );
     if ( isNull( tag ) ) return;
-    data.editingId = tag.getId();
-    data.editName  = tag.getName();
-    data.editSlug  = tag.getSlug();
+    data.editingId          = tag.getId();
+    data.editName           = tag.getName();
+    data.editSlug           = tag.getSlug();
+    data.editSeoTitle       = tag.getSeoTitle()       ?: "";
+    data.editSeoDescription = tag.getSeoDescription() ?: "";
+    data.editOgImageId      = val( tag.getOgImageId() ?: 0 );
 }
 
 function cancelEdit() {
-    data.editingId = 0;
-    data.editName  = "";
-    data.editSlug  = "";
+    data.editingId          = 0;
+    data.editName           = "";
+    data.editSlug           = "";
+    data.editSeoTitle       = "";
+    data.editSeoDescription = "";
+    data.editOgImageId      = 0;
 }
 
 function saveEdit() {
@@ -67,7 +76,13 @@ function saveEdit() {
         cancelEdit();
         return;
     }
-    tagService.update( tag, { "name" : data.editName, "slug" : data.editSlug } );
+    tagService.update( tag, {
+        "name"           : data.editName,
+        "slug"           : data.editSlug,
+        "seoTitle"       : trim( data.editSeoTitle ?: "" ),
+        "seoDescription" : trim( data.editSeoDescription ?: "" ),
+        "ogImageId"      : val( data.editOgImageId ?: 0 ) > 0 ? val( data.editOgImageId ) : javaCast( "null", "" )
+    } );
     data.flashOk = "Tag updated.";
     cancelEdit();
 }
@@ -201,7 +216,20 @@ private boolean function requirePerm( required string perm ) {
 														<label class="form-label small">Slug</label>
 														<input type="text" class="form-control form-control-sm" wire:model="editSlug">
 													</div>
-													<div class="col-md-2 d-flex gap-1">
+													<!--- SEO Phase 8 - per-tag overrides --->
+													<div class="col-12">
+														<label class="form-label small mb-1">SEO title <span class="text-muted">(optional)</span></label>
+														<input type="text" class="form-control form-control-sm" maxlength="255" wire:model.blur="editSeoTitle">
+													</div>
+													<div class="col-12">
+														<label class="form-label small mb-1">SEO description <span class="text-muted">(optional)</span></label>
+														<textarea class="form-control form-control-sm" rows="2" maxlength="320" wire:model.blur="editSeoDescription"></textarea>
+													</div>
+													<div class="col-md-6">
+														<label class="form-label small mb-1">OG image media ID <span class="text-muted">(optional)</span></label>
+														<input type="number" class="form-control form-control-sm" min="0" max="9999999" wire:model.blur="editOgImageId">
+													</div>
+													<div class="col-md-6 d-flex gap-1 justify-content-end align-items-end">
 														<button type="submit" class="btn btn-sm btn-primary">Save</button>
 														<button type="button" class="btn btn-sm btn-outline-secondary" wire:click="cancelEdit">Cancel</button>
 													</div>

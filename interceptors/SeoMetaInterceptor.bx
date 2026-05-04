@@ -122,14 +122,28 @@ class extends="coldbox.system.Interceptor" {
                 // slash produces "https://hostblog/". Normalize.
                 var routed = arguments.event.getCurrentRoutedURL();
                 if ( !len( routed ) || left( routed, 1 ) != "/" ) routed = "/" & routed;
+
+                // SEO Phase 8 — let tag / category / author overrides
+                // win over the handler-built generic title/description.
+                // Each archive type checks for its entity in prc and
+                // its three new SEO fields.
+                var archTitle = stripAppSuffix( arguments.prc.pageTitle ?: "", siteName );
+                var archDesc  = arguments.prc.pageDescription ?: "";
+                var archImage = "";
+                var override  = resolveArchiveOverride( arguments.prc, baseUrl, svc );
+                if ( len( override.title       ) ) archTitle = override.title;
+                if ( len( override.description ) ) archDesc  = override.description;
+                if ( len( override.imageUrl    ) ) archImage = override.imageUrl;
+
                 arguments.prc.seoMeta = svc.buildForArchive(
-                    title       = stripAppSuffix( arguments.prc.pageTitle ?: "", siteName ),
-                    description = arguments.prc.pageDescription ?: "",
+                    title       = archTitle,
+                    description = archDesc,
                     canonical   = baseUrl & routed,
                     breadcrumbs = arguments.prc.breadcrumbs ?: [],
                     baseUrl     = baseUrl,
                     siteName    = siteName,
-                    siteLocale  = siteLocale
+                    siteLocale  = siteLocale,
+                    ogImageUrl  = archImage
                 );
 
                 // SEO Phase 3 — author archive pages (/author/{slug})
@@ -205,6 +219,36 @@ class extends="coldbox.system.Interceptor" {
             return reReplace( arguments.raw, "\s*\&middot;\s*" & reEscape( arguments.siteName ) & "$", "", "one" );
         }
         return arguments.raw;
+    }
+
+    /**
+     * SEO Phase 8 — surface tag / category / author archive
+     * overrides. Returns { title, description, imageUrl } with
+     * empty strings when no entity is in prc or none of the SEO
+     * fields are set. Caller (interceptor) merges these into the
+     * defaults handler-side title/description/image.
+     */
+    private struct function resolveArchiveOverride( required any prc, required string baseUrl, required any svc ) {
+        var out = { "title" : "", "description" : "", "imageUrl" : "" };
+
+        var entity = javaCast( "null", "" );
+        if ( structKeyExists( arguments.prc, "tag"      ) && !isNull( arguments.prc.tag      ) ) entity = arguments.prc.tag;
+        else if ( structKeyExists( arguments.prc, "author"   ) && !isNull( arguments.prc.author   ) ) entity = arguments.prc.author;
+        else if ( structKeyExists( arguments.prc, "category" ) && !isNull( arguments.prc.category ) ) entity = arguments.prc.category;
+
+        if ( isNull( entity ) ) return out;
+
+        try {
+            var t = entity.getSeoTitle()       ?: "";
+            var d = entity.getSeoDescription() ?: "";
+            var i = val( entity.getOgImageId() ?: 0 );
+            if ( len( t ) ) out.title       = t;
+            if ( len( d ) ) out.description = d;
+            if ( i > 0 )    out.imageUrl    = arguments.svc.resolveMediaUrl( i, arguments.baseUrl );
+        }
+        catch ( any e ) { /* entity may not have these getters yet */ }
+
+        return out;
     }
 
     /**

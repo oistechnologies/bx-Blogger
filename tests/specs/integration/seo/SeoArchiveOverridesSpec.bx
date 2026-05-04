@@ -1,0 +1,107 @@
+/**
+ * bx-Blogger — SeoArchiveOverridesSpec (SEO Phase 8)
+ *
+ * Validates the entity-level SEO column reads on Tag and User. The
+ * SeoMetaInterceptor's resolveArchiveOverride helper is private, so
+ * these specs cover the entity reads + SeoService.resolveMediaUrl
+ * + SeoService.buildForArchive's ogImageUrl arg directly. The
+ * end-to-end interceptor → buildForArchive flow is covered by the
+ * existing manual-curl smoke test.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc     = getInstance( "SeoService" );
+        variables.tagSvc  = getInstance( "TagService" );
+        variables.qb      = getInstance( "QueryBuilder@qb" );
+    }
+
+    function run() {
+        describe( "SEO Phase 8 — per-tag / per-author archive overrides", function() {
+
+            describe( "Tag entity", function() {
+
+                it( "exposes seo_title / seo_description / og_image_id getters", function() {
+                    var tag = variables.tagSvc.create( {
+                        "name" : "Phase 8 Tag " & lCase( replace( createUUID(), "-", "", "all" ) )
+                    } );
+                    variables.qb.newQuery().from( "tags" )
+                        .where( "id", tag.getId() )
+                        .update( {
+                            "seo_title"       : "Custom tag title",
+                            "seo_description" : "Custom tag description.",
+                            "og_image_id"     : 0
+                        } );
+                    var fresh = getInstance( "Tag" ).find( tag.getId() );
+                    expect( fresh.getSeoTitle() ).toBe( "Custom tag title" );
+                    expect( fresh.getSeoDescription() ).toBe( "Custom tag description." );
+                } );
+
+            } );
+
+            describe( "User entity", function() {
+
+                it( "exposes seo_title / seo_description / og_image_id getters", function() {
+                    var u = createTestUser( {} );
+                    variables.qb.newQuery().from( "users" )
+                        .where( "id", u.getId() )
+                        .update( {
+                            "seo_title"       : "Custom author title",
+                            "seo_description" : "Custom author description.",
+                            "og_image_id"     : 0
+                        } );
+                    var fresh = getInstance( "User" ).find( u.getId() );
+                    expect( fresh.getSeoTitle() ).toBe( "Custom author title" );
+                    expect( fresh.getSeoDescription() ).toBe( "Custom author description." );
+                } );
+
+            } );
+
+            describe( "SeoService.buildForArchive ogImageUrl arg", function() {
+
+                it( "emits og:image + twitter:image when ogImageUrl is set", function() {
+                    var meta = variables.svc.buildForArchive(
+                        title       = "Phase 8 Archive",
+                        description = "Test desc",
+                        canonical   = "https://example.com/tag/phase-8",
+                        breadcrumbs = [],
+                        baseUrl     = "https://example.com",
+                        ogImageUrl  = "https://example.com/share.jpg"
+                    );
+                    expect( meta.og.image ).toBe( "https://example.com/share.jpg" );
+                    expect( meta.twitter.image ).toBe( "https://example.com/share.jpg" );
+                    expect( meta.twitter.card ).toBe( "summary_large_image" );
+                } );
+
+                it( "omits image fields when ogImageUrl is blank", function() {
+                    var meta = variables.svc.buildForArchive(
+                        title       = "No Image Archive",
+                        description = "Test desc",
+                        canonical   = "https://example.com/tag/no-img",
+                        breadcrumbs = [],
+                        baseUrl     = "https://example.com"
+                    );
+                    expect( meta.og ).notToHaveKey( "image" );
+                    expect( meta.twitter ).notToHaveKey( "image" );
+                    expect( meta.twitter.card ).toBe( "summary" );
+                } );
+
+            } );
+
+            describe( "SeoService.resolveMediaUrl", function() {
+
+                it( "returns empty string for mediaId 0", function() {
+                    expect( variables.svc.resolveMediaUrl( 0, "https://example.com" ) ).toBe( "" );
+                } );
+
+                it( "returns empty string for missing media row", function() {
+                    expect( variables.svc.resolveMediaUrl( 999999999, "https://example.com" ) ).toBe( "" );
+                } );
+
+            } );
+
+        } );
+    }
+
+}

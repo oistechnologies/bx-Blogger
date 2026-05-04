@@ -58,6 +58,11 @@ class extends="quick.models.BaseEntity" accessors="true" {
     property name="publicAuthorPageEnabled"  column="public_author_page_enabled";
     property name="showAuthorBlockOnPosts"   column="show_author_block_on_posts";
 
+    // SEO Phase 8 — per-author archive overrides
+    property name="seoTitle"                 column="seo_title";
+    property name="seoDescription"           column="seo_description";
+    property name="ogImageId"                column="og_image_id";
+
     property name="deletedAt"                    column="deleted_at";
     property name="createdAt"            column="created_at";
     property name="updatedAt"            column="updated_at";

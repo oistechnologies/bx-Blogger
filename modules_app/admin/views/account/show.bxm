@@ -81,6 +81,48 @@
 						</div>
 					</div>
 
+					<!--- SEO Phase 8 — per-author archive overrides --->
+					<hr class="my-4">
+					<h6 class="mb-3">Author archive SEO <span class="text-muted small fw-normal">(optional)</span></h6>
+					<p class="text-muted small mb-3">
+						Override the title / description / OG image used on your public author archive
+						(<code>/author/#encodeForHTML( prc.user.getAuthorSlug() ?: '...' )#</code>).
+						Leave blank to use the auto-generated archive title.
+					</p>
+
+					<div class="mb-3">
+						<label for="seoTitle" class="form-label">SEO title</label>
+						<input type="text"
+						       class="form-control"
+						       id="seoTitle"
+						       name="seoTitle"
+						       maxlength="255"
+						       value="#encodeForHTMLAttribute( prc.user.getSeoTitle() ?: '' )#">
+						<div class="form-text">Drives the &lt;title&gt; on your author archive page.</div>
+					</div>
+
+					<div class="mb-3">
+						<label for="seoDescription" class="form-label">SEO description</label>
+						<textarea class="form-control"
+						          id="seoDescription"
+						          name="seoDescription"
+						          rows="2"
+						          maxlength="320">#encodeForHTML( prc.user.getSeoDescription() ?: '' )#</textarea>
+						<div class="form-text">Drives the meta description on your author archive page.</div>
+					</div>
+
+					<div class="mb-3">
+						<label for="ogImageId" class="form-label">OG image media ID</label>
+						<input type="number"
+						       class="form-control"
+						       id="ogImageId"
+						       name="ogImageId"
+						       min="0"
+						       max="9999999"
+						       value="#encodeForHTMLAttribute( prc.user.getOgImageId() ?: 0 )#">
+						<div class="form-text">Optional. Media library row id for the share-card image on your author archive page.</div>
+					</div>
+
 					<button type="submit" class="btn btn-primary">Save profile</button>
 				</form>
 			</div>
