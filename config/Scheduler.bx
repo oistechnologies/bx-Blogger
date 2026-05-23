@@ -120,6 +120,18 @@ class {
         task( "ga-daily-sync" )
             .call( function() { dispatchJob( "GaDailySyncJob" ); } )
             .everyDayAt( "04:35" );
+
+        // Every 15 min — realtime spike detector. Pulls
+        // gaService.realtimeActiveUsers(), compares to a 28-day
+        // EWMA baseline stashed in the ga.realtime_baseline setting,
+        // notifies all admins via NotificationService when current
+        // > baseline * spike_multiplier (default 10x). Cooldown is
+        // 15 min via cachebox so a sustained spike doesn't pile up
+        // one notification per tick. Quiet no-op when GA not
+        // connected.
+        task( "ga-anomaly-detection" )
+            .call( function() { dispatchJob( "GaAnomalyDetectionJob" ); } )
+            .every( 15, "minutes" );
     }
 
     /**

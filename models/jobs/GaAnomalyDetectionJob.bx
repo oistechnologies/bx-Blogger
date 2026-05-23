@@ -1,0 +1,114 @@
+/**
+ * bx-Blogger — GaAnomalyDetectionJob (Phase 15.L)
+ *
+ * Runs every 15 minutes from the scheduler. Pulls the current
+ * realtime-active-users count from GA and compares to a 28-day
+ * EWMA baseline stored in the `ga.realtime_baseline` setting.
+ * When the current count exceeds the baseline by a configurable
+ * multiplier (default 10x), notifies all admins via the existing
+ * NotificationService.
+ *
+ * Suppression: a 15-min cooldown lives in a cachebox key
+ * `ga.spike_notified_at` so a sustained spike doesn't pile up
+ * one notification per scheduler tick.
+ *
+ * No-ops gracefully when:
+ *   - GA isn't connected (most common dev/install state)
+ *   - The baseline setting doesn't exist yet (first-run seeds it)
+ *   - Anything in the GA / cache / notification pipeline throws
+ *     (logged + swallowed; one bad run shouldn't break future ones)
+ *
+ * Logs via writeLog NOT WireBox-backed logger — same non-request
+ * thread constraint as GaDailySyncJob.
+ */
+class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
+
+    function handle() {
+        var wirebox = application.wireBox;
+        var ga      = wirebox.getInstance( "GoogleAnalyticsService" );
+        var setting = wirebox.getInstance( "SettingService" );
+
+        if ( !ga.status().connected ) {
+            // Quiet skip — running every 15 min on an unconfigured
+            // install would spam the log otherwise.
+            return;
+        }
+
+        // Baseline + spike-multiplier settings: seed on first run.
+        setting.seedIfMissing(
+            key   = "ga.realtime_baseline",
+            value = "0",
+            type  = "string",
+            description = "GA Anomaly: 28-day EWMA of realtime activeUsers (rolling)."
+        );
+        setting.seedIfMissing(
+            key   = "ga.spike_multiplier",
+            value = "10",
+            type  = "string",
+            description = "GA Anomaly: notify when current realtime > baseline * this multiplier."
+        );
+
+        var currentUsers = 0;
+        try { currentUsers = val( ga.realtimeActiveUsers() ); }
+        catch ( any e ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "GaAnomalyDetectionJob: realtime fetch failed — " & ( e.Message ?: "" )
+            );
+            return;
+        }
+
+        var baseline   = val( setting.get( "ga.realtime_baseline", "0" ) );
+        var multiplier = max( 2, val( setting.get( "ga.spike_multiplier", "10" ) ) );
+
+        // Update baseline as exponentially-weighted moving average.
+        // Alpha = 2/(N+1) where N = 28 day-equivalent samples; at one
+        // sample / 15 min = 96 samples/day, N=28 -> ~2688 samples.
+        // alpha ~= 0.0007. That's slow on purpose: a baseline should
+        // smooth gradual growth without flagging short bumps.
+        var alpha = 2 / ( 2688 + 1 );
+        var newBaseline = baseline == 0 ? currentUsers : ( alpha * currentUsers + ( 1 - alpha ) * baseline );
+        setting.set( key = "ga.realtime_baseline", value = numberFormat( newBaseline, "9.99" ), type = "string" );
+
+        // Threshold check + cooldown. Baseline needs to be at least 1
+        // to avoid divide-by-zero spam on a brand-new install.
+        if ( baseline < 1 || currentUsers < 5 ) return;
+        if ( currentUsers <= baseline * multiplier ) return;
+
+        var cache = wirebox.getInstance( "cachebox" ).getCache( "default" );
+        if ( !isNull( cache.get( "ga.spike_notified_at" ) ) ) {
+            // Cooldown active — skip this tick.
+            return;
+        }
+
+        try {
+            wirebox.getInstance( "NotificationService" ).notifyAllAdmins(
+                type     = "ga_traffic_spike",
+                title    = "Traffic spike: " & numberFormat( currentUsers ) & " users on site now",
+                body     = "Realtime users (" & numberFormat( currentUsers )
+                        & ") is more than "  & multiplier
+                        & "x the 28-day rolling baseline (" & numberFormat( baseline, "9.9" ) & ").",
+                link     = "/admin/analytics/realtime",
+                severity = "info",
+                channels = [ "db" ]
+            );
+            // Suppress further notifications for 15 minutes —
+            // CacheBox timeout in MINUTES (not a timespan).
+            cache.set( "ga.spike_notified_at", dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" ), 15, 0 );
+            writeLog(
+                file = "bxblogger",
+                type = "information",
+                text = "GaAnomalyDetectionJob: spike notified — current=" & currentUsers & " baseline=" & numberFormat( baseline, "9.9" )
+            );
+        }
+        catch ( any e ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "GaAnomalyDetectionJob: notify failed — " & ( e.Message ?: "" )
+            );
+        }
+    }
+
+}

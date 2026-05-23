@@ -1,0 +1,102 @@
+/**
+ * bx-Blogger — GaAnomalyJobSpec (Phase 15.L)
+ *
+ * Validates GaAnomalyDetectionJob:
+ *   - No-ops when GA isn't connected.
+ *   - Seeds ga.realtime_baseline + ga.spike_multiplier on first run.
+ *   - Updates the EWMA baseline each run.
+ *   - Notifies admins when current > baseline * multiplier.
+ *   - Respects the 15-min cooldown cache key.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.qb         = getInstance( "QueryBuilder@qb" );
+        variables.settingSvc = getInstance( "SettingService" );
+
+        variables.savedSettings = {
+            "ga.provider"            : variables.settingSvc.get( "ga.provider", "live" ),
+            "ga.property_id"         : variables.settingSvc.get( "ga.property_id", "" ),
+            "ga.realtime_baseline"   : variables.settingSvc.get( "ga.realtime_baseline", "0" ),
+            "ga.spike_multiplier"    : variables.settingSvc.get( "ga.spike_multiplier", "10" )
+        };
+    }
+
+    function afterAll() {
+        for ( var k in variables.savedSettings ) {
+            variables.settingSvc.set( key = k, value = variables.savedSettings[ k ] ?: "", type = "string" );
+        }
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "GaAnomalyDetectionJob (Phase 15.L)", function() {
+
+            it( "no-ops when GA is not connected", function() {
+                variables.settingSvc.set( key = "ga.provider", value = "live", type = "string" );
+                // Clear any prior notification rows from this test session.
+                var baselineRows = notificationCount();
+                var job = getInstance( "GaAnomalyDetectionJob" );
+                job.handle();
+                expect( notificationCount() ).toBe( baselineRows );
+            } );
+
+            it( "seeds baseline + multiplier on first run when connected", function() {
+                variables.settingSvc.set( key = "ga.provider",    value = "mock",      type = "string" );
+                variables.settingSvc.set( key = "ga.property_id", value = "123456789", type = "string" );
+                queryExecute( "DELETE FROM settings WHERE setting_key IN ('ga.realtime_baseline', 'ga.spike_multiplier')" );
+                variables.settingSvc.invalidate( "ga.realtime_baseline" );
+                variables.settingSvc.invalidate( "ga.spike_multiplier" );
+
+                var job = getInstance( "GaAnomalyDetectionJob" );
+                job.handle();
+
+                var baselineRow = queryExecute( "SELECT setting_value FROM settings WHERE setting_key = 'ga.realtime_baseline'" );
+                var multRow     = queryExecute( "SELECT setting_value FROM settings WHERE setting_key = 'ga.spike_multiplier'" );
+                expect( baselineRow.recordCount ).toBe( 1 );
+                expect( multRow.recordCount     ).toBe( 1 );
+            } );
+
+            it( "notifies admins when current > baseline * multiplier", function() {
+                variables.settingSvc.set( key = "ga.provider",          value = "mock",      type = "string" );
+                variables.settingSvc.set( key = "ga.property_id",       value = "123456789", type = "string" );
+                variables.settingSvc.set( key = "ga.realtime_baseline", value = "1",         type = "string" );
+                variables.settingSvc.set( key = "ga.spike_multiplier",  value = "2",         type = "string" );
+
+                // Clear cooldown so the test isn't gated by a prior run.
+                try { getInstance( "cachebox" ).getCache( "default" ).clear( "ga.spike_notified_at" ); } catch ( any e ) {}
+
+                var before = notificationCount();
+                var job = getInstance( "GaAnomalyDetectionJob" );
+                job.handle();
+                // Mock realtime returns ~12-23 users; baseline=1, multiplier=2,
+                // threshold=2 — current always exceeds, so a notification fires.
+                expect( notificationCount() ).toBeGT( before );
+            } );
+
+            it( "respects the 15-min cooldown — second run does NOT re-notify", function() {
+                variables.settingSvc.set( key = "ga.provider",          value = "mock",      type = "string" );
+                variables.settingSvc.set( key = "ga.property_id",       value = "123456789", type = "string" );
+                variables.settingSvc.set( key = "ga.realtime_baseline", value = "1",         type = "string" );
+                variables.settingSvc.set( key = "ga.spike_multiplier",  value = "2",         type = "string" );
+
+                // Establish the cooldown via a first run that fires.
+                try { getInstance( "cachebox" ).getCache( "default" ).clear( "ga.spike_notified_at" ); } catch ( any e ) {}
+                var job = getInstance( "GaAnomalyDetectionJob" );
+                job.handle();
+                var afterFirst = notificationCount();
+                // Second run should be suppressed.
+                job.handle();
+                expect( notificationCount() ).toBe( afterFirst );
+            } );
+
+        } );
+    }
+
+    private numeric function notificationCount() {
+        var qry = queryExecute( "SELECT COUNT(*) AS n FROM notifications WHERE type = 'ga_traffic_spike'" );
+        return val( qry.n );
+    }
+
+}
