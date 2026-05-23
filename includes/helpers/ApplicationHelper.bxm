@@ -169,6 +169,56 @@
         }
     }
 
+    /**
+     * Phase 15 — normalize a base URL so its host carries a `www.`
+     * prefix. Used by the GSC + GA OAuth redirect-URI builders so
+     * the redirect Google echoes back matches the canonical
+     * www-prefixed domain operators register in Google Cloud
+     * Console (and the canonical the public site serves on).
+     *
+     * Skips normalization in three cases so dev environments and
+     * one-off install topologies aren't broken:
+     *   - Host already starts with `www.` -> leave alone.
+     *   - Host is localhost / 127.x / 0.0.0.0 / IP literal /
+     *     single-label hostname (no dot) -> www.localhost isn't
+     *     a real domain.
+     *   - URL doesn't parse as `scheme://host[:port][/path...]` ->
+     *     return verbatim.
+     */
+    string function ensureWwwHost( required string baseUrl ) {
+        // Local variable named `urlIn` (NOT `url`) — `url` is a
+        // reserved scope name in CFML/BoxLang; `var url = "..."`
+        // is silently rewritten to refer to the URL scope (a struct),
+        // not the local. See the global CLAUDE.md "Reserved scope
+        // name collisions" rule.
+        var urlIn = trim( arguments.baseUrl );
+        if ( !len( urlIn ) ) return urlIn;
+
+        // Pull scheme:// host[:port] remainder.
+        var m = reFindNoCase( "^(https?://)([^/]+)(.*)$", urlIn, 1, true );
+        if ( m.match.len() < 4 ) return urlIn;
+
+        var scheme    = m.match[ 2 ];
+        var hostPort  = m.match[ 3 ];
+        var remainder = m.match[ 4 ];
+
+        // Split host:port so we only normalize the host portion.
+        var host = listFirst( hostPort, ":" );
+        var port = listLen ( hostPort, ":" ) gt 1 ? ":" & listLast( hostPort, ":" ) : "";
+
+        // Already has www -> done.
+        if ( reFindNoCase( "^www\.", host ) gt 0 ) return urlIn;
+        // Localhost variants -> dev convenience, don't break.
+        if ( reFindNoCase( "^(localhost|127\.|0\.0\.0\.0|::1)", host ) gt 0 ) return urlIn;
+        // IP literal -> can't have www.
+        if ( reFind( "^\d+(\.\d+){3}$", host ) gt 0 ) return urlIn;
+        if ( host contains "[" ) return urlIn;
+        // Single-label host (no dot) -> internal name, leave alone.
+        if ( !( host contains "." ) ) return urlIn;
+
+        return scheme & "www." & host & port & remainder;
+    }
+
     function updatedSinceLabel( required any post, numeric minDays = 7 ) {
         try {
             var pub = arguments.post.getPublishedAt();

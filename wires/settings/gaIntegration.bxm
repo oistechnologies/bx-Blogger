@@ -38,6 +38,7 @@ data = {
     "provider"      : "live",
     "emitGtag"      : true,
     "consentMode"   : "none",
+    "forceWww"      : false,
     "status"        : {},
     "redirectUri"   : "",
     "authUrl"       : "",
@@ -59,19 +60,22 @@ function onMount( e, rc, prc, params ) {
     data.provider      = settingService.get( "ga.provider",            "live" );
     data.emitGtag      = settingService.get( "ga.emit_gtag",           "true", "bool" );
     data.consentMode   = settingService.get( "ga.consent_mode",        "none" );
+    data.forceWww      = settingService.get( "oauth.force_www_redirect", "false", "bool" );
     data.status        = gaService.status();
     data.redirectUri   = computeRedirectUri();
 }
 
 function saveSettings() {
     if ( !data.canConnect ) return;
-    settingService.set( key = "ga.oauth_client_id",     value = trim( data.clientId      ?: "" ), type = "string" );
-    settingService.set( key = "ga.oauth_client_secret", value = trim( data.clientSecret  ?: "" ), type = "string" );
-    settingService.set( key = "ga.property_id",         value = trim( data.propertyId    ?: "" ), type = "string" );
-    settingService.set( key = "ga.measurement_id",      value = trim( data.measurementId ?: "" ), type = "string" );
-    settingService.set( key = "ga.provider",            value = trim( data.provider      ?: "live" ), type = "string" );
-    settingService.set( key = "ga.emit_gtag",           value = data.emitGtag ? "true" : "false",     type = "bool"   );
-    settingService.set( key = "ga.consent_mode",        value = trim( data.consentMode   ?: "none" ), type = "string" );
+    settingService.set( key = "ga.oauth_client_id",      value = trim( data.clientId      ?: "" ), type = "string" );
+    settingService.set( key = "ga.oauth_client_secret",  value = trim( data.clientSecret  ?: "" ), type = "string" );
+    settingService.set( key = "ga.property_id",          value = trim( data.propertyId    ?: "" ), type = "string" );
+    settingService.set( key = "ga.measurement_id",       value = trim( data.measurementId ?: "" ), type = "string" );
+    settingService.set( key = "ga.provider",             value = trim( data.provider      ?: "live" ), type = "string" );
+    settingService.set( key = "ga.emit_gtag",            value = data.emitGtag ? "true" : "false",     type = "bool"   );
+    settingService.set( key = "ga.consent_mode",         value = trim( data.consentMode   ?: "none" ), type = "string" );
+    // Shared with the GSC integration — both flows respect this toggle.
+    settingService.set( key = "oauth.force_www_redirect", value = data.forceWww ? "true" : "false",    type = "bool"   );
 
     // Bust live-API + snapshot caches so a property or
     // credential change shows fresh data on the next read.
@@ -172,6 +176,13 @@ private string function computeRedirectUri() {
         catch ( any e ) { appUrl = "http://localhost:8080"; }
     }
     if ( right( appUrl, 1 ) == "/" ) appUrl = left( appUrl, len( appUrl ) - 1 );
+    // Operator-toggleable www. prefix — when oauth.force_www_redirect
+    // is true the host gets a www. so the redirect matches a
+    // www-canonical site. ensureWwwHost() safely no-ops on
+    // localhost / IPs regardless of the toggle.
+    if ( settingService.get( "oauth.force_www_redirect", "false", "bool" ) ) {
+        appUrl = ensureWwwHost( appUrl );
+    }
     return appUrl & "/admin/settings/ga/callback";
 }
 // @endWire
@@ -323,6 +334,18 @@ private string function computeRedirectUri() {
                                     Auto-emit gtag.js on every public page when measurement_id is set
                                 </label>
                             </div>
+                            <div class="form-check mb-3">
+                                <input id="gaForceWww" type="checkbox"
+                                       class="form-check-input"
+                                       wire:model.blur="forceWww"
+                                       <bx:if args.forceWww>checked</bx:if>>
+                                <label for="gaForceWww" class="form-check-label small">
+                                    Force <code>www.</code> on the OAuth redirect URI
+                                </label>
+                                <div class="form-text small">
+                                    Enable when your site's canonical URL uses <code>www.</code> (e.g. <code>https://www.example.com</code>) but <code>APP_URL</code> is set without it. Shared with the Google Search Console integration — flipping this here also affects GSC. Save and the redirect URI on the right updates.
+                                </div>
+                            </div>
                             <button type="submit" class="btn btn-primary">Save</button>
                         </form>
                     </div>
@@ -340,8 +363,11 @@ private string function computeRedirectUri() {
                             <li>Open <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener">Google Cloud Console -> New project</a> and name it something memorable.</li>
                             <li>Enable the <a href="https://console.cloud.google.com/apis/library/analyticsdata.googleapis.com" target="_blank" rel="noopener">Google Analytics Data API</a>.</li>
                             <li>Configure the <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noopener">OAuth consent screen</a>: type <strong>External</strong>, add scope <code>analytics.readonly</code>, add yourself as a test user.</li>
-                            <li>Create an OAuth 2.0 <strong>Web application</strong> client at <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Credentials</a>. Add this redirect URI:<br>
+                            <li>Create an OAuth 2.0 <strong>Web application</strong> client at <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Credentials</a>. Add this redirect URI <em>exactly</em>:<br>
                                 <code class="small">#encodeForHTML( args.redirectUri )#</code>
+                                <div class="form-text small mt-1">
+                                    Google matches the redirect URI byte-for-byte. If your site canonical uses <code>www.</code> but the URI above does not (or vice versa), enable / disable the <strong>Force www.</strong> checkbox on the left, click <strong>Save</strong>, and copy the updated URI into Google.
+                                </div>
                             </li>
                             <li>Copy the Client ID + Client Secret into the form on the left.</li>
                             <li>Find your <strong>numeric Property ID</strong> at <a href="https://analytics.google.com" target="_blank" rel="noopener">analytics.google.com</a> -> Admin -> Property details (looks like <code>123456789</code>, NOT <code>G-XXXX</code>).</li>

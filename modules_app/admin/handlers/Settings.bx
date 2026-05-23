@@ -225,6 +225,12 @@ class extends="coldbox.system.EventHandler" {
      * in their respective Google Cloud Console OAuth clients;
      * `segment` is "gsc" or "ga". One helper keeps the
      * APP_URL-vs-request-host fallback logic in a single place.
+     *
+     * Optionally prepends www. to the host when the operator has
+     * toggled `oauth.force_www_redirect` in either the GSC or GA
+     * settings page. Skipped by default so bare-domain canonical
+     * installs aren't disrupted. ensureWwwHost() also safely no-ops
+     * for localhost / IP / single-label hosts regardless.
      */
     private string function buildGoogleRedirectUri( required any event, required string segment ) {
         var appUrl = getSystemSetting( "APP_URL", "" );
@@ -234,6 +240,8 @@ class extends="coldbox.system.EventHandler" {
             appUrl = arguments.event.getHTTPHeader( "X-Forwarded-Proto", "http" ) & "://" & arguments.event.getHTTPHeader( "Host", "localhost:8080" );
         }
         if ( right( appUrl, 1 ) == "/" ) appUrl = left( appUrl, len( appUrl ) - 1 );
+        var forceWww = getInstance( "SettingService" ).get( "oauth.force_www_redirect", "false", "bool" );
+        if ( forceWww ) appUrl = ensureWwwHost( appUrl );
         return appUrl & "/admin/settings/" & arguments.segment & "/callback";
     }
 

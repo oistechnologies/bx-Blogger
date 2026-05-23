@@ -1,0 +1,77 @@
+/**
+ * bx-Blogger — EnsureWwwHostSpec
+ *
+ * Validates the ensureWwwHost() helper used (conditionally) by
+ * the GSC + GA OAuth redirect-URI builders. The helper is only
+ * invoked when `oauth.force_www_redirect` is true; this spec
+ * focuses on the normalization itself.
+ *
+ * The helper lives in includes/helpers/ApplicationHelper.bxm
+ * which gets auto-loaded into handler variables scope by ColdBox
+ * but isn't visible from a TestBox spec by default — we include
+ * the helper file here so its functions land in this spec's
+ * variables scope.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        // Pull the helper file's functions into this spec's variables scope.
+        include "/includes/helpers/ApplicationHelper.bxm";
+    }
+
+    function run() {
+        describe( "ensureWwwHost() — OAuth redirect URI normalization", function() {
+
+            it( "prepends www. to a bare-domain HTTPS URL", function() {
+                expect( ensureWwwHost( "https://example.com" ) ).toBe( "https://www.example.com" );
+            } );
+
+            it( "prepends www. to a bare-domain HTTP URL", function() {
+                expect( ensureWwwHost( "http://example.com" ) ).toBe( "http://www.example.com" );
+            } );
+
+            it( "preserves path and query", function() {
+                expect( ensureWwwHost( "https://example.com/admin/settings/ga/callback" ) )
+                    .toBe( "https://www.example.com/admin/settings/ga/callback" );
+            } );
+
+            it( "preserves custom port", function() {
+                expect( ensureWwwHost( "https://example.com:8443/foo" ) )
+                    .toBe( "https://www.example.com:8443/foo" );
+            } );
+
+            it( "leaves already-www URLs untouched", function() {
+                expect( ensureWwwHost( "https://www.example.com/x" ) )
+                    .toBe( "https://www.example.com/x" );
+            } );
+
+            it( "leaves localhost untouched", function() {
+                expect( ensureWwwHost( "http://localhost:8080/x" ) ).toBe( "http://localhost:8080/x" );
+                expect( ensureWwwHost( "http://localhost"        ) ).toBe( "http://localhost"        );
+            } );
+
+            it( "leaves IPv4 + loopback addresses untouched", function() {
+                expect( ensureWwwHost( "http://127.0.0.1:8080/x"   ) ).toBe( "http://127.0.0.1:8080/x"   );
+                expect( ensureWwwHost( "http://0.0.0.0:8080"       ) ).toBe( "http://0.0.0.0:8080"       );
+                expect( ensureWwwHost( "http://192.168.1.50:8080/x" ) ).toBe( "http://192.168.1.50:8080/x" );
+            } );
+
+            it( "leaves single-label hostnames untouched", function() {
+                expect( ensureWwwHost( "http://internal-host:8080/x" ) ).toBe( "http://internal-host:8080/x" );
+                expect( ensureWwwHost( "http://myserver"             ) ).toBe( "http://myserver"             );
+            } );
+
+            it( "returns empty string unchanged", function() {
+                expect( ensureWwwHost( "" ) ).toBe( "" );
+            } );
+
+            it( "returns non-http input unchanged", function() {
+                expect( ensureWwwHost( "not a url"   ) ).toBe( "not a url"   );
+                expect( ensureWwwHost( "example.com" ) ).toBe( "example.com" );
+            } );
+
+        } );
+    }
+
+}

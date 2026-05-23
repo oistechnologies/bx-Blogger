@@ -36,6 +36,7 @@ data = {
     "clientSecret"  : "",
     "propertyUrl"   : "",
     "provider"      : "live",
+    "forceWww"      : false,
     "status"        : {},
     "redirectUri"   : "",
     "authUrl"       : "",
@@ -54,16 +55,19 @@ function onMount( e, rc, prc, params ) {
     data.clientSecret = settingService.get( "gsc.oauth_client_secret", "" );
     data.propertyUrl  = settingService.get( "gsc.property_url",        "" );
     data.provider     = settingService.get( "gsc.provider",            "live" );
+    data.forceWww     = settingService.get( "oauth.force_www_redirect", "false", "bool" );
     data.status       = gscService.status();
     data.redirectUri  = computeRedirectUri();
 }
 
 function saveSettings() {
     if ( !data.canConnect ) return;
-    settingService.set( key = "gsc.oauth_client_id",     value = trim( data.clientId ?: "" ),     type = "string" );
-    settingService.set( key = "gsc.oauth_client_secret", value = trim( data.clientSecret ?: "" ), type = "string" );
-    settingService.set( key = "gsc.property_url",        value = trim( data.propertyUrl ?: "" ),  type = "string" );
-    settingService.set( key = "gsc.provider",            value = trim( data.provider ?: "live" ), type = "string" );
+    settingService.set( key = "gsc.oauth_client_id",      value = trim( data.clientId ?: "" ),     type = "string" );
+    settingService.set( key = "gsc.oauth_client_secret",  value = trim( data.clientSecret ?: "" ), type = "string" );
+    settingService.set( key = "gsc.property_url",         value = trim( data.propertyUrl ?: "" ),  type = "string" );
+    settingService.set( key = "gsc.provider",             value = trim( data.provider ?: "live" ), type = "string" );
+    // Shared with the GA integration — both flows respect this toggle.
+    settingService.set( key = "oauth.force_www_redirect", value = data.forceWww ? "true" : "false", type = "bool"   );
     onMount( event = "", rc = {}, prc = {}, params = {} );
     data.flashOk = "Settings saved.";
 }
@@ -160,6 +164,13 @@ private string function computeRedirectUri() {
         catch ( any e ) { appUrl = "http://localhost:8080"; }
     }
     if ( right( appUrl, 1 ) == "/" ) appUrl = left( appUrl, len( appUrl ) - 1 );
+    // Operator-toggleable www. prefix — when oauth.force_www_redirect
+    // is true the host gets a www. so the redirect matches a
+    // www-canonical site. ensureWwwHost() safely no-ops on
+    // localhost / IPs regardless of the toggle.
+    if ( settingService.get( "oauth.force_www_redirect", "false", "bool" ) ) {
+        appUrl = ensureWwwHost( appUrl );
+    }
     return appUrl & "/admin/settings/gsc/callback";
 }
 // @endWire
@@ -270,6 +281,18 @@ private string function computeRedirectUri() {
                                 </select>
                                 <div class="form-text small">Mock returns deterministic seeded data and is safe for dev.</div>
                             </div>
+                            <div class="form-check mb-3">
+                                <input id="gscForceWww" type="checkbox"
+                                       class="form-check-input"
+                                       wire:model.blur="forceWww"
+                                       <bx:if args.forceWww>checked</bx:if>>
+                                <label for="gscForceWww" class="form-check-label small">
+                                    Force <code>www.</code> on the OAuth redirect URI
+                                </label>
+                                <div class="form-text small">
+                                    Enable when your site's canonical URL uses <code>www.</code> (e.g. <code>https://www.example.com</code>) but <code>APP_URL</code> is set without it. Shared with the Google Analytics integration — flipping this here also affects GA. Save and the redirect URI on the right updates.
+                                </div>
+                            </div>
                             <button type="submit" class="btn btn-primary">Save</button>
                         </form>
                     </div>
@@ -284,8 +307,11 @@ private string function computeRedirectUri() {
                     <div class="card-body small">
                         <ol class="ps-3 mb-3">
                             <li>Open <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console &rarr; Credentials</a> and create a Web application OAuth client.</li>
-                            <li>Add this redirect URI to the client:<br>
+                            <li>Add this redirect URI to the client <em>exactly</em>:<br>
                                 <code class="small">#encodeForHTML( args.redirectUri )#</code>
+                                <div class="form-text small mt-1">
+                                    Google matches the redirect URI byte-for-byte. If your site canonical uses <code>www.</code> but the URI above does not (or vice versa), enable / disable the <strong>Force www.</strong> checkbox on the left, click <strong>Save</strong>, and copy the updated URI into Google.
+                                </div>
                             </li>
                             <li>Enable the <strong>Search Console API</strong> on the project.</li>
                             <li>Verify the property at <a href="https://search.google.com/search-console" target="_blank" rel="noopener">search.google.com/search-console</a>.</li>
