@@ -67,6 +67,8 @@ a SaaS account or vendor in the loop.
 - **301/302 redirects table** — slug changes on published posts auto-push the old URL into the redirects table with chain-collapse semantics; admin CRUD surface for manual entries
 - **Broken-link tracker (404 report)** — admin can promote a frequently-hit 404 into a redirect with one click
 - **Audit log** — filterable viewer covering logins, post lifecycle, and other admin actions, with CSV export for compliance
+- **Google Search Console integration** — OAuth-based connect flow, daily sync of search-analytics rows into the local DB, dashboard scorecards (clicks / impressions / CTR / position), and a per-post Performance tab listing the top queries each post ranks for
+- **Google Analytics 4 integration** — OAuth-based connect flow, daily aggregate sync, dashboard snapshot card with realtime "users now" pill, full reports section (Overview, Top Pages with CSV export, Acquisition, Geography, Devices, Events, Realtime), per-post Analytics tab in the editor, automatic gtag.js emission on the public site with optional Consent Mode v2 stub for EU compliance, and a 15-minute spike-detection job that notifies admins on traffic anomalies
 
 ### Admin + security
 
