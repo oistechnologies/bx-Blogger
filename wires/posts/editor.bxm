@@ -27,6 +27,7 @@ property name="auditService"         inject="SeoAuditService";
 property name="auditAgentService"    inject="SeoAuditAgentService";
 property name="outboundLinkService"  inject="OutboundLinkService";
 property name="gscService"           inject="GscService";
+property name="gaService"            inject="GoogleAnalyticsService";
 property name="settingService"       inject="SettingService";
 property name="aiImageService"       inject="AiImageService";
 property name="themeService"         inject="ThemeService";
@@ -95,6 +96,9 @@ data = {
     "linkHealthError"    : "",
     // SEO Phase 14 — GSC performance modal state
     "showPerformance"    : false,
+    // Phase 15.J — GA analytics modal state
+    "showAnalytics"      : false,
+    "analyticsPeriod"    : 28,
     // 2.I AI image-gen state
     "showImageModal"  : false,
     "imagePrompt"     : "",
@@ -1029,6 +1033,84 @@ struct function performanceRollup() {
     catch ( any e ) {
         return { clicks : 0, impressions : 0, ctr : 0, position : 0 };
     }
+}
+
+// --------------------------------------------------------------------
+// Phase 15.J — GA per-post Analytics modal
+// --------------------------------------------------------------------
+
+function openAnalytics()  { data.showAnalytics = true;  }
+function closeAnalytics() { data.showAnalytics = false; }
+function setAnalyticsPeriod( numeric days ) {
+    data.analyticsPeriod = max( 1, int( arguments.days ) );
+}
+
+/**
+ * Per-post KPI rollup over the selected period — reads from the
+ * local analytics_daily table populated by GaDailySyncJob.
+ */
+struct function analyticsRollup() {
+    var pid = val( data.postId ?: 0 );
+    if ( pid <= 0 ) return { pageViews : 0, activeUsers : 0, sessions : 0, engagementRate : 0, bounceRate : 0, avgSessionDuration : 0 };
+    try { return gaService.postRollup( postId = pid, days = data.analyticsPeriod ); }
+    catch ( any e ) { return { pageViews : 0, activeUsers : 0, sessions : 0, engagementRate : 0, bounceRate : 0, avgSessionDuration : 0 }; }
+}
+
+/**
+ * Daily views sparkline series for THIS post (last N days).
+ * Returns [{date, views, users}].
+ */
+array function analyticsSeries() {
+    var pid = val( data.postId ?: 0 );
+    if ( pid <= 0 ) return [];
+    try { return gaService.postDailySeries( postId = pid, days = data.analyticsPeriod ); }
+    catch ( any e ) { return []; }
+}
+
+array function analyticsTopSources() {
+    var pid = val( data.postId ?: 0 );
+    if ( pid <= 0 ) return [];
+    try { return gaService.postLiveSources( postId = pid, days = data.analyticsPeriod, n = 5 ); }
+    catch ( any e ) { return []; }
+}
+
+array function analyticsTopCountries() {
+    var pid = val( data.postId ?: 0 );
+    if ( pid <= 0 ) return [];
+    try { return gaService.postLiveCountries( postId = pid, days = data.analyticsPeriod, n = 5 ); }
+    catch ( any e ) { return []; }
+}
+
+boolean function gaConnected() {
+    try { return gaService.status().connected; }
+    catch ( any e ) { return false; }
+}
+
+/**
+ * Inline-SVG sparkline for the post views series. Returns full
+ * <svg> markup. Shorter than the overview's full chart helper —
+ * just one metric, no axis labels.
+ */
+string function analyticsSparkline( required array series, numeric w = 320, numeric h = 60 ) {
+    if ( arguments.series.len() < 2 ) {
+        return '<div class="text-muted small">no data yet</div>';
+    }
+    var maxV = 1;
+    for ( var r in arguments.series ) { maxV = max( maxV, val( r.views ?: 0 ) ); }
+    var n     = arguments.series.len();
+    var step  = arguments.w / ( n - 1 );
+    var pts   = [];
+    var i     = 0;
+    for ( var r in arguments.series ) {
+        var x = i * step;
+        var y = arguments.h - ( val( r.views ?: 0 ) / maxV * arguments.h );
+        pts.append( numberFormat( x, "9.99" ) & "," & numberFormat( y, "9.99" ) );
+        i++;
+    }
+    return '<svg viewBox="0 0 ' & arguments.w & ' ' & arguments.h
+         & '" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block;">'
+         & '<polyline points="' & pts.toList( " " ) & '" fill="none" stroke="##0d6efd" stroke-width="2"/>'
+         & '</svg>';
 }
 
 // --------------------------------------------------------------------
@@ -2346,6 +2428,14 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 								        title="Search-engine performance — top queries, clicks, impressions">
 									<i class="bi bi-graph-up me-1"></i> Performance
 								</button>
+								<bx:if gaConnected()>
+									<button type="button"
+									        class="btn btn-sm btn-outline-secondary"
+									        wire:click="openAnalytics"
+									        title="Page analytics — views, users, sources, geography">
+										<i class="bi bi-bar-chart-line me-1"></i> Analytics
+									</button>
+								</bx:if>
 								<button type="button"
 								        class="btn btn-sm btn-outline-primary"
 								        wire:click="openAuditPanel"
@@ -3018,6 +3108,112 @@ Write in markdown. Headings, lists, **bold**, [links](https://example.com), and 
 					</div>
 					<div class="modal-footer">
 						<button type="button" class="btn btn-outline-secondary" wire:click="closePerformance">Close</button>
+					</div>
+				</div>
+			</div>
+		</div>
+	</bx:if>
+
+	<!--- Phase 15.J — GA per-post analytics modal -------------------- --->
+	<bx:if args.showAnalytics>
+		<bx:set anRollup    = analyticsRollup()>
+		<bx:set anSeries    = analyticsSeries()>
+		<bx:set anSources   = analyticsTopSources()>
+		<bx:set anCountries = analyticsTopCountries()>
+		<div class="modal show d-block" tabindex="-1" style="background:rgba(0,0,0,.35);">
+			<div class="modal-dialog modal-lg modal-dialog-scrollable">
+				<div class="modal-content">
+					<div class="modal-header">
+						<h5 class="modal-title"><i class="bi bi-bar-chart-line me-1"></i> Page analytics — last #args.analyticsPeriod# days</h5>
+						<div class="btn-group btn-group-sm ms-3">
+							<button type="button" class="btn #( args.analyticsPeriod == 7  ? "btn-primary" : "btn-outline-primary" )#" wire:click="setAnalyticsPeriod(7)" >7d</button>
+							<button type="button" class="btn #( args.analyticsPeriod == 28 ? "btn-primary" : "btn-outline-primary" )#" wire:click="setAnalyticsPeriod(28)">28d</button>
+							<button type="button" class="btn #( args.analyticsPeriod == 90 ? "btn-primary" : "btn-outline-primary" )#" wire:click="setAnalyticsPeriod(90)">90d</button>
+						</div>
+						<button type="button" class="btn-close ms-auto" wire:click="closeAnalytics"></button>
+					</div>
+					<div class="modal-body">
+						<div class="row g-2 mb-3">
+							<div class="col-6 col-md-3">
+								<div class="border rounded p-2 text-center">
+									<div class="text-muted small">Views</div>
+									<div class="h4 mb-0">#numberFormat( int( anRollup.pageViews ) )#</div>
+								</div>
+							</div>
+							<div class="col-6 col-md-3">
+								<div class="border rounded p-2 text-center">
+									<div class="text-muted small">Users</div>
+									<div class="h4 mb-0">#numberFormat( int( anRollup.activeUsers ) )#</div>
+								</div>
+							</div>
+							<div class="col-6 col-md-3">
+								<div class="border rounded p-2 text-center">
+									<div class="text-muted small">Avg time</div>
+									<bx:set s = int( anRollup.avgSessionDuration )>
+									<div class="h4 mb-0">
+										<bx:if s < 60>#s#s
+										<bx:else>#int( s / 60 )#m #( s - int( s / 60 ) * 60 < 10 ? "0" : "" )##( s - int( s / 60 ) * 60 )#s
+										</bx:if>
+									</div>
+								</div>
+							</div>
+							<div class="col-6 col-md-3">
+								<div class="border rounded p-2 text-center">
+									<div class="text-muted small">Engagement</div>
+									<div class="h4 mb-0">#numberFormat( val( anRollup.engagementRate ) * 100, "0.0" )#%</div>
+								</div>
+							</div>
+						</div>
+
+						<h6 class="mb-2 small text-muted text-uppercase">Daily views</h6>
+						<div class="border rounded p-2 mb-3">
+							#analyticsSparkline( anSeries )#
+						</div>
+
+						<div class="row g-3">
+							<div class="col-12 col-md-6">
+								<h6 class="mb-2 small text-muted text-uppercase">Top sources</h6>
+								<bx:if !anSources.len()>
+									<p class="text-muted small mb-0">No source data yet for this post.</p>
+								<bx:else>
+									<table class="table table-sm mb-0 align-middle">
+										<thead class="small text-muted"><tr><th>Source / Medium</th><th class="text-end">Sessions</th></tr></thead>
+										<tbody>
+											<bx:loop array="#anSources#" item="s">
+												<tr>
+													<td class="small">#encodeForHTML( len( s.label ?: "" ) ? s.label : "(not set)" )#</td>
+													<td class="text-end small">#numberFormat( int( s.sessions ?: 0 ) )#</td>
+												</tr>
+											</bx:loop>
+										</tbody>
+									</table>
+								</bx:if>
+							</div>
+							<div class="col-12 col-md-6">
+								<h6 class="mb-2 small text-muted text-uppercase">Top countries</h6>
+								<bx:if !anCountries.len()>
+									<p class="text-muted small mb-0">No country data yet for this post.</p>
+								<bx:else>
+									<table class="table table-sm mb-0 align-middle">
+										<thead class="small text-muted"><tr><th>Country</th><th class="text-end">Users</th></tr></thead>
+										<tbody>
+											<bx:loop array="#anCountries#" item="c">
+												<tr>
+													<td class="small">#encodeForHTML( len( c.label ?: "" ) ? c.label : "(not set)" )#</td>
+													<td class="text-end small">#numberFormat( int( c.activeUsers ?: 0 ) )#</td>
+												</tr>
+											</bx:loop>
+										</tbody>
+									</table>
+								</bx:if>
+							</div>
+						</div>
+					</div>
+					<div class="modal-footer">
+						<a class="btn btn-sm btn-outline-primary" href="/admin/analytics">
+							<i class="bi bi-arrow-right-short"></i> Full analytics dashboard
+						</a>
+						<button type="button" class="btn btn-outline-secondary" wire:click="closeAnalytics">Close</button>
 					</div>
 				</div>
 			</div>

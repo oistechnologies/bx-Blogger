@@ -810,6 +810,45 @@ class accessors="true" singleton {
     }
 
     /**
+     * Per-post top countries — used by the editor Analytics modal.
+     * Same caching shape as postLiveSources (15 min per post).
+     */
+    array function postLiveCountries( required numeric postId, numeric days = 28, numeric n = 5 ) {
+        var cacheKey = "ga.live.post." & arguments.postId & ".countries." & arguments.days;
+        var hit      = cacheGet( cacheKey );
+        if ( !isNull( hit ) ) return hit;
+
+        var slug = lookupPostSlug( arguments.postId );
+        if ( !len( slug ) ) {
+            cachePut( cacheKey, [], variables.postSourcesTtlSeconds );
+            return [];
+        }
+        var since = dateFormat( dateAdd( "d", -arguments.days, now() ), "yyyy-mm-dd" );
+        var until = dateFormat( now(), "yyyy-mm-dd" );
+        var body  = {
+            "dateRanges"      : [ { "startDate" : since, "endDate" : until } ],
+            "dimensions"      : [ { "name" : "country" } ],
+            "metrics"         : [ { "name" : "activeUsers" }, { "name" : "sessions" } ],
+            "dimensionFilter" : {
+                "filter" : {
+                    "fieldName"    : "pagePath",
+                    "stringFilter" : {
+                        "matchType"     : "BEGINS_WITH",
+                        "value"         : "/blog/" & slug,
+                        "caseSensitive" : false
+                    }
+                }
+            },
+            "orderBys" : [ { "metric" : { "metricName" : "activeUsers" }, "desc" : true } ],
+            "limit"    : arguments.n
+        };
+        var resp = runReport( body = body );
+        var rows = rowsAsBreakdown( resp, "country" );
+        cachePut( cacheKey, rows, variables.postSourcesTtlSeconds );
+        return rows;
+    }
+
+    /**
      * Per-post top referring sources — used by the editor
      * Analytics modal's "top sources" mini table. Cached per
      * post for 15 minutes.

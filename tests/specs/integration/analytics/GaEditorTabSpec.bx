@@ -1,0 +1,61 @@
+/**
+ * bx-Blogger — GaEditorTabSpec (Phase 15.J)
+ *
+ * Smoke checks for the per-post Analytics tab added to the post
+ * editor wire. The wire is large + existing, so this spec only
+ * verifies the new pieces were added correctly:
+ *   - gaService injection
+ *   - showAnalytics + analyticsPeriod data fields
+ *   - open/close/period methods
+ *   - data fetchers (rollup, series, sources, countries)
+ *   - "Analytics" button conditional on gaConnected()
+ *   - modal markup
+ *   - postLiveCountries service method
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function run() {
+        describe( "Phase 15.J — editor Analytics tab + postLiveCountries", function() {
+
+            it( "editor wire injects gaService + declares analytics state", function() {
+                var src = fileRead( expandPath( "/wires/posts/editor.bxm" ) );
+                expect( src ).toInclude( 'inject="GoogleAnalyticsService"' );
+                expect( src ).toInclude( '"showAnalytics"' );
+                expect( src ).toInclude( '"analyticsPeriod"' );
+            } );
+
+            it( "editor wire declares the 4 analytics fetchers + open/close handlers + sparkline", function() {
+                var src = fileRead( expandPath( "/wires/posts/editor.bxm" ) );
+                expect( src ).toInclude( "function openAnalytics(" );
+                expect( src ).toInclude( "function closeAnalytics(" );
+                expect( src ).toInclude( "function setAnalyticsPeriod(" );
+                expect( src ).toInclude( "function analyticsRollup(" );
+                expect( src ).toInclude( "function analyticsSeries(" );
+                expect( src ).toInclude( "function analyticsTopSources(" );
+                expect( src ).toInclude( "function analyticsTopCountries(" );
+                expect( src ).toInclude( "function analyticsSparkline(" );
+                expect( src ).toInclude( "function gaConnected(" );
+            } );
+
+            it( "editor template includes the Analytics button gated on gaConnected()", function() {
+                var src = fileRead( expandPath( "/wires/posts/editor.bxm" ) );
+                expect( src ).toInclude( 'wire:click="openAnalytics"' );
+                // Gate must wrap the button so it disappears when not connected.
+                expect( src ).toInclude( "<bx:if gaConnected()>" );
+            } );
+
+            it( "editor template includes the Analytics modal block", function() {
+                var src = fileRead( expandPath( "/wires/posts/editor.bxm" ) );
+                expect( src ).toInclude( "Page analytics — last" );
+                expect( src ).toInclude( "Full analytics dashboard" );
+            } );
+
+            it( "GoogleAnalyticsService exposes postLiveCountries()", function() {
+                var src = fileRead( expandPath( "/models/services/GoogleAnalyticsService.bx" ) );
+                expect( src ).toInclude( "function postLiveCountries(" );
+            } );
+
+        } );
+    }
+
+}
