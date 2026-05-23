@@ -87,6 +87,45 @@
     meta tags, custom <link> tags, etc. Injected verbatim — UNSANITIZED.
     Admin trust required.
 -->
+<!--
+    Phase 15.K - Google Analytics gtag.js auto-emission.
+    Operator-configured via /admin/settings/ga (ga.measurement_id +
+    ga.emit_gtag toggle + ga.consent_mode dropdown). Renders only when
+    measurement ID matches the G-XXXX shape AND emit is on; otherwise
+    silent so themes degrade cleanly when GA isn't configured.
+    Consent Mode v2 default-denied init fires before gtag('config') when
+    ga.consent_mode is "basic_eu" or "strict", so the operator's cookie
+    banner can then call gtag('consent','update',{...}) on acceptance.
+-->
+<bx:set _gaSettings      = application.wireBox.getInstance( "SettingService" )>
+<bx:set _gaMeasurementId = trim( _gaSettings.get( "ga.measurement_id", "" ) )>
+<bx:set _gaEmitGtag      = _gaSettings.get( "ga.emit_gtag", "true", "bool" )>
+<bx:set _gaConsentMode   = trim( _gaSettings.get( "ga.consent_mode", "none" ) )>
+<bx:if _gaEmitGtag && reFind( "^G-[A-Z0-9]+$", _gaMeasurementId ) gt 0>
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=#encodeForHTMLAttribute( _gaMeasurementId )#"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        <bx:if _gaConsentMode == "basic_eu" || _gaConsentMode == "strict">
+        gtag('consent', 'default', {
+            ad_storage: 'denied',
+            ad_user_data: 'denied',
+            ad_personalization: 'denied',
+            analytics_storage: 'denied',
+            wait_for_update: 500
+        });
+        </bx:if>
+        gtag('js', new Date());
+        gtag('config', '#encodeForJavaScript( _gaMeasurementId )#');
+        <bx:if _gaConsentMode == "strict">
+        // Consent mode "strict" — operator must pair with a cookie banner
+        // that calls gtag('consent','update',{...}) on user acceptance.
+        // See https://developers.google.com/tag-platform/security/guides/consent
+        </bx:if>
+    </script>
+</bx:if>
+
 <bx:set customHead = prc.theme.option( "custom_head_html" )>
 <bx:if len( trim( customHead ) )>
     #customHead#
