@@ -329,5 +329,12 @@
         </div>
     </bx:if>
 
+    <!--- Phase 15.E — Analytics snapshot. Wire handles its own permission
+          gate (ga.view) + degraded "Connect GA" empty state when not
+          connected, so this slot doesn't need a prc.canViewGa flag. --->
+    <div class="col-12 col-lg-8">
+        #wire( name = "analytics.snapshot" )#
+    </div>
+
 </div>
 </bx:output>

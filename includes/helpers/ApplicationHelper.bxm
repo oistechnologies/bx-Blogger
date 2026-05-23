@@ -148,6 +148,27 @@
      * same `updated_at`, so structured data and visible signal stay
      * in sync. No call to SeoService — pure date arithmetic.
      */
+    /**
+     * Phase 15 — single source of truth for "is Google Analytics
+     * connected on this install?". Every UI gate (sidebar group,
+     * dashboard snapshot card, post-editor Analytics button)
+     * calls this so a credential change in one place hides /
+     * surfaces every dependent surface uniformly.
+     *
+     * Wrapped in try/catch with a false fallback so a transient
+     * service issue degrades the UI gracefully rather than 500-ing
+     * the dashboard. Settings cache (60 min TTL) keeps this cheap
+     * on hot paths.
+     */
+    boolean function gaIsConnected() {
+        try {
+            return application.wireBox.getInstance( "GoogleAnalyticsService" ).status().connected;
+        }
+        catch ( any e ) {
+            return false;
+        }
+    }
+
     function updatedSinceLabel( required any post, numeric minDays = 7 ) {
         try {
             var pub = arguments.post.getPublishedAt();

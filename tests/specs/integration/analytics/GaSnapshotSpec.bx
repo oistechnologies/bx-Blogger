@@ -1,0 +1,32 @@
+/**
+ * bx-Blogger — GaSnapshotSpec (Phase 15.E)
+ *
+ * Smoke checks for the dashboard snapshot wire + GaHelper.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function run() {
+        describe( "analytics.snapshot wire + GaHelper (Phase 15.E)", function() {
+
+            it( "wire template exists at the app-root path the wire() helper resolves", function() {
+                var wirePath = expandPath( "/wires/analytics/snapshot.bxm" );
+                expect( fileExists( wirePath ) ).toBeTrue();
+            } );
+
+            it( "dashboard view embeds the snapshot wire", function() {
+                var modulePath = getController().getSetting( "modules" ).admin.path;
+                var view = fileRead( modulePath & "/views/dashboard/index.bxm" );
+                expect( view ).toInclude( "analytics.snapshot" );
+            } );
+
+            it( "ApplicationHelper exposes gaIsConnected()", function() {
+                var helperPath = expandPath( "/includes/helpers/ApplicationHelper.bxm" );
+                expect( fileExists( helperPath ) ).toBeTrue();
+                var source = fileRead( helperPath );
+                expect( source ).toInclude( "function gaIsConnected" );
+            } );
+
+        } );
+    }
+
+}

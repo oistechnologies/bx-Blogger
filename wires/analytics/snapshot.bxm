@@ -1,0 +1,267 @@
+<bx:script>
+// @startWire
+/**
+ * analytics.snapshot — Phase 15.E dashboard snapshot card.
+ *
+ * Lives on /admin (Dashboard.index). Renders the highest-value GA
+ * metrics in a single tile so operators see traffic at a glance
+ * without opening the full reports section.
+ *
+ * Connected state:
+ *   - Top-right "users on site now" pill, polled every 5s.
+ *   - 4 KPI tiles: Active users (7d), Page views (7d), Sessions (7d),
+ *     Avg session duration (7d). Each shows the absolute value plus
+ *     a % delta vs the prior 7-day window.
+ *   - "Top page (7d)" + "Top source (7d)" mini-tiles.
+ *
+ * Not-connected state:
+ *   - Empty-state CTA pointing at /admin/settings/ga.
+ *
+ * Permissions: gated on `ga.view`. Users without permission see
+ * nothing (no leak of "we have analytics" signal).
+ *
+ * Errors degrade to the empty state — a transient API issue must
+ * not crash the dashboard.
+ *
+ * Caching: data is 5 min CacheBox (key ga.snapshot.v1). Refresh
+ * button busts the key + reloads.
+ */
+
+property name="gaService"      inject="GoogleAnalyticsService";
+property name="settingService" inject="SettingService";
+property name="cbauth"         inject="AuthenticationService@cbauth";
+property name="cacheBox"       inject="cachebox";
+
+data = {
+    "canView"   : false,
+    "connected" : false,
+    "loading"   : false,
+    "now"       : 0,
+    "rollup"    : {},
+    "delta"     : {},
+    "topPage"   : {},
+    "topSource" : {}
+};
+
+function onMount( event, rc, prc, params ) {
+    var u = cbauth.isLoggedIn() ? cbauth.getUser() : "";
+    data.canView = !isSimpleValue( u ) && u.hasPermission( "ga.view" );
+    if ( !data.canView ) return;
+    hydrate();
+}
+
+function refresh() {
+    if ( !data.canView ) return;
+    try { cacheBox.getCache( "default" ).clear( "ga.snapshot.v1" ); } catch ( any e ) {}
+    hydrate();
+}
+
+/**
+ * Realtime tile polling — keep this method light; CBWIRE will
+ * re-render the wire on every tick.
+ */
+function pollRealtime() {
+    if ( !data.canView || !data.connected ) return;
+    try { data.now = gaService.realtimeActiveUsers(); }
+    catch ( any e ) { data.now = 0; }
+}
+
+private void function hydrate() {
+    var cache = cacheBox.getCache( "default" );
+    var hit   = cache.get( "ga.snapshot.v1" );
+    if ( !isNull( hit ) && isStruct( hit ) ) {
+        data.connected = hit.connected;
+        data.rollup    = hit.rollup;
+        data.delta     = hit.delta;
+        data.topPage   = hit.topPage;
+        data.topSource = hit.topSource;
+    } else {
+        data.loading   = true;
+        data.connected = isGaConnected();
+        if ( data.connected ) {
+            var cmp        = safeCompare();
+            data.rollup    = cmp.current   ?: {};
+            data.delta     = cmp.deltaPct  ?: {};
+            data.topPage   = safeTopPage();
+            data.topSource = safeTopSource();
+        } else {
+            data.rollup    = {};
+            data.delta     = {};
+            data.topPage   = {};
+            data.topSource = {};
+        }
+        cache.set(
+            "ga.snapshot.v1",
+            {
+                "connected" : data.connected,
+                "rollup"    : data.rollup,
+                "delta"     : data.delta,
+                "topPage"   : data.topPage,
+                "topSource" : data.topSource
+            },
+            5, // 5 min — matches the live-API cache window
+            0
+        );
+        data.loading = false;
+    }
+    if ( data.connected ) {
+        try { data.now = gaService.realtimeActiveUsers(); }
+        catch ( any e ) { data.now = 0; }
+    }
+}
+
+private boolean function isGaConnected() {
+    try { return gaService.status().connected; }
+    catch ( any e ) { return false; }
+}
+
+private struct function safeCompare() {
+    try { return gaService.siteRollupCompare( 7 ); }
+    catch ( any e ) { return { "current" : {}, "previous" : {}, "deltaPct" : {} }; }
+}
+
+private struct function safeTopPage() {
+    try {
+        var arr = gaService.topPagesLocal( days = 7, n = 1 );
+        return arr.len() ? arr[ 1 ] : {};
+    }
+    catch ( any e ) { return {}; }
+}
+
+private struct function safeTopSource() {
+    try {
+        var arr = gaService.topAcquisitionChannels( days = 7, n = 1 );
+        return arr.len() ? arr[ 1 ] : {};
+    }
+    catch ( any e ) { return {}; }
+}
+
+private string function fmtDelta( numeric pct ) {
+    if ( arguments.pct == 0 ) return "0%";
+    var sign = arguments.pct > 0 ? "+" : "";
+    return sign & numberFormat( arguments.pct, "9.9" ) & "%";
+}
+
+private string function deltaClass( numeric pct ) {
+    if ( arguments.pct == 0 ) return "text-muted";
+    return arguments.pct > 0 ? "text-success" : "text-danger";
+}
+
+private string function fmtDuration( numeric seconds ) {
+    var s = int( arguments.seconds );
+    if ( s < 60 ) return s & "s";
+    var m = int( s / 60 );
+    var r = s - ( m * 60 );
+    return m & "m " & ( r < 10 ? "0" : "" ) & r & "s";
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:if !args.canView>
+    <!-- Render nothing — user has no ga.view permission. -->
+<bx:else>
+    <div class="card stat-card stat-card-primary">
+        <div class="card-header card-header-soft card-header-soft-primary d-flex justify-content-between align-items-center">
+            <span class="h6 mb-0"><i class="bi bi-bar-chart-line me-1"></i> Analytics — last 7 days</span>
+            <bx:if args.connected>
+                <span class="d-flex align-items-center small">
+                    <span class="badge bg-success me-2 d-inline-flex align-items-center" wire:poll.5s="pollRealtime">
+                        <i class="bi bi-circle-fill me-1" style="font-size:0.5rem;"></i>
+                        #encodeForHTML( args.now )# user#( args.now == 1 ? "" : "s" )# now
+                    </span>
+                    <button type="button" class="btn btn-sm btn-link p-0 text-decoration-none" wire:click="refresh" title="Refresh">
+                        <i class="bi bi-arrow-clockwise" wire:loading.remove wire:target="refresh"></i>
+                        <span class="spinner-border spinner-border-sm" wire:loading wire:target="refresh"></span>
+                    </button>
+                </span>
+            <bx:else>
+                <a class="small text-decoration-none" href="/admin/settings/ga">Configure <i class="bi bi-arrow-right-short"></i></a>
+            </bx:if>
+        </div>
+        <div class="card-body">
+            <bx:if !args.connected>
+                <div class="text-center p-4">
+                    <i class="bi bi-bar-chart-line text-muted" style="font-size:2rem;"></i>
+                    <p class="text-muted mt-2 mb-3">
+                        Connect Google Analytics to see traffic, sources,<br>
+                        and per-post engagement here.
+                    </p>
+                    <a class="btn btn-sm btn-primary" href="/admin/settings/ga">
+                        <i class="bi bi-link-45deg me-1"></i> Connect Google Analytics
+                    </a>
+                </div>
+            <bx:else>
+                <div class="row g-3">
+                    <div class="col-6 col-md-3">
+                        <div class="small text-muted">Active users</div>
+                        <div class="h4 mb-0">#numberFormat( int( args.rollup.activeUsers ?: 0 ) )#</div>
+                        <bx:set d = val( args.delta.activeUsers ?: 0 )>
+                        <div class="small #( d > 0 ? "text-success" : ( d < 0 ? "text-danger" : "text-muted" ) )#">
+                            #( d == 0 ? "0%" : ( d > 0 ? "+" : "" ) & numberFormat( d, "9.9" ) & "%" )# vs prior 7d
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="small text-muted">Page views</div>
+                        <div class="h4 mb-0">#numberFormat( int( args.rollup.pageViews ?: 0 ) )#</div>
+                        <bx:set d = val( args.delta.pageViews ?: 0 )>
+                        <div class="small #( d > 0 ? "text-success" : ( d < 0 ? "text-danger" : "text-muted" ) )#">
+                            #( d == 0 ? "0%" : ( d > 0 ? "+" : "" ) & numberFormat( d, "9.9" ) & "%" )# vs prior 7d
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="small text-muted">Sessions</div>
+                        <div class="h4 mb-0">#numberFormat( int( args.rollup.sessions ?: 0 ) )#</div>
+                        <bx:set d = val( args.delta.sessions ?: 0 )>
+                        <div class="small #( d > 0 ? "text-success" : ( d < 0 ? "text-danger" : "text-muted" ) )#">
+                            #( d == 0 ? "0%" : ( d > 0 ? "+" : "" ) & numberFormat( d, "9.9" ) & "%" )# vs prior 7d
+                        </div>
+                    </div>
+                    <div class="col-6 col-md-3">
+                        <div class="small text-muted">Avg session</div>
+                        <bx:set s = int( args.rollup.avgSessionDuration ?: 0 )>
+                        <div class="h4 mb-0">
+                            <bx:if s < 60>#s#s
+                            <bx:else>#int( s / 60 )#m #( s - int( s / 60 ) * 60 < 10 ? "0" : "" )##( s - int( s / 60 ) * 60 )#s
+                            </bx:if>
+                        </div>
+                        <bx:set d = val( args.delta.avgSessionDuration ?: 0 )>
+                        <div class="small #( d > 0 ? "text-success" : ( d < 0 ? "text-danger" : "text-muted" ) )#">
+                            #( d == 0 ? "0%" : ( d > 0 ? "+" : "" ) & numberFormat( d, "9.9" ) & "%" )# vs prior 7d
+                        </div>
+                    </div>
+                </div>
+
+                <hr class="my-3">
+
+                <div class="row g-3 small">
+                    <div class="col-12 col-md-6">
+                        <div class="text-muted mb-1"><i class="bi bi-file-text me-1"></i> Top page (7d)</div>
+                        <bx:if structKeyExists( args.topPage, "pagePath" ) && len( args.topPage.pagePath )>
+                            <bx:if len( args.topPage.postTitle ?: "" ) && val( args.topPage.postId ?: 0 ) gt 0>
+                                <a class="text-decoration-none" href="/admin/posts/editor?id=#val( args.topPage.postId )#">
+                                    #encodeForHTML( args.topPage.postTitle )#
+                                </a>
+                            <bx:else>
+                                <code class="small">#encodeForHTML( args.topPage.pagePath )#</code>
+                            </bx:if>
+                            <span class="text-muted">— #numberFormat( int( args.topPage.views ?: 0 ) )# views</span>
+                        <bx:else>
+                            <span class="text-muted"><em>no data yet</em></span>
+                        </bx:if>
+                    </div>
+                    <div class="col-12 col-md-6">
+                        <div class="text-muted mb-1"><i class="bi bi-broadcast me-1"></i> Top source (7d)</div>
+                        <bx:if structKeyExists( args.topSource, "label" ) && len( args.topSource.label )>
+                            <strong>#encodeForHTML( args.topSource.label )#</strong>
+                            <span class="text-muted">— #numberFormat( int( args.topSource.sessions ?: 0 ) )# sessions</span>
+                        <bx:else>
+                            <span class="text-muted"><em>no data yet</em></span>
+                        </bx:if>
+                    </div>
+                </div>
+            </bx:if>
+        </div>
+    </div>
+</bx:if>
+</bx:output>
