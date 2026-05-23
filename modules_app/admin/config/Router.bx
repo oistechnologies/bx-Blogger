@@ -63,6 +63,11 @@ class {
         route( "settings/ga/callback" ).to( "Settings.gaCallback" );
         route( "settings/ga" ).to( "Settings.ga" );
 
+        // Phase 15.F — Analytics reports landing. Sub-routes for
+        // pages / sources / geo / devices / events / realtime
+        // get added in their respective chunks (15.G-15.I).
+        route( "analytics" ).to( "Analytics.index" );
+
         // Phase UX — self-service account lives inside the admin shell
         // (previously /account at the app root). Specific sub-routes
         // first so the base /admin/account GET/POST pair doesn't

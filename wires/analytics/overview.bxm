@@ -1,0 +1,381 @@
+<bx:script>
+// @startWire
+/**
+ * analytics.overview — Phase 15.F Overview report.
+ *
+ * Lives at /admin/analytics. Site-wide KPIs over a selectable
+ * date range, a daily-series line chart, and top-5 page +
+ * top-5 channel tables.
+ *
+ * Date-range presets: 7d (default), 28d, 90d. Period-over-
+ * period delta is computed against the prior window of the
+ * same length.
+ *
+ * Data sources:
+ *   - siteRollupCompare(days) → local analytics_daily table
+ *     (fast, no API hit).
+ *   - dailySeries(days) → local analytics_daily table.
+ *   - topPagesLocal(days, n) → local analytics_daily table.
+ *   - topAcquisitionChannels(days, n) → live API (5 min cache).
+ *
+ * Permission: handler-level pre-handler gates ga.view; this
+ * wire's onMount re-checks defensively so a direct wire dispatch
+ * also enforces.
+ */
+
+property name="gaService"      inject="GoogleAnalyticsService";
+property name="cbauth"         inject="AuthenticationService@cbauth";
+property name="cacheBox"       inject="cachebox";
+
+data = {
+    "canView"       : false,
+    "connected"     : false,
+    "days"          : 7,
+    "compare"       : true,
+    "rollup"        : {},
+    "delta"         : {},
+    "series"        : [],
+    "topPages"      : [],
+    "topChannels"   : [],
+    "loading"       : false
+};
+
+function onMount( event, rc, prc, params ) {
+    var u = cbauth.isLoggedIn() ? cbauth.getUser() : "";
+    data.canView = !isSimpleValue( u ) && u.hasPermission( "ga.view" );
+    if ( !data.canView ) return;
+    hydrate();
+}
+
+function setRange( numeric days ) {
+    if ( !data.canView ) return;
+    data.days = max( 1, int( arguments.days ) );
+    hydrate();
+}
+
+function toggleCompare() {
+    if ( !data.canView ) return;
+    data.compare = !data.compare;
+    hydrate();
+}
+
+function refresh() {
+    if ( !data.canView ) return;
+    try { gaService.invalidateCaches(); } catch ( any e ) {}
+    hydrate();
+}
+
+private void function hydrate() {
+    data.loading   = true;
+    data.connected = isGaConnected();
+    if ( !data.connected ) {
+        data.rollup      = {};
+        data.delta       = {};
+        data.series      = [];
+        data.topPages    = [];
+        data.topChannels = [];
+        data.loading     = false;
+        return;
+    }
+    try {
+        var cmp = gaService.siteRollupCompare( data.days );
+        data.rollup = cmp.current  ?: {};
+        data.delta  = data.compare ? ( cmp.deltaPct ?: {} ) : {};
+    }
+    catch ( any e ) {
+        data.rollup = {};
+        data.delta  = {};
+    }
+    try { data.series = gaService.dailySeries( data.days ); }
+    catch ( any e ) { data.series = []; }
+    try { data.topPages = gaService.topPagesLocal( days = data.days, n = 5 ); }
+    catch ( any e ) { data.topPages = []; }
+    try { data.topChannels = gaService.topAcquisitionChannels( days = data.days, n = 5 ); }
+    catch ( any e ) { data.topChannels = []; }
+    data.loading = false;
+}
+
+private boolean function isGaConnected() {
+    try { return gaService.status().connected; }
+    catch ( any e ) { return false; }
+}
+
+/**
+ * Render a 3-series inline-SVG line chart from the daily-series
+ * data. Returns the full <svg> markup. Each series scaled to
+ * its own max so all three peaks reach the top of the canvas
+ * (avoids one big series flattening the others). Sparse data
+ * (<2 points) renders a friendly "no data" message instead.
+ */
+string function renderSeriesChart( required array series, numeric w = 800, numeric h = 240 ) {
+    if ( arguments.series.len() < 2 ) {
+        return '<div class="text-center text-muted p-4">'
+             & '<i class="bi bi-graph-up"></i> Not enough daily data to plot yet.'
+             & '</div>';
+    }
+    var padL = 36; var padR = 12; var padT = 12; var padB = 28;
+    var chartW = arguments.w - padL - padR;
+    var chartH = arguments.h - padT - padB;
+    var n      = arguments.series.len();
+    var step   = n > 1 ? ( chartW / ( n - 1 ) ) : 0;
+
+    // Compute per-series max so peaks fill the canvas.
+    var maxViews    = 1; var maxUsers = 1; var maxSessions = 1;
+    for ( var r in arguments.series ) {
+        maxViews    = max( maxViews,    val( r.views    ?: 0 ) );
+        maxUsers    = max( maxUsers,    val( r.users    ?: 0 ) );
+        maxSessions = max( maxSessions, val( r.sessions ?: 0 ) );
+    }
+
+    var ptsFor = function( arr, mx ) {
+        var pts = [];
+        var i   = 0;
+        for ( var r in arr ) {
+            var x = padL + ( i * step );
+            var v = val( r[ "metric" ] ?: 0 );
+            var y = padT + chartH - ( v / mx * chartH );
+            pts.append( numberFormat( x, "9.99" ) & "," & numberFormat( y, "9.99" ) );
+            i++;
+        }
+        return pts.toList( " " );
+    };
+
+    // Adapter — feed views/users/sessions into ptsFor() under a
+    // shared "metric" key so the closure stays one-line.
+    var asMetric = function( arr, key ) {
+        var out = [];
+        for ( var r in arr ) {
+            var x = duplicate( r );
+            x.metric = val( r[ key ] ?: 0 );
+            out.append( x );
+        }
+        return out;
+    };
+
+    var ptsViews    = ptsFor( asMetric( arguments.series, "views"    ), maxViews    );
+    var ptsUsers    = ptsFor( asMetric( arguments.series, "users"    ), maxUsers    );
+    var ptsSessions = ptsFor( asMetric( arguments.series, "sessions" ), maxSessions );
+
+    // X-axis: first + middle + last date labels.
+    var firstDate = arguments.series[ 1 ].date ?: "";
+    var lastDate  = arguments.series[ n ].date ?: "";
+    var midIdx    = int( ( n + 1 ) / 2 );
+    var midDate   = arguments.series[ midIdx ].date ?: "";
+
+    var svg = '<svg viewBox="0 0 ' & arguments.w & ' ' & arguments.h & '" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block;">';
+    // Grid backdrop.
+    svg &= '<rect x="' & padL & '" y="' & padT & '" width="' & chartW & '" height="' & chartH & '" fill="##f8f9fa" stroke="##dee2e6"/>';
+    // Horizontal grid lines at 0%, 50%, 100%.
+    svg &= '<line x1="' & padL & '" y1="' & ( padT + chartH / 2 ) & '" x2="' & ( padL + chartW ) & '" y2="' & ( padT + chartH / 2 ) & '" stroke="##e9ecef"/>';
+    // Series lines.
+    svg &= '<polyline points="' & ptsViews    & '" fill="none" stroke="##0d6efd" stroke-width="2"/>';
+    svg &= '<polyline points="' & ptsUsers    & '" fill="none" stroke="##198754" stroke-width="2"/>';
+    svg &= '<polyline points="' & ptsSessions & '" fill="none" stroke="##fd7e14" stroke-width="2"/>';
+    // Axis labels (X first / mid / last; Y max for each series at the top).
+    var labelStyle = 'font-size="10" fill="##6c757d" font-family="system-ui,sans-serif"';
+    svg &= '<text x="' & padL                 & '" y="' & ( arguments.h - 8 ) & '" ' & labelStyle & '>' & encodeForHTML( firstDate ) & '</text>';
+    svg &= '<text x="' & ( padL + chartW / 2 ) & '" y="' & ( arguments.h - 8 ) & '" text-anchor="middle" ' & labelStyle & '>' & encodeForHTML( midDate ) & '</text>';
+    svg &= '<text x="' & ( padL + chartW )    & '" y="' & ( arguments.h - 8 ) & '" text-anchor="end"    ' & labelStyle & '>' & encodeForHTML( lastDate ) & '</text>';
+    // Y-axis max marker (just shows the max page-view count at the top).
+    svg &= '<text x="' & ( padL - 4 ) & '" y="' & ( padT + 10 ) & '" text-anchor="end" ' & labelStyle & '>' & numberFormat( maxViews ) & '</text>';
+    svg &= '<text x="' & ( padL - 4 ) & '" y="' & ( padT + chartH ) & '" text-anchor="end" ' & labelStyle & '>0</text>';
+    svg &= '</svg>';
+    return svg;
+}
+
+private string function fmtDelta( numeric pct ) {
+    if ( arguments.pct == 0 ) return "0%";
+    var sign = arguments.pct > 0 ? "+" : "";
+    return sign & numberFormat( arguments.pct, "9.9" ) & "%";
+}
+
+private string function deltaClass( numeric pct ) {
+    if ( arguments.pct == 0 ) return "text-muted";
+    return arguments.pct > 0 ? "text-success" : "text-danger";
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:if !args.canView>
+    <div class="alert alert-warning">
+        <i class="bi bi-shield-lock me-1"></i> You don't have permission to view Analytics.
+    </div>
+<bx:elseif !args.connected>
+    <div class="card stat-card stat-card-secondary">
+        <div class="card-body text-center p-5">
+            <i class="bi bi-bar-chart-line text-muted" style="font-size:3rem;"></i>
+            <h4 class="mt-3">Google Analytics is not connected</h4>
+            <p class="text-muted mb-4">
+                Connect a GA4 property to see traffic, sources, geo, devices, and per-post engagement here.
+            </p>
+            <a class="btn btn-primary" href="/admin/settings/ga">
+                <i class="bi bi-link-45deg me-1"></i> Connect Google Analytics
+            </a>
+        </div>
+    </div>
+<bx:else>
+    <!-- Toolbar -->
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+        <div class="btn-group btn-group-sm" role="group" aria-label="Date range">
+            <button type="button" class="btn #( args.days == 7  ? "btn-primary" : "btn-outline-primary" )#" wire:click="setRange(7)" >Last 7d</button>
+            <button type="button" class="btn #( args.days == 28 ? "btn-primary" : "btn-outline-primary" )#" wire:click="setRange(28)">Last 28d</button>
+            <button type="button" class="btn #( args.days == 90 ? "btn-primary" : "btn-outline-primary" )#" wire:click="setRange(90)">Last 90d</button>
+        </div>
+        <div class="d-flex align-items-center gap-3 small">
+            <div class="form-check form-switch mb-0">
+                <input id="gaCompareToggle" class="form-check-input" type="checkbox" wire:click="toggleCompare" <bx:if args.compare>checked</bx:if>>
+                <label for="gaCompareToggle" class="form-check-label">Compare to prior period</label>
+            </div>
+            <button class="btn btn-sm btn-outline-secondary" wire:click="refresh" wire:loading.attr="disabled" wire:target="refresh">
+                <i class="bi bi-arrow-clockwise" wire:loading.remove wire:target="refresh"></i>
+                <span class="spinner-border spinner-border-sm" wire:loading wire:target="refresh"></span>
+                Refresh
+            </button>
+        </div>
+    </div>
+
+    <!-- KPI cards -->
+    <div class="row g-3 mb-3">
+        <div class="col-6 col-md-3">
+            <div class="card stat-card stat-card-primary">
+                <div class="card-body py-3">
+                    <div class="small text-muted">Active users</div>
+                    <div class="h3 mb-0">#numberFormat( int( args.rollup.activeUsers ?: 0 ) )#</div>
+                    <bx:if args.compare>
+                        <bx:set d = val( args.delta.activeUsers ?: 0 )>
+                        <div class="small #( d > 0 ? "text-success" : ( d < 0 ? "text-danger" : "text-muted" ) )#">
+                            #( d == 0 ? "0%" : ( d > 0 ? "+" : "" ) & numberFormat( d, "9.9" ) & "%" )#
+                        </div>
+                    </bx:if>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3">
+            <div class="card stat-card stat-card-info">
+                <div class="card-body py-3">
+                    <div class="small text-muted">Page views</div>
+                    <div class="h3 mb-0">#numberFormat( int( args.rollup.pageViews ?: 0 ) )#</div>
+                    <bx:if args.compare>
+                        <bx:set d = val( args.delta.pageViews ?: 0 )>
+                        <div class="small #( d > 0 ? "text-success" : ( d < 0 ? "text-danger" : "text-muted" ) )#">
+                            #( d == 0 ? "0%" : ( d > 0 ? "+" : "" ) & numberFormat( d, "9.9" ) & "%" )#
+                        </div>
+                    </bx:if>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3">
+            <div class="card stat-card stat-card-success">
+                <div class="card-body py-3">
+                    <div class="small text-muted">Sessions</div>
+                    <div class="h3 mb-0">#numberFormat( int( args.rollup.sessions ?: 0 ) )#</div>
+                    <bx:if args.compare>
+                        <bx:set d = val( args.delta.sessions ?: 0 )>
+                        <div class="small #( d > 0 ? "text-success" : ( d < 0 ? "text-danger" : "text-muted" ) )#">
+                            #( d == 0 ? "0%" : ( d > 0 ? "+" : "" ) & numberFormat( d, "9.9" ) & "%" )#
+                        </div>
+                    </bx:if>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-md-3">
+            <div class="card stat-card stat-card-warning">
+                <div class="card-body py-3">
+                    <div class="small text-muted">Engagement rate</div>
+                    <bx:set er = val( args.rollup.engagementRate ?: 0 )>
+                    <div class="h3 mb-0">#numberFormat( er * 100, "9.9" )#%</div>
+                    <bx:if args.compare>
+                        <bx:set d = val( args.delta.engagementRate ?: 0 )>
+                        <div class="small #( d > 0 ? "text-success" : ( d < 0 ? "text-danger" : "text-muted" ) )#">
+                            #( d == 0 ? "0%" : ( d > 0 ? "+" : "" ) & numberFormat( d, "9.9" ) & "%" )#
+                        </div>
+                    </bx:if>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Trend chart -->
+    <div class="card stat-card stat-card-primary mb-3">
+        <div class="card-header card-header-soft card-header-soft-primary d-flex justify-content-between align-items-center">
+            <span class="h6 mb-0">Daily trend — last #args.days# days</span>
+            <span class="small">
+                <span class="text-primary"><i class="bi bi-circle-fill"></i> Page views</span> &middot;
+                <span class="text-success"><i class="bi bi-circle-fill"></i> Active users</span> &middot;
+                <span style="color:##fd7e14"><i class="bi bi-circle-fill"></i> Sessions</span>
+            </span>
+        </div>
+        <div class="card-body">
+            #renderSeriesChart( args.series )#
+        </div>
+    </div>
+
+    <!-- Top tables side-by-side -->
+    <div class="row g-3">
+        <div class="col-12 col-lg-7">
+            <div class="card stat-card stat-card-info">
+                <div class="card-header card-header-soft card-header-soft-info d-flex justify-content-between align-items-center">
+                    <span class="h6 mb-0">Top pages</span>
+                    <a class="small text-decoration-none" href="/admin/analytics/pages">View all <i class="bi bi-arrow-right-short"></i></a>
+                </div>
+                <div class="card-body p-0">
+                    <bx:if !args.topPages.len()>
+                        <p class="small text-muted m-3 mb-0">No page data yet for this window.</p>
+                    <bx:else>
+                        <table class="table table-sm mb-0 align-middle">
+                            <thead class="table-light">
+                                <tr><th>Page</th><th class="text-end">Views</th><th class="text-end">Users</th></tr>
+                            </thead>
+                            <tbody>
+                                <bx:loop array="#args.topPages#" item="p">
+                                    <tr>
+                                        <td class="small">
+                                            <bx:if len( p.postTitle ?: "" ) && val( p.postId ?: 0 ) gt 0>
+                                                <a class="text-decoration-none" href="/admin/posts/editor?id=#val( p.postId )#">
+                                                    #encodeForHTML( p.postTitle )#
+                                                </a>
+                                            <bx:else>
+                                                <code>#encodeForHTML( p.pagePath )#</code>
+                                            </bx:if>
+                                        </td>
+                                        <td class="text-end small">#numberFormat( int( p.views ?: 0 ) )#</td>
+                                        <td class="text-end small">#numberFormat( int( p.users ?: 0 ) )#</td>
+                                    </tr>
+                                </bx:loop>
+                            </tbody>
+                        </table>
+                    </bx:if>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-lg-5">
+            <div class="card stat-card stat-card-success">
+                <div class="card-header card-header-soft card-header-soft-success d-flex justify-content-between align-items-center">
+                    <span class="h6 mb-0">Top channels</span>
+                    <a class="small text-decoration-none" href="/admin/analytics/sources">View all <i class="bi bi-arrow-right-short"></i></a>
+                </div>
+                <div class="card-body p-0">
+                    <bx:if !args.topChannels.len()>
+                        <p class="small text-muted m-3 mb-0">No channel data yet for this window.</p>
+                    <bx:else>
+                        <table class="table table-sm mb-0 align-middle">
+                            <thead class="table-light">
+                                <tr><th>Channel</th><th class="text-end">Sessions</th></tr>
+                            </thead>
+                            <tbody>
+                                <bx:loop array="#args.topChannels#" item="c">
+                                    <tr>
+                                        <td class="small">#encodeForHTML( c.label ?: "(not set)" )#</td>
+                                        <td class="text-end small">#numberFormat( int( c.sessions ?: 0 ) )#</td>
+                                    </tr>
+                                </bx:loop>
+                            </tbody>
+                        </table>
+                    </bx:if>
+                </div>
+            </div>
+        </div>
+    </div>
+</bx:if>
+</bx:output>

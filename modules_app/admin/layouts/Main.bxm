@@ -435,6 +435,14 @@
 						</a>
 					</bx:if>
 
+					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "ga.view" ) && gaIsConnected()>
+						<a class="nav-link #( currentEvent.startsWith( 'admin:Analytics.' ) ? 'active' : '' )#"
+						   href="/admin/analytics"
+						   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Analytics">
+							<i class="bi bi-graph-up nav-icon"></i><span class="nav-label">Analytics</span>
+						</a>
+					</bx:if>
+
 					<!--- System Settings — collapsible group. Parent visible
 					      only when the user has rights to any child; each
 					      child individually gated by its own permission. --->

@@ -1,0 +1,62 @@
+/**
+ * bx-Blogger — GaOverviewSpec (Phase 15.F)
+ *
+ * Smoke checks for the admin:Analytics handler + Overview wire +
+ * sidebar group + route ordering.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function run() {
+        describe( "admin:Analytics + analytics.overview wire (Phase 15.F)", function() {
+
+            it( "handler file Analytics.bx exists with index() action + ga.view gate", function() {
+                var modulePath = getController().getSetting( "modules" ).admin.path;
+                var handlerPath = modulePath & "/handlers/Analytics.bx";
+                expect( fileExists( handlerPath ) ).toBeTrue();
+                var source = fileRead( handlerPath );
+                expect( source ).toInclude( "function index(" );
+                expect( source ).toInclude( "ga.view" );
+                expect( source ).toInclude( "preHandler" );
+            } );
+
+            it( "view file analytics/index.bxm renders the overview wire", function() {
+                var modulePath = getController().getSetting( "modules" ).admin.path;
+                var viewPath = modulePath & "/views/analytics/index.bxm";
+                expect( fileExists( viewPath ) ).toBeTrue();
+                expect( fileRead( viewPath ) ).toInclude( "analytics.overview" );
+            } );
+
+            it( "overview wire exists at the app-root path", function() {
+                var wirePath = expandPath( "/wires/analytics/overview.bxm" );
+                expect( fileExists( wirePath ) ).toBeTrue();
+                var source = fileRead( wirePath );
+                expect( source ).toInclude( "function setRange(" );
+                expect( source ).toInclude( "function toggleCompare(" );
+                expect( source ).toInclude( "function refresh(" );
+                expect( source ).toInclude( "renderSeriesChart(" );
+            } );
+
+            it( "router registers /admin/analytics before the conventional catch-all", function() {
+                var routerPath = getController().getSetting( "modules" ).admin.path & "/config/Router.bx";
+                var source = fileRead( routerPath );
+                expect( source ).toInclude( "route( ""analytics""" );
+                var analyticsIdx = find( "route( ""analytics""", source );
+                var catchAllIdx  = find( "route( "":handler/:action?""", source );
+                expect( analyticsIdx ).toBeGT( 0 );
+                expect( catchAllIdx ).toBeGT( 0 );
+                expect( analyticsIdx ).toBeLT( catchAllIdx );
+            } );
+
+            it( "admin sidebar includes Analytics link gated on ga.view AND gaIsConnected()", function() {
+                var modulePath = getController().getSetting( "modules" ).admin.path;
+                var layout = fileRead( modulePath & "/layouts/Main.bxm" );
+                expect( layout ).toInclude( "/admin/analytics" );
+                expect( layout ).toInclude( "ga.view" );
+                expect( layout ).toInclude( "gaIsConnected()" );
+                expect( layout ).toInclude( "admin:Analytics." );
+            } );
+
+        } );
+    }
+
+}

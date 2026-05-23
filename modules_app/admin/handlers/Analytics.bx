@@ -1,0 +1,44 @@
+/**
+ * bx-Blogger — admin:Analytics (Phase 15.F)
+ *
+ * Reports landing handler. Each action renders a wire-backed
+ * view; the wires do the actual data fetching + UI work so the
+ * handlers stay thin.
+ *
+ * Visibility: pre-handler gates anonymous → /security/login and
+ * users-without-ga.view → /admin (consistent with the rest of the
+ * admin shell). The Analytics sidebar group is itself hidden when
+ * GA isn't connected (see GaHelper.gaIsConnected() + Main.bxm),
+ * but a direct URL visit still lands on the wire's
+ * not-connected empty state — no exception, no 404.
+ *
+ * Phase 15.F ships only `index()`; subsequent chunks add
+ * `pages`, `sources`, `geo`, `devices`, `events`, `realtime`.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    this.layouts = { "Main.bxm" : "*" };
+
+    function preHandler( event, rc, prc, action, eventArguments ) {
+        var auth = getInstance( "AuthenticationService@cbauth" );
+        if ( !auth.isLoggedIn() ) {
+            relocate( url = "/security/login" );
+            return;
+        }
+        if ( !auth.getUser().hasPermission( "ga.view" ) ) {
+            relocate( event = "admin:Dashboard.index" );
+            return;
+        }
+    }
+
+    /**
+     * Overview — site-wide KPIs, daily-series trend chart, top-5
+     * pages + top-5 channels. Date-range picker + period-over-
+     * period toggle live in the wire.
+     */
+    function index( event, rc, prc ) {
+        prc.pageTitle = "Analytics — Overview";
+        event.setView( view = "analytics/index" );
+    }
+
+}
