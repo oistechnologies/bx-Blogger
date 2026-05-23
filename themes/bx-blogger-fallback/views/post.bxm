@@ -46,10 +46,12 @@
         </div>
     </header>
 
+    #( prc.snippets.beforeBody ?: "" )#
     <div class="post-body">
         #( prc.post.getBodyHtml() ?: "" )#
     </div>
 
+    #( prc.snippets.aboveTaxonomy ?: "" )#
     #view( view = "bx-blogger-fallback/partials/post-taxonomy" )#
     #view( view = "bx-blogger-fallback/partials/related-posts" )#
     #view( view = "bx-blogger-fallback/partials/post-author-block" )#

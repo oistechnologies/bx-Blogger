@@ -13,6 +13,7 @@
         </bx:if>
     </bx:if>
     #view( view = "bx-blogger-default/partials/head-assets" )#
+    #( prc.snippets.head ?: "" )#
 </head>
 <body class="d-flex flex-column min-vh-100 site-default">
     #view( view = "bx-blogger-default/partials/header" )#
@@ -29,6 +30,7 @@
 
     #view( view = "bx-blogger-default/partials/footer" )#
     #view( view = "bx-blogger-default/partials/foot-scripts" )#
+    #( prc.snippets.beforeClosingBody ?: "" )#
 </body>
 </html>
 </bx:output>

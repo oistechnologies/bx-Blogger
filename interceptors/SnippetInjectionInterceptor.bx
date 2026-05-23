@@ -1,0 +1,97 @@
+/**
+ * bx-Blogger — SnippetInjectionInterceptor
+ *
+ * Pre-renders the four snippet slots once per request and stashes them
+ * on `prc.snippets` so layouts / views can output them with a cheap
+ * `#prc.snippets.head#` etc. Resolving four slots on every render call
+ * directly inside templates would multiply DB hits for each layout +
+ * view + partial render; doing it once on `preLayout` keeps the hot
+ * path single-shot.
+ *
+ *   prc.snippets.head            — rendered string, always
+ *   prc.snippets.beforeClosingBody — rendered string, always
+ *   prc.snippets.beforeBody      — rendered string, only on single
+ *                                  post / page pages (else "")
+ *   prc.snippets.aboveTaxonomy   — rendered string, only on single
+ *                                  post pages (else "")
+ *
+ * Context detection follows the handler conventions: `prc.post` is set
+ * by Blog.show (and only there), `prc.page` is set by Pages.show; if
+ * neither is present we're on a listing/admin/error and `before_body`
+ * / `above_taxonomy` resolve to empty.
+ *
+ * Snippets are admin-controlled; renderLocation() returns raw HTML.
+ * Failures here MUST NOT take down the request — wrap each lookup in
+ * try/catch so a missing `snippets` table (e.g. brand-new container
+ * before migrations have run) still serves `/__health` cleanly.
+ *
+ * DI note per CLAUDE.md: interceptors are built before the model scan
+ * finishes, so `property inject=` fails with "Instance not found".
+ * SnippetService is fetched lazily via `getInstance()`.
+ */
+class extends="coldbox.system.Interceptor" {
+
+    function configure() {}
+
+    function preLayout( event, data, buffer ) {
+        try {
+            var prc = event.getCollection( private = true );
+
+            var context = "";
+            if ( structKeyExists( prc, "post" ) && !isNull( prc.post ) ) {
+                context = "post";
+            }
+            else if ( structKeyExists( prc, "page" ) && !isNull( prc.page ) ) {
+                context = "page";
+            }
+
+            var snippetService = getInstance( "SnippetService" );
+
+            prc.snippets = {
+                "head"              : safeRender( snippetService, "head" ),
+                "beforeClosingBody" : safeRender( snippetService, "before_closing_body" ),
+                "beforeBody"        : context == "" ? "" : safeRender( snippetService, "before_body", context ),
+                "aboveTaxonomy"     : context == "post" ? safeRender( snippetService, "above_taxonomy" ) : ""
+            };
+        }
+        catch ( any e ) {
+            // Fall back to empty slots — better to render the page
+            // without injection than 500 the whole site if the
+            // snippets table is missing or the service fails.
+            try {
+                var prc = event.getCollection( private = true );
+                prc.snippets = {
+                    "head"              : "",
+                    "beforeClosingBody" : "",
+                    "beforeBody"        : "",
+                    "aboveTaxonomy"     : ""
+                };
+            }
+            catch ( any inner ) {}
+            writeLog(
+                file = "coldbox",
+                type = "warning",
+                text = "SnippetInjectionInterceptor preLayout failed: " & e.message
+            );
+        }
+    }
+
+    private string function safeRender(
+        required any snippetService,
+        required string location,
+        string postType = ""
+    ) {
+        try {
+            return arguments.snippetService.renderLocation( arguments.location, arguments.postType );
+        }
+        catch ( any e ) {
+            writeLog(
+                file = "coldbox",
+                type = "warning",
+                text = "SnippetInjectionInterceptor: renderLocation(" & arguments.location & ") failed: " & e.message
+            );
+            return "";
+        }
+    }
+
+}

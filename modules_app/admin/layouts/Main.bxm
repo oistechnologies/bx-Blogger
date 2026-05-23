@@ -380,14 +380,15 @@
 				canSysPrivacy   = cbauth.isLoggedIn() && u.hasPermission( "users.export_data" );
 				canSysAiPrompts = cbauth.isLoggedIn() && u.hasPermission( "ai.prompts.manage" );
 				canSysOutbound  = cbauth.isLoggedIn() && u.hasPermission( "seo.outbound_links.view" );
+				canSysSnippets  = cbauth.isLoggedIn() && u.hasPermission( "snippets.manage" );
 				hasSysAccess    = canSysUsers || canSysSettings || canSysThemes || canSysMenus
 				                || canSysRedir || canSys404 || canSysAudit || canSysPrivacy
-				                || canSysAiPrompts || canSysOutbound;
+				                || canSysAiPrompts || canSysOutbound || canSysSnippets;
 
 				// Auto-expand System Settings when the active page is one
 				// of its children, otherwise it starts collapsed.
 				isInSystemSettings = !!reFindNoCase(
-					"^admin:(Users|Settings|Themes|Menus|Redirects|BrokenLinks|AuditLog|Privacy|AiPrompts)\.",
+					"^admin:(Users|Settings|Themes|Menus|Redirects|BrokenLinks|AuditLog|Privacy|AiPrompts|Snippets)\.",
 					currentEvent
 				) || ( currentEvent == "admin:Settings.outboundLinks" );
 			</bx:script>
@@ -503,6 +504,13 @@
 								   href="#event.buildLink( 'admin:Themes.index' )#"
 								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Themes">
 									<i class="bi bi-palette nav-icon"></i><span class="nav-label">Themes</span>
+								</a>
+							</bx:if>
+							<bx:if canSysSnippets>
+								<a class="nav-link nav-sub #( currentEvent.startsWith( 'admin:Snippets.' ) ? 'active' : '' )#"
+								   href="#event.buildLink( 'admin:Snippets.index' )#"
+								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Snippets">
+									<i class="bi bi-code-slash nav-icon"></i><span class="nav-label">Snippets</span>
 								</a>
 							</bx:if>
 							<bx:if canSysMenus>

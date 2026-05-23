@@ -307,7 +307,13 @@ class {
 			// what the handler stashed in prc (post / category /
 			// tag / author / archive / search / 404). Admin,
 			// feed, sitemap, and health events are skipped.
-			{ class : "interceptors.SeoMetaInterceptor" }
+			{ class : "interceptors.SeoMetaInterceptor" },
+			// Pre-renders the four snippet slots (head, before </body>,
+			// before post/page body, above post taxonomy) on preLayout
+			// and stashes them on `prc.snippets` so layouts / views can
+			// output them with a single token reference. One DB lookup
+			// per slot per request, not per render call.
+			{ class : "interceptors.SnippetInjectionInterceptor" }
 		];
 
 		/**

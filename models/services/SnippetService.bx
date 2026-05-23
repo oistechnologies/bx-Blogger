@@ -1,0 +1,234 @@
+/**
+ * bx-Blogger — SnippetService
+ *
+ * CRUD + render composition for the `snippets` table. Snippets are
+ * admin-authored fragments of HTML / JS / CSS that get injected at
+ * one of four well-known positions on rendered public pages.
+ *
+ * Locations:
+ *   - head                 : just before </head>             (global)
+ *   - before_closing_body  : just before </body>             (global)
+ *   - before_body          : just before the post/page body  (post+/or page,
+ *                                                             gated by applies_to_*)
+ *   - above_taxonomy       : just above the post-taxonomy partial
+ *                            on single-post pages (post-only)
+ *
+ * Security: content is rendered RAW. Admin-only feature gated by
+ * the `snippets.manage` permission at the wire layer. Handlers /
+ * wires own the permission check; this service trusts its caller.
+ *
+ * Cache: every mutation calls PageCacheService.invalidateAll() so
+ * the rendered-HTML cache picks up the new content on next GET.
+ */
+class accessors="true" singleton {
+
+    property name="wirebox"          inject="wirebox";
+    property name="pageCacheService" inject="PageCacheService";
+    property name="log"              inject="logbox:logger:{this}";
+
+    variables.allowedLocations = [
+        "head", "before_closing_body", "before_body", "above_taxonomy"
+    ];
+
+    // --------------------------------------------------------------------
+    // Create / update / delete
+    // --------------------------------------------------------------------
+
+    function create( required struct attrs ) {
+        var data = normalizeIncoming( arguments.attrs );
+        var snippet = variables.wirebox.getInstance( "Snippet" ).create( data );
+        log.info( "SnippetService: created snippet=" & snippet.getId() & " location=" & snippet.getLocation() );
+        variables.pageCacheService.invalidateAll();
+        return snippet;
+    }
+
+    function update(
+        required any    snippet,
+        required struct attrs
+    ) {
+        var data = normalizeIncoming( arguments.attrs );
+        applyAttrsToEntity( arguments.snippet, data );
+        arguments.snippet.save();
+        log.info( "SnippetService: updated snippet=" & arguments.snippet.getId() );
+        variables.pageCacheService.invalidateAll();
+        return arguments.snippet;
+    }
+
+    function delete( required any snippet ) {
+        var id = arguments.snippet.getId();
+        arguments.snippet.delete();
+        log.info( "SnippetService: deleted snippet=" & id );
+        variables.pageCacheService.invalidateAll();
+    }
+
+    function setEnabled( required any snippet, required boolean enabled ) {
+        arguments.snippet.setEnabled( arguments.enabled ? 1 : 0 );
+        arguments.snippet.save();
+        variables.pageCacheService.invalidateAll();
+        return arguments.snippet;
+    }
+
+    // --------------------------------------------------------------------
+    // Listing
+    // --------------------------------------------------------------------
+
+    array function listAll() {
+        return variables.wirebox.getInstance( "Snippet" )
+            .orderBy( "location" )
+            .orderBy( "sort_order" )
+            .orderBy( "id" )
+            .get();
+    }
+
+    /**
+     * Enabled snippets for a given location, filtered by post-type
+     * for the `before_body` slot. Used by the renderer in the
+     * SnippetInjectionInterceptor.
+     *
+     * @location  one of `head` / `before_closing_body` / `before_body` / `above_taxonomy`
+     * @postType  "post" or "page" — only consulted for `before_body`.
+     *            Empty means "don't filter by context"; useful when
+     *            we just want to enumerate all enabled snippets for
+     *            a location regardless of where they'd render.
+     */
+    array function listByLocation( required string location, string postType = "" ) {
+        var q = variables.wirebox.getInstance( "Snippet" )
+            .where( "location", arguments.location )
+            .where( "enabled", 1 )
+            .orderBy( "sort_order" )
+            .orderBy( "id" );
+
+        if ( arguments.location == "before_body" && len( arguments.postType ) ) {
+            if ( arguments.postType == "post" ) {
+                q = q.where( "applies_to_posts", 1 );
+            }
+            else if ( arguments.postType == "page" ) {
+                q = q.where( "applies_to_pages", 1 );
+            }
+        }
+
+        return q.get();
+    }
+
+    /**
+     * Render the concatenated content of every enabled snippet at
+     * the given location, in sort order.
+     *
+     * For `above_taxonomy` the combined output is wrapped in a single
+     * <section class="bxb-snippet bxb-snippet--above-taxonomy"> so the
+     * theme has a stable hook to style / hide it.
+     *
+     * Other locations emit raw concatenated content — the snippet
+     * author controls all framing markup.
+     *
+     * @location  one of the four slot keys
+     * @postType  "post" / "page" / "" — passed through to listByLocation
+     */
+    string function renderLocation( required string location, string postType = "" ) {
+        if ( !arrayFind( variables.allowedLocations, arguments.location ) ) return "";
+
+        var rows = listByLocation( arguments.location, arguments.postType );
+        if ( !arrayLen( rows ) ) return "";
+
+        var html = "";
+        for ( var s in rows ) {
+            html &= ( s.getContent() ?: "" );
+        }
+
+        if ( !len( html ) ) return "";
+
+        if ( arguments.location == "above_taxonomy" ) {
+            return '<section class="bxb-snippet bxb-snippet--above-taxonomy">' & html & '</section>';
+        }
+        return html;
+    }
+
+    // --------------------------------------------------------------------
+    // Ordering
+    // --------------------------------------------------------------------
+
+    /**
+     * Bump a snippet up or down within its location. Swaps sort_order
+     * with the neighbour at the same location; lowest renders first.
+     * @direction "up" or "down".
+     */
+    function move( required any snippet, required string direction ) {
+        var siblings = variables.wirebox.getInstance( "Snippet" )
+            .where( "location", arguments.snippet.getLocation() )
+            .orderBy( "sort_order" )
+            .orderBy( "id" )
+            .get();
+
+        var idx = -1;
+        for ( var i = 1; i <= arrayLen( siblings ); i++ ) {
+            if ( siblings[ i ].getId() == arguments.snippet.getId() ) {
+                idx = i;
+                break;
+            }
+        }
+        if ( idx == -1 ) return;
+
+        var swapIdx = arguments.direction == "up" ? idx - 1 : idx + 1;
+        if ( swapIdx < 1 || swapIdx > arrayLen( siblings ) ) return;
+
+        var me   = siblings[ idx ];
+        var swap = siblings[ swapIdx ];
+
+        var myOrder   = me.getSortOrder() ?: 0;
+        var swapOrder = swap.getSortOrder() ?: 0;
+        if ( myOrder == swapOrder ) {
+            // No room to swap without renumbering — give the
+            // higher-render slot a +1 to break the tie.
+            swapOrder = myOrder + 1;
+        }
+
+        me.setSortOrder( swapOrder );
+        me.save();
+        swap.setSortOrder( myOrder );
+        swap.save();
+
+        variables.pageCacheService.invalidateAll();
+    }
+
+    // --------------------------------------------------------------------
+    // Private
+    // --------------------------------------------------------------------
+
+    private struct function normalizeIncoming( required struct attrs ) {
+        var out = duplicate( arguments.attrs );
+
+        if ( structKeyExists( out, "name" ) ) out.name = trim( out.name );
+        if ( structKeyExists( out, "description" ) ) out.description = trim( out.description );
+
+        if ( structKeyExists( out, "location" ) ) {
+            if ( !arrayFind( variables.allowedLocations, out.location ) ) {
+                throw( message = "Invalid snippet location: " & out.location );
+            }
+        }
+
+        // Coerce the boolean-ish fields to 0/1 so MySQL's BOOLEAN
+        // column accepts them even when the wire sends "true"/"false"
+        // strings from a checkbox round-trip.
+        for ( var key in [ "enabled", "appliesToPosts", "appliesToPages" ] ) {
+            if ( structKeyExists( out, key ) ) {
+                out[ key ] = ( isBoolean( out[ key ] ) && out[ key ] ) ? 1 : 0;
+            }
+        }
+
+        if ( structKeyExists( out, "sortOrder" ) ) {
+            out.sortOrder = val( out.sortOrder );
+        }
+
+        return out;
+    }
+
+    private void function applyAttrsToEntity( required any entity, required struct data ) {
+        for ( var key in arguments.data ) {
+            var setter = "set" & uCase( left( key, 1 ) ) & mid( key, 2, 999 );
+            if ( structKeyExists( arguments.entity, setter ) ) {
+                invoke( arguments.entity, setter, { "1" : arguments.data[ key ] } );
+            }
+        }
+    }
+
+}

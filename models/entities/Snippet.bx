@@ -1,0 +1,30 @@
+/**
+ * bx-Blogger — Snippet entity (Quick)
+ *
+ * Admin-authored HTML / JS / CSS fragment injected at one of four
+ * positions on rendered public pages. Business rules + render
+ * composition live in SnippetService — this stays persistence-only.
+ */
+class extends="quick.models.BaseEntity" accessors="true" {
+
+    property name="id"              column="id"              insert=false update=false;
+    property name="name"            column="name";
+    property name="description"     column="description";
+    property name="location"        column="location";
+    property name="content"         column="content";
+    property name="enabled"         column="enabled";
+    property name="appliesToPosts"  column="applies_to_posts";
+    property name="appliesToPages"  column="applies_to_pages";
+    property name="sortOrder"       column="sort_order";
+    property name="createdAt"       column="created_at";
+    property name="updatedAt"       column="updated_at";
+
+    this.memento = {
+        defaultIncludes: [
+            "id", "name", "description", "location", "content",
+            "enabled", "appliesToPosts", "appliesToPages",
+            "sortOrder", "createdAt", "updatedAt"
+        ]
+    };
+
+}

@@ -42,6 +42,7 @@
     <bx:if len( trim( customHead ) )>
         #customHead#
     </bx:if>
+    #( prc.snippets.head ?: "" )#
 </head>
 <body data-bs-theme="light" class="d-flex flex-column min-vh-100 archive-layout">
     #view( view = "bx-blogger-fallback/partials/header" )#
@@ -60,6 +61,7 @@
         integrity="sha384-C6RzsynM9kWDrMNeT87bh95OGNyZPhcTNXj1NW7RuBCsyN/o0jlpcV8Qyq46cDfL"
         crossorigin="anonymous"></script>
     #prc.theme.syntaxHighlightingScripts()#
+    #( prc.snippets.beforeClosingBody ?: "" )#
 </body>
 </html>
 </bx:output>

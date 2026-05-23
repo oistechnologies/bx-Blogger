@@ -4,6 +4,7 @@
         <header class="mb-4 text-center">
             <h1 class="display-5 mb-0 fw-semibold">#encodeForHTML( prc.page.getTitle() )#</h1>
         </header>
+        #( prc.snippets.beforeBody ?: "" )#
         <div class="page-body">
             #( prc.page.getBodyHtml() ?: "" )#
         </div>

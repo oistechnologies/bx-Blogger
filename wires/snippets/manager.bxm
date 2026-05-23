@@ -1,0 +1,358 @@
+<bx:script>
+// @startWire
+/**
+ * snippets.manager — list / create / edit / delete admin code snippets.
+ *
+ * Snippets are admin-authored raw HTML / JS / CSS fragments injected
+ * at one of four positions on rendered public pages. Editing happens
+ * inline: pick a snippet from the table, the form swaps into edit
+ * mode pre-populated with its values; otherwise the form creates a
+ * new snippet.
+ *
+ * The content textarea is monospaced (the parent view layer styles it
+ * via .snippet-content). Saved content is rendered RAW on the public
+ * site — there is no HTML escaping by design. Permission gate is
+ * `snippets.manage`, which only super_admin / admin currently hold.
+ */
+
+property name="snippetService" inject="SnippetService";
+property name="cbauth"         inject="AuthenticationService@cbauth";
+
+data = {
+    // Form state — used for both "create new" and "edit existing"
+    "editingId"        : 0,
+    "formName"         : "",
+    "formDescription"  : "",
+    "formLocation"     : "head",
+    "formContent"      : "",
+    "formEnabled"      : true,
+    "formAppliesToPosts" : true,
+    "formAppliesToPages" : true,
+    "formSortOrder"    : 0,
+    // Flash messages
+    "flashOk"          : "",
+    "flashError"       : ""
+};
+
+// --------------------------------------------------------------------
+// Form helpers
+// --------------------------------------------------------------------
+
+function resetForm() {
+    data.editingId        = 0;
+    data.formName         = "";
+    data.formDescription  = "";
+    data.formLocation     = "head";
+    data.formContent      = "";
+    data.formEnabled      = true;
+    data.formAppliesToPosts = true;
+    data.formAppliesToPages = true;
+    data.formSortOrder    = 0;
+}
+
+function cancelEdit() {
+    clearFlashes();
+    resetForm();
+}
+
+function startEdit( required id ) {
+    clearFlashes();
+    if ( !requirePerm( "snippets.manage" ) ) return;
+    var s = getInstance( "Snippet" ).findOrFail( arguments.id );
+    data.editingId          = s.getId();
+    data.formName           = s.getName() ?: "";
+    data.formDescription    = s.getDescription() ?: "";
+    data.formLocation       = s.getLocation() ?: "head";
+    data.formContent        = s.getContent() ?: "";
+    data.formEnabled        = !!( s.getEnabled() ?: 1 );
+    data.formAppliesToPosts = !!( s.getAppliesToPosts() ?: 1 );
+    data.formAppliesToPages = !!( s.getAppliesToPages() ?: 1 );
+    data.formSortOrder      = val( s.getSortOrder() ?: 0 );
+}
+
+// --------------------------------------------------------------------
+// Actions
+// --------------------------------------------------------------------
+
+function save() {
+    clearFlashes();
+    if ( !requirePerm( "snippets.manage" ) ) return;
+
+    if ( !len( trim( data.formName ) ) ) {
+        data.flashError = "Name is required.";
+        return;
+    }
+    if ( !arrayFind( allowedLocations(), data.formLocation ) ) {
+        data.flashError = "Pick a valid location.";
+        return;
+    }
+
+    var attrs = {
+        "name"           : trim( data.formName ),
+        "description"    : trim( data.formDescription ?: "" ),
+        "location"       : data.formLocation,
+        "content"        : data.formContent ?: "",
+        "enabled"        : !!data.formEnabled,
+        "appliesToPosts" : !!data.formAppliesToPosts,
+        "appliesToPages" : !!data.formAppliesToPages,
+        "sortOrder"      : val( data.formSortOrder ?: 0 )
+    };
+
+    try {
+        if ( ( data.editingId ?: 0 ) > 0 ) {
+            var s = getInstance( "Snippet" ).findOrFail( data.editingId );
+            snippetService.update( s, attrs );
+            data.flashOk = "Snippet updated.";
+        } else {
+            snippetService.create( attrs );
+            data.flashOk = "Snippet created.";
+        }
+        resetForm();
+    }
+    catch ( any e ) {
+        data.flashError = e.message;
+    }
+}
+
+function deleteSnippet( required id ) {
+    clearFlashes();
+    if ( !requirePerm( "snippets.manage" ) ) return;
+    var s = getInstance( "Snippet" ).findOrFail( arguments.id );
+    var name = s.getName();
+    snippetService.delete( s );
+    data.flashOk = "Deleted '" & name & "'.";
+    if ( ( data.editingId ?: 0 ) == arguments.id ) resetForm();
+}
+
+function toggleEnabled( required id ) {
+    clearFlashes();
+    if ( !requirePerm( "snippets.manage" ) ) return;
+    var s = getInstance( "Snippet" ).findOrFail( arguments.id );
+    snippetService.setEnabled( s, !( s.getEnabled() ?: 0 ) );
+    data.flashOk = "Toggled.";
+}
+
+function moveUp( required id ) {
+    clearFlashes();
+    if ( !requirePerm( "snippets.manage" ) ) return;
+    var s = getInstance( "Snippet" ).findOrFail( arguments.id );
+    snippetService.move( s, "up" );
+}
+
+function moveDown( required id ) {
+    clearFlashes();
+    if ( !requirePerm( "snippets.manage" ) ) return;
+    var s = getInstance( "Snippet" ).findOrFail( arguments.id );
+    snippetService.move( s, "down" );
+}
+
+// --------------------------------------------------------------------
+// Render helpers
+// --------------------------------------------------------------------
+
+function listAllSnippets() {
+    return snippetService.listAll();
+}
+
+function allowedLocations() {
+    return [ "head", "before_closing_body", "before_body", "above_taxonomy" ];
+}
+
+function locationLabel( required string slug ) {
+    switch ( arguments.slug ) {
+        case "head"                : return "Head (before </head>)";
+        case "before_closing_body" : return "Body close (before </body>)";
+        case "before_body"         : return "Before post/page body";
+        case "above_taxonomy"      : return "Above post taxonomy";
+        default                    : return arguments.slug;
+    }
+}
+
+private function clearFlashes() {
+    data.flashOk = "";
+    data.flashError = "";
+}
+
+private boolean function requirePerm( required string perm ) {
+    var user = cbauth.getUser();
+    if ( user.hasPermission( arguments.perm ) ) return true;
+    data.flashError = "You don't have permission to manage snippets.";
+    return false;
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:script>
+    rows = listAllSnippets();
+    totalCount = rows.len();
+    isEditing  = ( args.editingId ?: 0 ) > 0;
+    locations  = allowedLocations();
+</bx:script>
+
+<div>
+	<bx:if len( args.flashOk )>
+		<div class="alert alert-success alert-dismissible">
+			#encodeForHTML( args.flashOk )#
+			<button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+		</div>
+	</bx:if>
+	<bx:if len( args.flashError )>
+		<div class="alert alert-danger alert-dismissible">
+			#encodeForHTML( args.flashError )#
+			<button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+		</div>
+	</bx:if>
+
+	<div class="row g-3">
+		<div class="col-md-5">
+			<div class="card stat-card stat-card-info">
+				<div class="card-header card-header-soft card-header-soft-info">
+					<span class="h6 mb-0">
+						<bx:if isEditing>Edit snippet ###args.editingId#<bx:else>New snippet</bx:if>
+					</span>
+				</div>
+				<div class="card-body">
+					<form wire:submit.prevent="save">
+						<div class="mb-3">
+							<label for="snipName" class="form-label small">Name</label>
+							<input type="text" id="snipName" class="form-control form-control-sm" maxlength="150" wire:model.blur="formName">
+						</div>
+						<div class="mb-3">
+							<label for="snipDescription" class="form-label small">Description (optional)</label>
+							<input type="text" id="snipDescription" class="form-control form-control-sm" maxlength="500" wire:model.blur="formDescription"
+							       placeholder="Where it's used / who it's for…">
+						</div>
+						<div class="mb-3">
+							<label for="snipLocation" class="form-label small">Location</label>
+							<select id="snipLocation" class="form-select form-select-sm" wire:model.live="formLocation">
+								<bx:loop array="#locations#" item="loc">
+									<option value="#loc#" #( ( args.formLocation ?: '' ) == loc ? 'selected' : '' )#>
+										#encodeForHTML( locationLabel( loc ) )#
+									</option>
+								</bx:loop>
+							</select>
+						</div>
+						<bx:if ( args.formLocation ?: '' ) == "before_body">
+							<div class="mb-3">
+								<label class="form-label small d-block">Render on</label>
+								<div class="form-check form-check-inline">
+									<input class="form-check-input" type="checkbox" id="snipAppliesPosts" wire:model.live="formAppliesToPosts">
+									<label class="form-check-label" for="snipAppliesPosts">Posts</label>
+								</div>
+								<div class="form-check form-check-inline">
+									<input class="form-check-input" type="checkbox" id="snipAppliesPages" wire:model.live="formAppliesToPages">
+									<label class="form-check-label" for="snipAppliesPages">Pages</label>
+								</div>
+								<div class="form-text">Tick both for "global" (both post and page contexts).</div>
+							</div>
+						</bx:if>
+						<div class="mb-3">
+							<label for="snipContent" class="form-label small">Content (HTML / CSS / JS)</label>
+							<textarea id="snipContent"
+							          class="form-control form-control-sm"
+							          rows="12"
+							          style="font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85rem;"
+							          wire:model.blur="formContent"
+							          placeholder="&lt;script&gt;…&lt;/script&gt; or any raw markup"></textarea>
+							<div class="form-text text-warning">
+								This is rendered <strong>unescaped</strong> on the public site. A bad snippet can break every page — preview after saving.
+							</div>
+						</div>
+						<div class="row g-2 mb-3 align-items-end">
+							<div class="col">
+								<label for="snipSortOrder" class="form-label small mb-0">Sort order</label>
+								<input type="number" id="snipSortOrder" class="form-control form-control-sm" wire:model.blur="formSortOrder">
+							</div>
+							<div class="col">
+								<div class="form-check form-switch mt-3">
+									<input class="form-check-input" type="checkbox" role="switch" id="snipEnabled" wire:model.live="formEnabled">
+									<label class="form-check-label" for="snipEnabled">Enabled</label>
+								</div>
+							</div>
+						</div>
+						<div class="d-flex gap-2">
+							<button type="submit" class="btn btn-primary btn-sm">
+								<bx:if isEditing>Save changes<bx:else>Create snippet</bx:if>
+							</button>
+							<bx:if isEditing>
+								<button type="button" class="btn btn-outline-secondary btn-sm" wire:click="cancelEdit">Cancel</button>
+							</bx:if>
+						</div>
+					</form>
+				</div>
+			</div>
+		</div>
+
+		<div class="col-md-7">
+			<div class="card stat-card stat-card-secondary">
+				<div class="card-header card-header-soft card-header-soft-secondary d-flex justify-content-between align-items-center">
+					<span class="h6 mb-0">All snippets <small class="text-muted fw-normal">#totalCount# total</small></span>
+				</div>
+				<div class="card-body p-0">
+					<bx:if totalCount == 0>
+						<p class="text-muted small p-3 mb-0">No snippets yet. Create one on the left.</p>
+					<bx:else>
+						<table class="table table-sm mb-0 align-middle">
+							<thead>
+								<tr>
+									<th>Name</th>
+									<th>Location</th>
+									<th>State</th>
+									<th class="text-end">Order</th>
+									<th class="text-end">Actions</th>
+								</tr>
+							</thead>
+							<tbody>
+								<bx:loop array="#rows#" item="s">
+									<tr>
+										<td>
+											<strong>#encodeForHTML( s.getName() )#</strong>
+											<bx:if len( s.getDescription() ?: "" )>
+												<div class="text-muted small">#encodeForHTML( s.getDescription() )#</div>
+											</bx:if>
+										</td>
+										<td>
+											<span class="badge text-bg-light">#encodeForHTML( locationLabel( s.getLocation() ) )#</span>
+											<bx:if s.getLocation() == "before_body">
+												<div class="text-muted small mt-1">
+													<bx:if s.getAppliesToPosts() && s.getAppliesToPages()>both<bx:elseif s.getAppliesToPosts()>posts only<bx:elseif s.getAppliesToPages()>pages only<bx:else>(nothing — fix flags!)</bx:if>
+												</div>
+											</bx:if>
+										</td>
+										<td>
+											<bx:if s.getEnabled()>
+												<span class="badge text-bg-success">Enabled</span>
+											<bx:else>
+												<span class="badge text-bg-secondary">Disabled</span>
+											</bx:if>
+										</td>
+										<td class="text-end">
+											<div class="btn-group btn-group-sm" role="group" aria-label="Reorder">
+												<button class="btn btn-outline-secondary" wire:click="moveUp(#s.getId()#)" title="Move up">&##9650;</button>
+												<button class="btn btn-outline-secondary" wire:click="moveDown(#s.getId()#)" title="Move down">&##9660;</button>
+											</div>
+											<div class="text-muted small">##s.getSortOrder()#</div>
+										</td>
+										<td class="text-end">
+											<div class="btn-group btn-group-sm" role="group" aria-label="Row actions">
+												<button class="btn btn-outline-primary" wire:click="startEdit(#s.getId()#)">Edit</button>
+												<button class="btn btn-outline-secondary" wire:click="toggleEnabled(#s.getId()#)">
+													<bx:if s.getEnabled()>Disable<bx:else>Enable</bx:if>
+												</button>
+												<button class="btn btn-outline-danger"
+												        wire:click="deleteSnippet(#s.getId()#)"
+												        wire:confirm="Delete this snippet?">Delete</button>
+											</div>
+										</td>
+									</tr>
+								</bx:loop>
+							</tbody>
+						</table>
+					</bx:if>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+</bx:output>

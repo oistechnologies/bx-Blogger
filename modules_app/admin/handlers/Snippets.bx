@@ -1,0 +1,16 @@
+/**
+ * bx-Blogger — admin:Snippets
+ *
+ * Mounts the snippets.manager wire. All CRUD happens inside the
+ * wire against SnippetService; the handler just sets the page title.
+ */
+class extends="coldbox.system.EventHandler" {
+
+    this.layouts = { "Main.bxm" : "*" };
+
+    function index( event, rc, prc ) {
+        prc.pageTitle = "Snippets";
+        event.setView( view = "snippets/index" );
+    }
+
+}
