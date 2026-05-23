@@ -41,4 +41,89 @@ class extends="coldbox.system.EventHandler" {
         event.setView( view = "analytics/index" );
     }
 
+    /**
+     * Top pages — paginated, sortable, filterable table view.
+     * The wire (analytics.pages) drives the table; this action
+     * just renders the wire-bearing view shell.
+     */
+    function pages( event, rc, prc ) {
+        prc.pageTitle = "Analytics — Top Pages";
+        event.setView( view = "analytics/pages" );
+    }
+
+    /**
+     * Top pages CSV export. Pulls every row matching the current
+     * filters (no pagination) and streams as a CSV attachment.
+     * Filters are passed via the URL query string so a wire-side
+     * "Download CSV" anchor can preserve the operator's current
+     * date-range + filter selections.
+     */
+    function pagesCsv( event, rc, prc ) {
+        var days       = val( rc.days       ?: 7 );
+        var postsOnly  = ( rc.postsOnly ?: "0" ) == "1";
+        var pageFilter = trim( rc.pageFilter ?: "" );
+
+        var report = getInstance( "GoogleAnalyticsService" ).pagesReport(
+            days       = days,
+            sortBy     = trim( rc.sortBy  ?: "views" ),
+            sortDir    = trim( rc.sortDir ?: "DESC"  ),
+            perPage    = 0,
+            postsOnly  = postsOnly,
+            pageFilter = pageFilter
+        );
+
+        var csv = csvHeader() & char( 10 );
+        for ( var r in report.rows ) {
+            csv &= csvRow( r ) & char( 10 );
+        }
+
+        var filename = "analytics-pages-" & dateFormat( now(), "yyyy-mm-dd" ) & "-last-" & days & "d.csv";
+        event.setHTTPHeader(
+            name  = "Content-Disposition",
+            value = 'attachment; filename="' & filename & '"'
+        );
+        event.renderData(
+            type        = "plain",
+            data        = csv,
+            contentType = "text/csv; charset=utf-8"
+        );
+    }
+
+    private string function csvHeader() {
+        return [
+            "page_path",
+            "post_id",
+            "post_title",
+            "views",
+            "users",
+            "avg_session_duration_seconds",
+            "engagement_rate",
+            "bounce_rate"
+        ].toList( "," );
+    }
+
+    private string function csvRow( required struct r ) {
+        return [
+            csvCell( arguments.r.pagePath ?: ""  ),
+            csvCell( arguments.r.postId   ?: ""  ),
+            csvCell( arguments.r.postTitle ?: "" ),
+            int( arguments.r.views ?: 0 ),
+            int( arguments.r.users ?: 0 ),
+            numberFormat( val( arguments.r.avgDuration ?: 0 ), "9.99" ),
+            numberFormat( val( arguments.r.engagementRate ?: 0 ), "9.9999" ),
+            numberFormat( val( arguments.r.bounceRate ?: 0 ), "9.9999" )
+        ].toList( "," );
+    }
+
+    /**
+     * RFC 4180-ish CSV cell escaping — wrap in double quotes if
+     * the value contains a comma, quote, or newline; double any
+     * embedded quotes.
+     */
+    private string function csvCell( required any value ) {
+        var s = toString( arguments.value );
+        if ( !( s contains "," || s contains '"' || s contains char( 10 ) || s contains char( 13 ) ) ) return s;
+        return '"' & replace( s, '"', '""', "all" ) & '"';
+    }
+
 }

@@ -471,6 +471,104 @@ class accessors="true" singleton {
     }
 
     /**
+     * Paginated + sortable + filterable pages report — powers the
+     * /admin/analytics/pages table. perPage=0 returns every row,
+     * which the CSV export endpoint uses.
+     *
+     * @sortBy    one of "views", "users", "avg_duration", "engagement_rate", "bounce_rate", "page_path"
+     * @sortDir   "DESC" (default) or "ASC"
+     * @postsOnly when true, only rows where post_id IS NOT NULL
+     * @pageFilter substring match on page_path
+     */
+    struct function pagesReport(
+                 numeric days       = 7,
+                 string  sortBy     = "views",
+                 string  sortDir    = "DESC",
+                 numeric page       = 1,
+                 numeric perPage    = 25,
+                 boolean postsOnly  = false,
+                 string  pageFilter = ""
+    ) {
+        var since = dateFormat( dateAdd( "d", -arguments.days, now() ), "yyyy-mm-dd" );
+        // Whitelist sort columns — interpolating SQL identifiers is fine
+        // here because the value is checked against a known-good list.
+        var sortMap = {
+            "views"           : "SUM( a.screen_page_views )",
+            "users"           : "SUM( a.active_users )",
+            "avg_duration"    : "AVG( a.avg_session_duration )",
+            "engagement_rate" : "AVG( a.engagement_rate )",
+            "bounce_rate"     : "AVG( a.bounce_rate )",
+            "page_path"       : "a.page_path"
+        };
+        var sortExpr = sortMap[ arguments.sortBy ] ?: sortMap.views;
+        var sortDir  = ucase( arguments.sortDir ) == "ASC" ? "ASC" : "DESC";
+
+        var whereSql = " WHERE a.date >= ? AND a.page_path <> '' ";
+        var params   = [ since ];
+        if ( arguments.postsOnly ) {
+            whereSql &= " AND a.post_id IS NOT NULL ";
+        }
+        if ( len( trim( arguments.pageFilter ) ) ) {
+            whereSql &= " AND a.page_path LIKE ? ";
+            params.append( "%" & trim( arguments.pageFilter ) & "%" );
+        }
+
+        // Count first — distinct page_paths in the window.
+        var countQry = queryExecute(
+            "SELECT COUNT(DISTINCT a.page_path) AS n FROM analytics_daily a " & whereSql,
+            params
+        );
+        var totalCount = val( countQry.n ?: 0 );
+
+        var limitClause = "";
+        if ( arguments.perPage > 0 ) {
+            var offset    = max( 0, ( arguments.page - 1 ) * arguments.perPage );
+            limitClause   = " LIMIT " & int( arguments.perPage ) & " OFFSET " & int( offset );
+        }
+
+        var sql = "
+            SELECT
+                a.page_path,
+                a.post_id,
+                p.title AS post_title,
+                p.slug  AS post_slug,
+                SUM( a.screen_page_views )    AS views,
+                SUM( a.active_users        )   AS users,
+                AVG( a.avg_session_duration )  AS avg_duration,
+                AVG( a.engagement_rate      )  AS engagement_rate,
+                AVG( a.bounce_rate          )  AS bounce_rate
+               FROM analytics_daily a
+          LEFT JOIN posts p ON p.id = a.post_id
+              " & whereSql & "
+              GROUP BY a.page_path, a.post_id, p.title, p.slug
+              ORDER BY " & sortExpr & " " & sortDir & limitClause;
+
+        var qry = queryExecute( sql, params );
+        var out = [];
+        for ( var r in qry ) {
+            out.append( {
+                "pagePath"        : r.page_path,
+                "postId"          : isNull( r.post_id ) ? "" : val( r.post_id ),
+                "postTitle"       : r.post_title ?: "",
+                "postSlug"        : r.post_slug ?: "",
+                "views"           : val( r.views ),
+                "users"           : val( r.users ),
+                "avgDuration"     : val( r.avg_duration ),
+                "engagementRate"  : val( r.engagement_rate ),
+                "bounceRate"      : val( r.bounce_rate )
+            } );
+        }
+
+        var totalPages = arguments.perPage > 0 ? ceiling( totalCount / arguments.perPage ) : 1;
+        return {
+            "rows"       : out,
+            "totalCount" : totalCount,
+            "totalPages" : max( 1, totalPages ),
+            "page"       : max( 1, arguments.page )
+        };
+    }
+
+    /**
      * Top N posts by view count — aggregates across all pagePath
      * variants that resolved to the same post_id. Powers the
      * dashboard snapshot's "Top performing post" slot.

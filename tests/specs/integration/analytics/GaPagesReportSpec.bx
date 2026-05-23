@@ -1,0 +1,127 @@
+/**
+ * bx-Blogger — GaPagesReportSpec (Phase 15.G)
+ *
+ * Validates:
+ *   - pagesReport() returns paginated, sortable, filterable rows
+ *     from analytics_daily.
+ *   - Smoke checks for the Analytics.pages handler action,
+ *     Analytics.pagesCsv CSV streaming action, view + wire
+ *     files, and route ordering.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc        = getInstance( "GoogleAnalyticsService" );
+        variables.settingSvc = getInstance( "SettingService" );
+        variables.testAuthor = createTestUser( {}, "", "author" );
+    }
+
+    function run() {
+        describe( "Phase 15.G — Top Pages report + CSV export", function() {
+
+            describe( "pagesReport()", function() {
+
+                it( "returns { rows, totalCount, totalPages, page } with empty rows when no data", function() {
+                    var report = variables.svc.pagesReport( days = 7, perPage = 25 );
+                    expect( report ).toHaveKey( "rows" );
+                    expect( report ).toHaveKey( "totalCount" );
+                    expect( report ).toHaveKey( "totalPages" );
+                    expect( report ).toHaveKey( "page" );
+                } );
+
+                it( "lists page rows after seeding analytics_daily", function() {
+                    var post = makePost();
+                    getInstance( "QueryBuilder@qb" ).newQuery().from( "posts" )
+                        .where( "id", post.getId() )
+                        .update( { "status" : "published" } );
+
+                    variables.svc.recordRow(
+                        date     = dateFormat( now(), "yyyy-mm-dd" ),
+                        pagePath = "/blog/" & post.getSlug(),
+                        metrics  = { "screenPageViews" : 200, "activeUsers" : 90, "sessions" : 110, "averageSessionDuration" : 145.6 }
+                    );
+
+                    var report = variables.svc.pagesReport( days = 7, perPage = 25 );
+                    expect( report.totalCount ).toBeGTE( 1 );
+                    expect( report.rows.len() ).toBeGTE( 1 );
+                    // The seeded row should appear with the expected slug.
+                    var found = false;
+                    for ( var r in report.rows ) {
+                        if ( r.pagePath contains post.getSlug() ) { found = true; break; }
+                    }
+                    expect( found ).toBeTrue();
+                } );
+
+                it( "respects sortBy + sortDir whitelist", function() {
+                    var report = variables.svc.pagesReport( days = 7, sortBy = "users", sortDir = "ASC", perPage = 5 );
+                    expect( report.rows.len() ).toBeGTE( 0 );
+                    // Bad sortBy falls back to "views" — should not throw.
+                    var safe = variables.svc.pagesReport( days = 7, sortBy = "DROP TABLE foo", sortDir = "DESC", perPage = 5 );
+                    expect( safe.rows.len() ).toBeGTE( 0 );
+                } );
+
+                it( "perPage=0 returns every row (used by CSV export)", function() {
+                    var report = variables.svc.pagesReport( days = 7, perPage = 0 );
+                    expect( report.totalPages ).toBe( 1 );
+                    expect( report.rows.len() ).toBe( report.totalCount );
+                } );
+
+                it( "pageFilter substring narrows the result set", function() {
+                    var report = variables.svc.pagesReport( days = 7, pageFilter = "/zzz-nonexistent-prefix-" & createUUID() );
+                    expect( report.totalCount ).toBe( 0 );
+                } );
+
+            } );
+
+            describe( "handler + route + view + wire", function() {
+
+                it( "Analytics.pages action exists with view setup", function() {
+                    var handlerSrc = fileRead( getController().getSetting( "modules" ).admin.path & "/handlers/Analytics.bx" );
+                    expect( handlerSrc ).toInclude( "function pages(" );
+                    expect( handlerSrc ).toInclude( "function pagesCsv(" );
+                    expect( handlerSrc ).toInclude( "Content-Disposition" );
+                } );
+
+                it( "view + wire files exist", function() {
+                    var modulePath = getController().getSetting( "modules" ).admin.path;
+                    expect( fileExists( modulePath & "/views/analytics/pages.bxm" ) ).toBeTrue();
+                    expect( fileExists( expandPath( "/wires/analytics/pages.bxm" ) ) ).toBeTrue();
+                } );
+
+                it( "routes analytics/pages and analytics/pages/csv are registered before the catch-all", function() {
+                    var router = fileRead( getController().getSetting( "modules" ).admin.path & "/config/Router.bx" );
+                    expect( router ).toInclude( "analytics/pages/csv" );
+                    expect( router ).toInclude( "analytics/pages" );
+                    var pagesIdx   = find( "route( ""analytics/pages""", router );
+                    var csvIdx     = find( "route( ""analytics/pages/csv""", router );
+                    var catchAllIdx = find( "route( "":handler/:action?""", router );
+                    expect( pagesIdx ).toBeGT( 0 );
+                    expect( csvIdx   ).toBeGT( 0 );
+                    expect( pagesIdx ).toBeLT( catchAllIdx );
+                    // /csv must come before /pages so it isn't swallowed by the
+                    // less-specific route's :action absorber.
+                    expect( csvIdx ).toBeLT( pagesIdx );
+                } );
+
+                it( "sidebar exposes Top Pages link inside the collapsible Analytics group", function() {
+                    var layout = fileRead( getController().getSetting( "modules" ).admin.path & "/layouts/Main.bxm" );
+                    expect( layout ).toInclude( "sidebarAnalytics" );
+                    expect( layout ).toInclude( "/admin/analytics/pages" );
+                    expect( layout ).toInclude( "Top Pages" );
+                } );
+
+            } );
+
+        } );
+    }
+
+    private any function makePost() {
+        return getInstance( "PostService" ).create( {
+            "authorId"     : variables.testAuthor.getId(),
+            "title"        : "Phase 15.G GA Pages " & createUUID(),
+            "bodyMarkdown" : "Body."
+        } );
+    }
+
+}

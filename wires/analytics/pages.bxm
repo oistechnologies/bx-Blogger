@@ -1,0 +1,262 @@
+<bx:script>
+// @startWire
+/**
+ * analytics.pages — Phase 15.G Top Pages report.
+ *
+ * Paginated, sortable, filterable table backed by the local
+ * analytics_daily aggregate. Operators can:
+ *   - pick a date range (7d / 28d / 90d)
+ *   - toggle "post pages only" to drop theme demos, /search, etc.
+ *   - search by path substring
+ *   - sort by any visible column
+ *   - paginate at 25 rows / page
+ *   - download the full unpaginated dataset as CSV
+ */
+
+property name="gaService" inject="GoogleAnalyticsService";
+property name="cbauth"    inject="AuthenticationService@cbauth";
+
+data = {
+    "canView"    : false,
+    "connected"  : false,
+    "days"       : 7,
+    "sortBy"     : "views",
+    "sortDir"    : "DESC",
+    "page"       : 1,
+    "perPage"    : 25,
+    "postsOnly"  : false,
+    "pageFilter" : "",
+    "rows"       : [],
+    "totalCount" : 0,
+    "totalPages" : 1,
+    "loading"    : false
+};
+
+function onMount( event, rc, prc, params ) {
+    var u = cbauth.isLoggedIn() ? cbauth.getUser() : "";
+    data.canView = !isSimpleValue( u ) && u.hasPermission( "ga.view" );
+    if ( !data.canView ) return;
+    hydrate();
+}
+
+function setRange( numeric days ) {
+    if ( !data.canView ) return;
+    data.days = max( 1, int( arguments.days ) );
+    data.page = 1;
+    hydrate();
+}
+
+function togglePostsOnly() {
+    if ( !data.canView ) return;
+    data.postsOnly = !data.postsOnly;
+    data.page      = 1;
+    hydrate();
+}
+
+function applyFilter() {
+    if ( !data.canView ) return;
+    data.page = 1;
+    hydrate();
+}
+
+function clearFilter() {
+    if ( !data.canView ) return;
+    data.pageFilter = "";
+    data.page       = 1;
+    hydrate();
+}
+
+function sort( required string column ) {
+    if ( !data.canView ) return;
+    if ( data.sortBy == arguments.column ) {
+        data.sortDir = ( data.sortDir == "DESC" ) ? "ASC" : "DESC";
+    } else {
+        data.sortBy  = arguments.column;
+        data.sortDir = "DESC";
+    }
+    data.page = 1;
+    hydrate();
+}
+
+function goToPage( numeric page ) {
+    if ( !data.canView ) return;
+    data.page = max( 1, min( int( arguments.page ), data.totalPages ) );
+    hydrate();
+}
+
+function refresh() {
+    if ( !data.canView ) return;
+    try { gaService.invalidateCaches(); } catch ( any e ) {}
+    hydrate();
+}
+
+private void function hydrate() {
+    data.loading   = true;
+    data.connected = isGaConnected();
+    if ( !data.connected ) {
+        data.rows       = [];
+        data.totalCount = 0;
+        data.totalPages = 1;
+        data.loading    = false;
+        return;
+    }
+    try {
+        var report = gaService.pagesReport(
+            days       = data.days,
+            sortBy     = data.sortBy,
+            sortDir    = data.sortDir,
+            page       = data.page,
+            perPage    = data.perPage,
+            postsOnly  = data.postsOnly,
+            pageFilter = data.pageFilter
+        );
+        data.rows       = report.rows;
+        data.totalCount = report.totalCount;
+        data.totalPages = report.totalPages;
+        data.page       = report.page;
+    }
+    catch ( any e ) {
+        data.rows       = [];
+        data.totalCount = 0;
+        data.totalPages = 1;
+    }
+    data.loading = false;
+}
+
+private boolean function isGaConnected() {
+    try { return gaService.status().connected; }
+    catch ( any e ) { return false; }
+}
+
+/**
+ * Build the CSV-export URL preserving the operator's current
+ * filter selections. Browsers download the file because the
+ * handler emits Content-Disposition: attachment.
+ */
+string function csvUrl() {
+    return "/admin/analytics/pages/csv"
+         & "?days="       & urlEncodedFormat( data.days )
+         & "&sortBy="     & urlEncodedFormat( data.sortBy )
+         & "&sortDir="    & urlEncodedFormat( data.sortDir )
+         & "&postsOnly="  & ( data.postsOnly ? "1" : "0" )
+         & "&pageFilter=" & urlEncodedFormat( data.pageFilter );
+}
+
+string function sortIcon( required string column ) {
+    if ( data.sortBy != arguments.column ) return '<i class="bi bi-arrow-down-up text-muted ms-1" style="font-size:0.75rem;"></i>';
+    return data.sortDir == "DESC"
+        ? '<i class="bi bi-arrow-down ms-1"></i>'
+        : '<i class="bi bi-arrow-up ms-1"></i>';
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:if !args.canView>
+    <div class="alert alert-warning"><i class="bi bi-shield-lock me-1"></i> You don't have permission to view Analytics.</div>
+<bx:elseif !args.connected>
+    <div class="card stat-card stat-card-secondary">
+        <div class="card-body text-center p-5">
+            <i class="bi bi-bar-chart-line text-muted" style="font-size:3rem;"></i>
+            <h4 class="mt-3">Google Analytics is not connected</h4>
+            <a class="btn btn-primary mt-2" href="/admin/settings/ga">
+                <i class="bi bi-link-45deg me-1"></i> Connect Google Analytics
+            </a>
+        </div>
+    </div>
+<bx:else>
+    <!-- Toolbar -->
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+        <div class="btn-group btn-group-sm" role="group">
+            <button type="button" class="btn #( args.days == 7  ? "btn-primary" : "btn-outline-primary" )#" wire:click="setRange(7)" >Last 7d</button>
+            <button type="button" class="btn #( args.days == 28 ? "btn-primary" : "btn-outline-primary" )#" wire:click="setRange(28)">Last 28d</button>
+            <button type="button" class="btn #( args.days == 90 ? "btn-primary" : "btn-outline-primary" )#" wire:click="setRange(90)">Last 90d</button>
+        </div>
+        <div class="d-flex align-items-center gap-2 small">
+            <div class="form-check form-switch mb-0">
+                <input id="gaPostsOnly" class="form-check-input" type="checkbox" wire:click="togglePostsOnly" <bx:if args.postsOnly>checked</bx:if>>
+                <label for="gaPostsOnly" class="form-check-label">Post pages only</label>
+            </div>
+            <a class="btn btn-sm btn-outline-secondary" href="#csvUrl()#" target="_blank" rel="noopener">
+                <i class="bi bi-download me-1"></i> CSV
+            </a>
+            <button class="btn btn-sm btn-outline-secondary" wire:click="refresh" wire:loading.attr="disabled" wire:target="refresh">
+                <i class="bi bi-arrow-clockwise" wire:loading.remove wire:target="refresh"></i>
+                <span class="spinner-border spinner-border-sm" wire:loading wire:target="refresh"></span>
+                Refresh
+            </button>
+        </div>
+    </div>
+
+    <!-- Filter -->
+    <div class="input-group input-group-sm mb-3">
+        <span class="input-group-text"><i class="bi bi-search"></i></span>
+        <input type="text" class="form-control" placeholder="Filter by path (substring)..." wire:model.blur="pageFilter" wire:keydown.enter="applyFilter">
+        <button class="btn btn-outline-primary"   wire:click="applyFilter">Apply</button>
+        <button class="btn btn-outline-secondary" wire:click="clearFilter" <bx:if !len( args.pageFilter )>disabled</bx:if>>Clear</button>
+    </div>
+
+    <!-- Results table -->
+    <div class="card stat-card stat-card-info">
+        <div class="card-body p-0">
+            <bx:if !args.rows.len()>
+                <p class="text-muted small m-3 mb-0">No pages match the current filter / window.</p>
+            <bx:else>
+                <table class="table table-sm table-striped align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th><a class="text-decoration-none text-reset" href="javascript:void(0)" wire:click="sort('page_path')">Page #sortIcon( "page_path" )#</a></th>
+                            <th class="text-end"><a class="text-decoration-none text-reset" href="javascript:void(0)" wire:click="sort('views')">Views #sortIcon( "views" )#</a></th>
+                            <th class="text-end"><a class="text-decoration-none text-reset" href="javascript:void(0)" wire:click="sort('users')">Users #sortIcon( "users" )#</a></th>
+                            <th class="text-end"><a class="text-decoration-none text-reset" href="javascript:void(0)" wire:click="sort('avg_duration')">Avg time #sortIcon( "avg_duration" )#</a></th>
+                            <th class="text-end"><a class="text-decoration-none text-reset" href="javascript:void(0)" wire:click="sort('engagement_rate')">Engagement #sortIcon( "engagement_rate" )#</a></th>
+                            <th class="text-end"><a class="text-decoration-none text-reset" href="javascript:void(0)" wire:click="sort('bounce_rate')">Bounce #sortIcon( "bounce_rate" )#</a></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <bx:loop array="#args.rows#" item="r">
+                            <tr>
+                                <td class="small">
+                                    <bx:if len( r.postTitle ?: "" ) && val( r.postId ?: 0 ) gt 0>
+                                        <a class="text-decoration-none" href="/admin/posts/editor?id=#val( r.postId )#" title="#encodeForHTMLAttribute( r.pagePath )#">
+                                            #encodeForHTML( r.postTitle )#
+                                        </a>
+                                        <div class="text-muted" style="font-size:0.75rem;"><code>#encodeForHTML( r.pagePath )#</code></div>
+                                    <bx:else>
+                                        <code>#encodeForHTML( r.pagePath )#</code>
+                                    </bx:if>
+                                </td>
+                                <td class="text-end small">#numberFormat( int( r.views ?: 0 ) )#</td>
+                                <td class="text-end small">#numberFormat( int( r.users ?: 0 ) )#</td>
+                                <bx:set d = int( r.avgDuration ?: 0 )>
+                                <td class="text-end small">
+                                    <bx:if d < 60>#d#s
+                                    <bx:else>#int( d / 60 )#m #( d - int( d / 60 ) * 60 < 10 ? "0" : "" )##( d - int( d / 60 ) * 60 )#s
+                                    </bx:if>
+                                </td>
+                                <td class="text-end small">#numberFormat( val( r.engagementRate ?: 0 ) * 100, "9.9" )#%</td>
+                                <td class="text-end small">#numberFormat( val( r.bounceRate     ?: 0 ) * 100, "9.9" )#%</td>
+                            </tr>
+                        </bx:loop>
+                    </tbody>
+                </table>
+            </bx:if>
+        </div>
+        <bx:if args.totalPages gt 1>
+            <div class="card-footer d-flex justify-content-between align-items-center small">
+                <span class="text-muted">
+                    Page #args.page# of #args.totalPages# — #args.totalCount# total pages
+                </span>
+                <div class="btn-group btn-group-sm">
+                    <button class="btn btn-outline-secondary" wire:click="goToPage(#args.page - 1#)" <bx:if args.page lte 1>disabled</bx:if>>
+                        <i class="bi bi-chevron-left"></i>
+                    </button>
+                    <button class="btn btn-outline-secondary" wire:click="goToPage(#args.page + 1#)" <bx:if args.page gte args.totalPages>disabled</bx:if>>
+                        <i class="bi bi-chevron-right"></i>
+                    </button>
+                </div>
+            </div>
+        </bx:if>
+    </div>
+</bx:if>
+</bx:output>

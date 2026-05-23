@@ -436,11 +436,30 @@
 					</bx:if>
 
 					<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "ga.view" ) && gaIsConnected()>
-						<a class="nav-link #( currentEvent.startsWith( 'admin:Analytics.' ) ? 'active' : '' )#"
-						   href="/admin/analytics"
-						   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Analytics">
-							<i class="bi bi-graph-up nav-icon"></i><span class="nav-label">Analytics</span>
-						</a>
+						<bx:set isInAnalytics = currentEvent.startsWith( 'admin:Analytics.' )>
+						<button type="button"
+						        class="nav-link nav-parent #( isInAnalytics ? '' : 'collapsed' )#"
+						        data-bs-toggle="collapse"
+						        data-bs-target="##sidebarAnalytics"
+						        aria-expanded="#isInAnalytics ? 'true' : 'false'#"
+						        aria-controls="sidebarAnalytics"
+						        data-bs-toggle-tooltip="right" title="Analytics">
+							<i class="bi bi-graph-up nav-icon"></i>
+							<span class="nav-label">Analytics</span>
+							<i class="bi bi-chevron-down nav-chevron ms-auto"></i>
+						</button>
+						<div id="sidebarAnalytics" class="collapse #( isInAnalytics ? 'show' : '' )# admin-sidebar-submenu">
+							<a class="nav-link nav-sub #( currentEvent == 'admin:Analytics.index' ? 'active' : '' )#"
+							   href="/admin/analytics"
+							   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Overview">
+								<i class="bi bi-speedometer2 nav-icon"></i><span class="nav-label">Overview</span>
+							</a>
+							<a class="nav-link nav-sub #( currentEvent == 'admin:Analytics.pages' ? 'active' : '' )#"
+							   href="/admin/analytics/pages"
+							   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Top Pages">
+								<i class="bi bi-file-text nav-icon"></i><span class="nav-label">Top Pages</span>
+							</a>
+						</div>
 					</bx:if>
 
 					<!--- System Settings — collapsible group. Parent visible
