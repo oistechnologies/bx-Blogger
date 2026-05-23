@@ -87,6 +87,16 @@ class extends="coldbox.system.EventHandler" {
     }
 
     /**
+     * Realtime — last-30-minute live view. Big "users now" number,
+     * per-minute bar chart, geo/device/screen mini tables. The
+     * wire polls every 10s for fresh data.
+     */
+    function realtime( event, rc, prc ) {
+        prc.pageTitle = "Analytics — Realtime";
+        event.setView( view = "analytics/realtime" );
+    }
+
+    /**
      * Top pages CSV export. Pulls every row matching the current
      * filters (no pagination) and streams as a CSV attachment.
      * Filters are passed via the URL query string so a wire-side

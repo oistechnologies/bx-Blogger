@@ -1,0 +1,48 @@
+/**
+ * bx-Blogger — GaRealtimeSpec (Phase 15.I)
+ *
+ * Smoke checks for the Realtime report page + wire + route.
+ * The realtime API behavior itself is exercised in GaServiceSpec
+ * (runRealtimeReport + realtimeActiveUsers); this spec just
+ * verifies the page-level plumbing.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function run() {
+        describe( "Phase 15.I — Realtime report page", function() {
+
+            it( "handler exposes realtime() action", function() {
+                var src = fileRead( getController().getSetting( "modules" ).admin.path & "/handlers/Analytics.bx" );
+                expect( src ).toInclude( "function realtime(" );
+            } );
+
+            it( "view + wire files exist", function() {
+                expect( fileExists( getController().getSetting( "modules" ).admin.path & "/views/analytics/realtime.bxm" ) ).toBeTrue();
+                expect( fileExists( expandPath( "/wires/analytics/realtime.bxm" ) ) ).toBeTrue();
+            } );
+
+            it( "wire polls every 10s and renders the per-minute SVG chart", function() {
+                var src = fileRead( expandPath( "/wires/analytics/realtime.bxm" ) );
+                expect( src ).toInclude( "wire:poll.10s" );
+                expect( src ).toInclude( "renderMinuteChart" );
+                expect( src ).toInclude( "function pollTick(" );
+            } );
+
+            it( "route analytics/realtime is registered before the catch-all", function() {
+                var router = fileRead( getController().getSetting( "modules" ).admin.path & "/config/Router.bx" );
+                var idx = find( "route( ""analytics/realtime""", router );
+                var catchAllIdx = find( "route( "":handler/:action?""", router );
+                expect( idx ).toBeGT( 0 );
+                expect( idx ).toBeLT( catchAllIdx );
+            } );
+
+            it( "sidebar has Realtime sub-link in the Analytics group", function() {
+                var layout = fileRead( getController().getSetting( "modules" ).admin.path & "/layouts/Main.bxm" );
+                expect( layout ).toInclude( "/admin/analytics/realtime" );
+                expect( layout ).toInclude( "Realtime" );
+            } );
+
+        } );
+    }
+
+}

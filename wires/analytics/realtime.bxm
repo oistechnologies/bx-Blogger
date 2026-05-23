@@ -1,0 +1,232 @@
+<bx:script>
+// @startWire
+/**
+ * analytics.realtime — Phase 15.I dedicated Realtime page.
+ *
+ * Lives at /admin/analytics/realtime. Polls every 10s. Same
+ * underlying data as the dashboard snapshot's realtime pill but
+ * with the full per-minute + per-country + per-device +
+ * per-screen drilldown.
+ *
+ * Per GA caveat: the realtime endpoint exposes
+ * `unifiedScreenName` (page title) rather than `pagePath`, so
+ * page identification is fuzzier than the standard reports.
+ * Title is shown in the screen-breakdown table accordingly.
+ */
+
+property name="gaService" inject="GoogleAnalyticsService";
+property name="cbauth"    inject="AuthenticationService@cbauth";
+
+data = {
+    "canView"   : false,
+    "connected" : false,
+    "now"       : 0,
+    "perMinute" : [],
+    "perCountry": [],
+    "perDevice" : [],
+    "perScreen" : [],
+    "loading"   : false
+};
+
+function onMount( event, rc, prc, params ) {
+    var u = cbauth.isLoggedIn() ? cbauth.getUser() : "";
+    data.canView = !isSimpleValue( u ) && u.hasPermission( "ga.view" );
+    if ( !data.canView ) return;
+    hydrate();
+}
+
+function pollTick() {
+    if ( !data.canView || !data.connected ) {
+        // Re-evaluate connection state in case settings changed.
+        data.connected = isGaConnected();
+        if ( !data.connected ) return;
+    }
+    hydrate();
+}
+
+function refresh() {
+    if ( !data.canView ) return;
+    try { gaService.invalidateCaches(); } catch ( any e ) {}
+    hydrate();
+}
+
+private void function hydrate() {
+    data.loading   = true;
+    data.connected = isGaConnected();
+    if ( !data.connected ) {
+        data.now        = 0;
+        data.perMinute  = [];
+        data.perCountry = [];
+        data.perDevice  = [];
+        data.perScreen  = [];
+        data.loading    = false;
+        return;
+    }
+    try { data.now = gaService.realtimeActiveUsers(); }
+    catch ( any e ) { data.now = 0; }
+    try {
+        var rb = gaService.realtimeBreakdown();
+        data.perMinute  = rb.perMinute  ?: [];
+        data.perCountry = rb.perCountry ?: [];
+        data.perDevice  = rb.perDevice  ?: [];
+        data.perScreen  = rb.perScreen  ?: [];
+    }
+    catch ( any e ) {
+        data.perMinute  = [];
+        data.perCountry = [];
+        data.perDevice  = [];
+        data.perScreen  = [];
+    }
+    data.loading = false;
+}
+
+private boolean function isGaConnected() {
+    try { return gaService.status().connected; }
+    catch ( any e ) { return false; }
+}
+
+/**
+ * Render a 30-bar per-minute chart from the realtime breakdown.
+ * Minutes 0-29 indexed from "now" backward; tallest bar = max
+ * activeUsers in window. Bars rendered as a single inline SVG.
+ */
+string function renderMinuteChart( required array perMinute, numeric w = 600, numeric h = 140 ) {
+    if ( !arguments.perMinute.len() ) {
+        return '<div class="text-center text-muted small p-3"><i class="bi bi-graph-up"></i> No realtime activity in the last 30 minutes.</div>';
+    }
+    // Bucket by minutesAgo (0-29). Some buckets may be missing
+    // from the response when there were no users that minute.
+    var bucket = {};
+    var maxV   = 0;
+    for ( var r in arguments.perMinute ) {
+        var m = int( r.label ?: 0 );
+        var v = val( r.activeUsers ?: 0 );
+        bucket[ m ] = v;
+        if ( v > maxV ) maxV = v;
+    }
+    if ( maxV == 0 ) maxV = 1;
+    var padL = 24; var padR = 8; var padT = 8; var padB = 22;
+    var chartW = arguments.w - padL - padR;
+    var chartH = arguments.h - padT - padB;
+    var barW   = ( chartW / 30 ) - 1.5;
+
+    var svg = '<svg viewBox="0 0 ' & arguments.w & ' ' & arguments.h & '" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block;">';
+    svg &= '<rect x="' & padL & '" y="' & padT & '" width="' & chartW & '" height="' & chartH & '" fill="##f8f9fa" stroke="##dee2e6"/>';
+    // Bars — leftmost = 29 min ago, rightmost = "now" (0 min ago).
+    for ( var i = 29; i >= 0; i-- ) {
+        var v = bucket[ i ] ?: 0;
+        var x = padL + ( ( 29 - i ) * ( chartW / 30 ) ) + 0.75;
+        var barH = ( v / maxV ) * chartH;
+        var y = padT + chartH - barH;
+        svg &= '<rect x="' & numberFormat( x, "9.99" ) & '" y="' & numberFormat( y, "9.99" )
+            & '" width="' & numberFormat( barW, "9.99" ) & '" height="' & numberFormat( barH, "9.99" )
+            & '" fill="##198754" opacity="0.85"><title>' & v & ' user' & ( v == 1 ? '' : 's' )
+            & ' ' & i & ' min ago</title></rect>';
+    }
+    var labelStyle = 'font-size="10" fill="##6c757d" font-family="system-ui,sans-serif"';
+    svg &= '<text x="' & padL                  & '" y="' & ( arguments.h - 4 ) & '" ' & labelStyle & '>30 min ago</text>';
+    svg &= '<text x="' & ( padL + chartW )     & '" y="' & ( arguments.h - 4 ) & '" text-anchor="end" ' & labelStyle & '>now</text>';
+    svg &= '<text x="' & ( padL - 2 )          & '" y="' & ( padT + 8 ) & '" text-anchor="end" ' & labelStyle & '>' & maxV & '</text>';
+    svg &= '</svg>';
+    return svg;
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:if !args.canView>
+    <div class="alert alert-warning"><i class="bi bi-shield-lock me-1"></i> You don't have permission to view Analytics.</div>
+<bx:elseif !args.connected>
+    <div class="card stat-card stat-card-secondary"><div class="card-body text-center p-5">
+        <h4>Google Analytics is not connected</h4>
+        <a class="btn btn-primary" href="/admin/settings/ga"><i class="bi bi-link-45deg me-1"></i> Connect Google Analytics</a>
+    </div></div>
+<bx:else>
+    <div class="d-flex justify-content-between align-items-center mb-3" wire:poll.10s="pollTick">
+        <div>
+            <h4 class="mb-0">
+                <i class="bi bi-circle-fill text-success me-1" style="font-size:0.6rem;"></i>
+                <span class="display-6">#numberFormat( int( args.now ) )#</span> user#( args.now == 1 ? "" : "s" )#
+                <span class="text-muted h6 ms-2">on the site right now</span>
+            </h4>
+        </div>
+        <button class="btn btn-sm btn-outline-secondary" wire:click="refresh"><i class="bi bi-arrow-clockwise me-1"></i> Refresh</button>
+    </div>
+
+    <!-- Per-minute bars -->
+    <div class="card stat-card stat-card-success mb-3">
+        <div class="card-header card-header-soft card-header-soft-success">
+            <span class="h6 mb-0">Active users by minute — last 30 min</span>
+        </div>
+        <div class="card-body">
+            #renderMinuteChart( args.perMinute )#
+        </div>
+    </div>
+
+    <!-- Breakdown mini-tables -->
+    <div class="row g-3">
+        <div class="col-12 col-lg-4">
+            <div class="card stat-card stat-card-primary">
+                <div class="card-header card-header-soft card-header-soft-primary"><span class="h6 mb-0">By country</span></div>
+                <div class="card-body p-0">
+                    <bx:if !args.perCountry.len()>
+                        <p class="small text-muted m-3 mb-0">No country data right now.</p>
+                    <bx:else>
+                        <table class="table table-sm mb-0 align-middle">
+                            <thead class="table-light"><tr><th>Country</th><th class="text-end">Users</th></tr></thead>
+                            <tbody>
+                                <bx:loop array="#args.perCountry#" item="r">
+                                    <tr><td class="small">#encodeForHTML( len( r.label ?: "" ) ? r.label : "(unknown)" )#</td><td class="text-end small">#numberFormat( int( r.activeUsers ?: 0 ) )#</td></tr>
+                                </bx:loop>
+                            </tbody>
+                        </table>
+                    </bx:if>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-lg-4">
+            <div class="card stat-card stat-card-info">
+                <div class="card-header card-header-soft card-header-soft-info"><span class="h6 mb-0">By device</span></div>
+                <div class="card-body p-0">
+                    <bx:if !args.perDevice.len()>
+                        <p class="small text-muted m-3 mb-0">No device data right now.</p>
+                    <bx:else>
+                        <table class="table table-sm mb-0 align-middle">
+                            <thead class="table-light"><tr><th>Device</th><th class="text-end">Users</th></tr></thead>
+                            <tbody>
+                                <bx:loop array="#args.perDevice#" item="r">
+                                    <tr><td class="small">#encodeForHTML( len( r.label ?: "" ) ? r.label : "(unknown)" )#</td><td class="text-end small">#numberFormat( int( r.activeUsers ?: 0 ) )#</td></tr>
+                                </bx:loop>
+                            </tbody>
+                        </table>
+                    </bx:if>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-lg-4">
+            <div class="card stat-card stat-card-warning">
+                <div class="card-header card-header-soft card-header-soft-warning d-flex justify-content-between align-items-center">
+                    <span class="h6 mb-0">By page</span>
+                    <span class="small text-muted" title="The Realtime API exposes page title (unifiedScreenName) rather than pagePath, so identification is fuzzier than the standard reports.">
+                        <i class="bi bi-info-circle"></i>
+                    </span>
+                </div>
+                <div class="card-body p-0">
+                    <bx:if !args.perScreen.len()>
+                        <p class="small text-muted m-3 mb-0">No page data right now.</p>
+                    <bx:else>
+                        <table class="table table-sm mb-0 align-middle">
+                            <thead class="table-light"><tr><th>Page title</th><th class="text-end">Users</th></tr></thead>
+                            <tbody>
+                                <bx:loop array="#args.perScreen#" item="r">
+                                    <tr><td class="small">#encodeForHTML( len( r.label ?: "" ) ? r.label : "(unknown)" )#</td><td class="text-end small">#numberFormat( int( r.activeUsers ?: 0 ) )#</td></tr>
+                                </bx:loop>
+                            </tbody>
+                        </table>
+                    </bx:if>
+                </div>
+            </div>
+        </div>
+    </div>
+</bx:if>
+</bx:output>

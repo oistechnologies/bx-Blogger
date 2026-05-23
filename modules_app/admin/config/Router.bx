@@ -73,8 +73,10 @@ class {
         route( "analytics/sources" ).to( "Analytics.sources" );
         route( "analytics/geo"     ).to( "Analytics.geo"     );
         route( "analytics/devices" ).to( "Analytics.devices" );
-        route( "analytics/events"  ).to( "Analytics.events"  );
-        route( "analytics"         ).to( "Analytics.index"   );
+        route( "analytics/events"   ).to( "Analytics.events"   );
+        // 15.I — Realtime page.
+        route( "analytics/realtime" ).to( "Analytics.realtime" );
+        route( "analytics"          ).to( "Analytics.index"    );
 
         // Phase UX — self-service account lives inside the admin shell
         // (previously /account at the app root). Specific sub-routes
