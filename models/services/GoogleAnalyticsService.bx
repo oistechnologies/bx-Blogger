@@ -1,0 +1,1221 @@
+/**
+ * bx-Blogger — GoogleAnalyticsService (Phase 15)
+ *
+ * Façade over Google Analytics 4 Data API
+ * (https://analyticsdata.googleapis.com). Handles OAuth 2.0
+ * refresh-token bookkeeping, executes report queries, and wraps
+ * higher-level reads (site-wide rollup, top pages, top sources,
+ * per-post engagement) the dashboard + reports + editor need.
+ *
+ * Provider-pluggable: setting `ga.provider = "mock"` swaps in
+ * MockGaProvider which returns deterministic test data without
+ * any HTTP. Useful for the dev container and the integration
+ * spec — neither has a verified GA property to point at.
+ *
+ * Storage model — hybrid:
+ *   - The daily sync job (GaDailySyncJob) batches yesterday's
+ *     site-wide + per-page aggregates into the local
+ *     `analytics_daily` table. The dashboard snapshot, per-post
+ *     tab, and Overview report read from this local cache, so
+ *     hot paths never call out to Google.
+ *   - Report pages with date-range pickers + sources/geo/device
+ *     drilldowns hit the live API on demand and cache responses
+ *     in CacheBox keyed by (propertyId, methodName, body-hash).
+ *   - Realtime widgets hit `:runRealtimeReport` with a 30s cache.
+ *
+ * OAuth flow:
+ *   1. Operator pastes client_id + client_secret + property_id +
+ *      measurement_id in the GA connection wire and clicks "Connect".
+ *   2. The wire builds the auth URL and redirects to Google.
+ *   3. Google redirects back to /admin/settings/ga/callback
+ *      with `code=...`. Settings.gaCallback exchanges the code
+ *      for refresh_token + access_token and stores both.
+ *   4. Subsequent API calls go through `currentAccessToken()`,
+ *      which auto-refreshes when the cached token is expiring
+ *      within 60 seconds.
+ *
+ * Quotas: GA4 Data API uses token-based quotas (10–50 tokens per
+ * report depending on complexity). Standard free tier is 200K
+ * tokens/day per property, 40K/hour, 10 concurrent. Aggressive
+ * caching + batchRunReports keeps a typical blog comfortably
+ * under quota. 429s surface as GaQuotaExceeded.
+ */
+class accessors="true" singleton {
+
+    property name="settingService" inject="SettingService";
+    property name="wirebox"        inject="wirebox";
+    property name="cacheBox"       inject="cachebox";
+    property name="log"            inject="logbox:logger:{this}";
+
+    // Google's OAuth + API endpoints. Hardcoded — these are
+    // public, stable, and an operator override would just be
+    // a misconfiguration vector.
+    variables.authUrl                 = "https://accounts.google.com/o/oauth2/v2/auth";
+    variables.tokenUrl                = "https://oauth2.googleapis.com/token";
+    variables.tokeninfoUrl            = "https://oauth2.googleapis.com/tokeninfo";
+    variables.apiBase                 = "https://analyticsdata.googleapis.com/v1beta";
+    variables.scope                   = "https://www.googleapis.com/auth/analytics.readonly";
+    variables.requestTimeoutS         = 30;
+    variables.cacheTtlSeconds         = 300;    // standard report cache
+    variables.realtimeCacheTtlSeconds = 30;     // realtime report cache
+    variables.metadataCacheTtlSeconds = 86400;  // 24h
+    variables.postSourcesTtlSeconds   = 900;    // 15 min — per-post sources
+
+    // --------------------------------------------------------------------
+    // OAuth bookkeeping
+    // --------------------------------------------------------------------
+
+    /**
+     * Build the Google authorization URL. The operator pastes
+     * their client_id, picks a redirect_uri, and we kick them to
+     * Google with the `analytics.readonly` scope.
+     *
+     * `state` is the operator's CSRF token — Google echoes it
+     * back on the callback so we can verify the redirect
+     * originated from our own initiation.
+     */
+    string function buildAuthUrl( required string redirectUri, required string state ) {
+        var clientId = trim( settingService.get( "ga.oauth_client_id", "" ) ?: "" );
+        if ( !len( clientId ) ) {
+            throw( type = "bxBlogger.GaNotConfigured", message = "Set ga.oauth_client_id before initiating the auth flow." );
+        }
+        return variables.authUrl
+             & "?client_id="     & urlEncodedFormat( clientId )
+             & "&redirect_uri="  & urlEncodedFormat( arguments.redirectUri )
+             & "&response_type=code"
+             & "&scope="         & urlEncodedFormat( variables.scope )
+             & "&access_type=offline"
+             & "&prompt=consent"
+             & "&state="         & urlEncodedFormat( arguments.state );
+    }
+
+    /**
+     * Exchange an authorization code for the refresh + access
+     * token pair. Called by Settings.gaCallback after Google
+     * redirects back. Persists both tokens via SettingService,
+     * plus the connected-account email (for display) and the
+     * connect timestamp.
+     */
+    void function exchangeCodeForTokens( required string code, required string redirectUri ) {
+        if ( provider() == "mock" ) {
+            settingService.set( key = "ga.refresh_token",           value = "mock-refresh-token", type = "string" );
+            settingService.set( key = "ga.access_token",            value = "mock-access-token",  type = "string" );
+            settingService.set( key = "ga.token_expires_at",        value = "9999999999",         type = "int"    );
+            settingService.set( key = "ga.connected_account_email", value = "mock@example.com",   type = "string" );
+            settingService.set( key = "ga.connected_at",            value = dateTimeFormat( now(), "yyyy-mm-dd'T'HH:nn:ss" ), type = "string" );
+            return;
+        }
+
+        var clientId     = trim( settingService.get( "ga.oauth_client_id",     "" ) ?: "" );
+        var clientSecret = trim( settingService.get( "ga.oauth_client_secret", "" ) ?: "" );
+        if ( !len( clientId ) || !len( clientSecret ) ) {
+            throw( type = "bxBlogger.GaNotConfigured", message = "OAuth client_id/secret must be set before exchanging the code." );
+        }
+
+        var body = "grant_type=authorization_code"
+                & "&code="          & urlEncodedFormat( arguments.code )
+                & "&client_id="     & urlEncodedFormat( clientId )
+                & "&client_secret=" & urlEncodedFormat( clientSecret )
+                & "&redirect_uri="  & urlEncodedFormat( arguments.redirectUri );
+
+        var response = postForm( variables.tokenUrl, body );
+        if ( response.statusCode lt 200 || response.statusCode gte 300 ) {
+            throw( type = "bxBlogger.GaOAuthError", message = "Token exchange failed: " & response.body );
+        }
+        var parsed  = jsonDeserialize( response.body );
+        var refresh = parsed.refresh_token ?: "";
+        var access  = parsed.access_token  ?: "";
+        var expIn   = val( parsed.expires_in ?: 0 );
+        if ( !len( refresh ) || !len( access ) ) {
+            throw( type = "bxBlogger.GaOAuthError", message = "Token exchange response missing refresh_token or access_token." );
+        }
+        var expAt = nowEpochSeconds() + int( expIn );
+
+        settingService.set( key = "ga.refresh_token",    value = refresh, type = "string" );
+        settingService.set( key = "ga.access_token",     value = access,  type = "string" );
+        settingService.set( key = "ga.token_expires_at", value = expAt,   type = "int"    );
+        settingService.set( key = "ga.connected_at",     value = dateTimeFormat( now(), "yyyy-mm-dd'T'HH:nn:ss" ), type = "string" );
+
+        // Best-effort capture of the connected account email so
+        // the settings page can show "Connected as alice@..." —
+        // a tokeninfo failure mustn't break the connect flow.
+        try {
+            var info = getJson( variables.tokeninfoUrl & "?access_token=" & urlEncodedFormat( access ), "" );
+            if ( info.statusCode == 200 ) {
+                var infoParsed = jsonDeserialize( info.body );
+                if ( structKeyExists( infoParsed, "email" ) && len( infoParsed.email ) ) {
+                    settingService.set( key = "ga.connected_account_email", value = infoParsed.email, type = "string" );
+                }
+            }
+        }
+        catch ( any e ) {
+            // swallow — tokeninfo is decorative
+        }
+    }
+
+    /**
+     * Returns a valid access token. Refreshes from the stored
+     * refresh token if the cached access token is missing or
+     * expiring within 60 seconds. Throws GaNotConnected when
+     * no refresh token exists yet (operator hasn't run the
+     * connect flow).
+     */
+    string function currentAccessToken() {
+        if ( provider() == "mock" ) return "mock-access-token";
+
+        var access   = trim( settingService.get( "ga.access_token", "" ) ?: "" );
+        var expAt    = val( settingService.get( "ga.token_expires_at", 0 ) );
+        var nowEpoch = nowEpochSeconds();
+
+        if ( len( access ) && expAt > ( nowEpoch + 60 ) ) {
+            return access;
+        }
+        return refreshAccessToken();
+    }
+
+    string function refreshAccessToken() {
+        if ( provider() == "mock" ) return "mock-access-token";
+
+        var refresh      = trim( settingService.get( "ga.refresh_token",       "" ) ?: "" );
+        var clientId     = trim( settingService.get( "ga.oauth_client_id",     "" ) ?: "" );
+        var clientSecret = trim( settingService.get( "ga.oauth_client_secret", "" ) ?: "" );
+        if ( !len( refresh ) ) {
+            throw( type = "bxBlogger.GaNotConnected", message = "GA is not connected. Visit /admin/settings/ga and complete the OAuth flow." );
+        }
+        if ( !len( clientId ) || !len( clientSecret ) ) {
+            throw( type = "bxBlogger.GaNotConfigured", message = "OAuth client_id/secret missing." );
+        }
+
+        var body = "grant_type=refresh_token"
+                & "&refresh_token=" & urlEncodedFormat( refresh )
+                & "&client_id="     & urlEncodedFormat( clientId )
+                & "&client_secret=" & urlEncodedFormat( clientSecret );
+
+        var response = postForm( variables.tokenUrl, body );
+        if ( response.statusCode lt 200 || response.statusCode gte 300 ) {
+            throw( type = "bxBlogger.GaOAuthError", message = "Token refresh failed: " & response.body );
+        }
+        var parsed = jsonDeserialize( response.body );
+        var access = parsed.access_token ?: "";
+        var expIn  = val( parsed.expires_in ?: 0 );
+        if ( !len( access ) ) {
+            throw( type = "bxBlogger.GaOAuthError", message = "Token refresh response missing access_token." );
+        }
+        var expAt = nowEpochSeconds() + int( expIn );
+        settingService.set( key = "ga.access_token",     value = access, type = "string" );
+        settingService.set( key = "ga.token_expires_at", value = expAt,  type = "int"    );
+        return access;
+    }
+
+    /**
+     * High-level connection status for the admin connect wire.
+     * Returns enough state for the wire to render the right
+     * three-state badge (Connected / Configured-but-not /
+     * Not-configured) and the post-connect display tile.
+     */
+    struct function status() {
+        var prov            = provider();
+        var clientId        = trim( settingService.get( "ga.oauth_client_id",         "" ) ?: "" );
+        var clientSecret    = trim( settingService.get( "ga.oauth_client_secret",     "" ) ?: "" );
+        var refresh         = trim( settingService.get( "ga.refresh_token",           "" ) ?: "" );
+        var propertyId      = trim( settingService.get( "ga.property_id",             "" ) ?: "" );
+        var measurementId   = trim( settingService.get( "ga.measurement_id",          "" ) ?: "" );
+        var lastSync        = trim( settingService.get( "ga.last_sync_at",            "" ) ?: "" );
+        var connectedAs     = trim( settingService.get( "ga.connected_account_email", "" ) ?: "" );
+        var connectedAt     = trim( settingService.get( "ga.connected_at",            "" ) ?: "" );
+
+        return {
+            "provider"      : prov,
+            "configured"    : len( clientId ) gt 0 && len( clientSecret ) gt 0 && len( propertyId ) gt 0,
+            "connected"     : prov == "mock" ? true : len( refresh ) gt 0,
+            "propertyId"    : propertyId,
+            "measurementId" : measurementId,
+            "hasProperty"   : len( propertyId ) gt 0,
+            "lastSyncAt"    : lastSync,
+            "connectedAs"   : connectedAs,
+            "connectedAt"   : connectedAt
+        };
+    }
+
+    // --------------------------------------------------------------------
+    // Raw Data API wrappers
+    // --------------------------------------------------------------------
+
+    /**
+     * POST :runReport on the configured property. Body is the
+     * full RunReportRequest shape (dimensions, metrics, dateRanges,
+     * dimensionFilter, orderBys, limit, etc.). Returns the parsed
+     * response struct. Cached for 5 min by body hash so duplicate
+     * requests within the cache window don't burn quota.
+     */
+    struct function runReport( required struct body ) {
+        var cacheKey = "ga.live.report." & sha256Hex( jsonSerialize( arguments.body ) );
+        var hit      = cacheGet( cacheKey );
+        if ( !isNull( hit ) ) return hit;
+
+        if ( provider() == "mock" ) {
+            var mockResp = mockProvider().runReport( body = arguments.body );
+            cachePut( cacheKey, mockResp, variables.cacheTtlSeconds );
+            return mockResp;
+        }
+
+        var propertyId = requirePropertyId();
+        var endpoint   = variables.apiBase & "/properties/" & urlEncodedFormat( propertyId ) & ":runReport";
+        var response   = postJson( endpoint, jsonSerialize( arguments.body ), currentAccessToken() );
+        var parsed     = handleApiResponse( response, "runReport" );
+        cachePut( cacheKey, parsed, variables.cacheTtlSeconds );
+        return parsed;
+    }
+
+    /**
+     * POST :batchRunReports — up to 5 reports in one HTTP call.
+     * Cheaper in latency + quota overhead than 5 separate runReport
+     * calls. Use for any dashboard panel that needs several charts.
+     */
+    struct function batchRunReports( required array requests ) {
+        if ( arguments.requests.len() > 5 ) {
+            throw( type = "bxBlogger.GaApiError", message = "batchRunReports accepts at most 5 requests per batch (got " & arguments.requests.len() & ")." );
+        }
+        var cacheKey = "ga.live.batch." & sha256Hex( jsonSerialize( arguments.requests ) );
+        var hit      = cacheGet( cacheKey );
+        if ( !isNull( hit ) ) return hit;
+
+        if ( provider() == "mock" ) {
+            var mockResp = mockProvider().batchRunReports( requests = arguments.requests );
+            cachePut( cacheKey, mockResp, variables.cacheTtlSeconds );
+            return mockResp;
+        }
+
+        var propertyId = requirePropertyId();
+        var body       = { "requests" : arguments.requests };
+        var endpoint   = variables.apiBase & "/properties/" & urlEncodedFormat( propertyId ) & ":batchRunReports";
+        var response   = postJson( endpoint, jsonSerialize( body ), currentAccessToken() );
+        var parsed     = handleApiResponse( response, "batchRunReports" );
+        cachePut( cacheKey, parsed, variables.cacheTtlSeconds );
+        return parsed;
+    }
+
+    /**
+     * POST :runRealtimeReport — last 30 minutes of activity.
+     * Different endpoint + much smaller schema (only 4 metrics:
+     * activeUsers, eventCount, keyEvents, screenPageViews). No
+     * pagePath dimension — only unifiedScreenName.
+     */
+    struct function runRealtimeReport( required struct body ) {
+        var cacheKey = "ga.live.realtime." & sha256Hex( jsonSerialize( arguments.body ) );
+        var hit      = cacheGet( cacheKey );
+        if ( !isNull( hit ) ) return hit;
+
+        if ( provider() == "mock" ) {
+            var mockResp = mockProvider().runRealtimeReport( body = arguments.body );
+            cachePut( cacheKey, mockResp, variables.realtimeCacheTtlSeconds );
+            return mockResp;
+        }
+
+        var propertyId = requirePropertyId();
+        var endpoint   = variables.apiBase & "/properties/" & urlEncodedFormat( propertyId ) & ":runRealtimeReport";
+        var response   = postJson( endpoint, jsonSerialize( arguments.body ), currentAccessToken() );
+        var parsed     = handleApiResponse( response, "runRealtimeReport" );
+        cachePut( cacheKey, parsed, variables.realtimeCacheTtlSeconds );
+        return parsed;
+    }
+
+    /**
+     * GET /metadata — full catalog of dimensions/metrics
+     * including any custom ones defined on the property. Used
+     * when building dynamic UI that lets the operator pick fields.
+     * Cached 24h since the catalog rarely changes.
+     */
+    struct function getMetadata() {
+        var propertyId = requirePropertyId();
+        var cacheKey   = "ga.metadata." & propertyId;
+        var hit        = cacheGet( cacheKey );
+        if ( !isNull( hit ) ) return hit;
+
+        if ( provider() == "mock" ) {
+            var mockResp = mockProvider().getMetadata();
+            cachePut( cacheKey, mockResp, variables.metadataCacheTtlSeconds );
+            return mockResp;
+        }
+
+        var endpoint = variables.apiBase & "/properties/" & urlEncodedFormat( propertyId ) & "/metadata";
+        var response = getJson( endpoint, currentAccessToken() );
+        var parsed   = handleApiResponse( response, "getMetadata" );
+        cachePut( cacheKey, parsed, variables.metadataCacheTtlSeconds );
+        return parsed;
+    }
+
+    /**
+     * Purge every live-API cached response. Called by the wire
+     * after Save / Disconnect so a credential change forces fresh
+     * data on the next read. Settings keys are invalidated per-key
+     * automatically by SettingService.
+     */
+    void function invalidateCaches() {
+        var cache = cacheBox.getCache( "default" );
+        try {
+            var keys = cache.getKeys();
+            for ( var k in keys ) {
+                if ( reFind( "^ga\.(live|snapshot|metadata)\.", k ) > 0 ) {
+                    try { cache.clear( k ); } catch ( any ignored ) {}
+                }
+            }
+        }
+        catch ( any e ) {
+            // Cache enumeration isn't guaranteed across providers;
+            // fail silently if not supported.
+        }
+    }
+
+    // --------------------------------------------------------------------
+    // Convenience reads — local analytics_daily table
+    // --------------------------------------------------------------------
+
+    /**
+     * Site-wide rollup over the last N days. Reads from the
+     * site-wide row (page_path='') in analytics_daily so this
+     * is essentially free.
+     */
+    struct function siteRollup( numeric days = 28 ) {
+        var since = dateFormat( dateAdd( "d", -arguments.days, now() ), "yyyy-mm-dd" );
+        var qry = queryExecute(
+            "SELECT
+                COALESCE( SUM( screen_page_views ), 0 ) AS page_views,
+                COALESCE( SUM( active_users      ), 0 ) AS active_users,
+                COALESCE( SUM( new_users         ), 0 ) AS new_users,
+                COALESCE( SUM( sessions          ), 0 ) AS sessions,
+                COALESCE( SUM( engaged_sessions  ), 0 ) AS engaged_sessions,
+                COALESCE( AVG( engagement_rate   ), 0 ) AS engagement_rate,
+                COALESCE( AVG( bounce_rate       ), 0 ) AS bounce_rate,
+                COALESCE( AVG( avg_session_duration ), 0 ) AS avg_session_duration,
+                COALESCE( SUM( event_count       ), 0 ) AS event_count,
+                COALESCE( SUM( key_events        ), 0 ) AS key_events
+               FROM analytics_daily
+              WHERE page_path = ''
+                AND date >= ?",
+            [ since ]
+        );
+        if ( qry.recordCount == 0 ) return emptyRollup();
+        return {
+            "pageViews"           : val( qry.page_views          ),
+            "activeUsers"         : val( qry.active_users        ),
+            "newUsers"            : val( qry.new_users           ),
+            "sessions"            : val( qry.sessions            ),
+            "engagedSessions"    : val( qry.engaged_sessions    ),
+            "engagementRate"      : val( qry.engagement_rate     ),
+            "bounceRate"          : val( qry.bounce_rate         ),
+            "avgSessionDuration" : val( qry.avg_session_duration ),
+            "eventCount"          : val( qry.event_count         ),
+            "keyEvents"           : val( qry.key_events          )
+        };
+    }
+
+    /**
+     * Side-by-side rollup: current N-day window vs the prior
+     * N-day window. Delta % per metric for the dashboard cards.
+     * Avoids the live-API two-dateRanges trick — both periods
+     * are already in the local table.
+     */
+    struct function siteRollupCompare( numeric days = 7 ) {
+        var current  = siteRollup( arguments.days );
+        var prior    = siteRollupOffset( arguments.days, arguments.days );
+        var deltaPct = {};
+        for ( var k in structKeyArray( current ) ) {
+            var c = val( current[ k ] );
+            var p = val( prior[ k ] ?: 0 );
+            deltaPct[ k ] = ( p > 0 ) ? ( ( c - p ) / p * 100 ) : ( c > 0 ? 100 : 0 );
+        }
+        return { "current" : current, "previous" : prior, "deltaPct" : deltaPct };
+    }
+
+    /**
+     * Top N pages by view count over the last N days from the
+     * local table. Joins to posts when post_id resolves so we
+     * can render the post title + editor link.
+     */
+    array function topPagesLocal( numeric days = 7, numeric n = 10 ) {
+        var since = dateFormat( dateAdd( "d", -arguments.days, now() ), "yyyy-mm-dd" );
+        var qry = queryExecute(
+            "SELECT
+                a.page_path,
+                a.post_id,
+                p.title AS post_title,
+                p.slug  AS post_slug,
+                SUM( a.screen_page_views )    AS views,
+                SUM( a.active_users        )   AS users,
+                AVG( a.avg_session_duration )  AS avg_duration,
+                AVG( a.engagement_rate      )  AS engagement_rate
+               FROM analytics_daily a
+          LEFT JOIN posts p ON p.id = a.post_id
+              WHERE a.date >= ?
+                AND a.page_path <> ''
+              GROUP BY a.page_path, a.post_id, p.title, p.slug
+              ORDER BY views DESC
+              LIMIT " & int( arguments.n ),
+            [ since ]
+        );
+        var out = [];
+        for ( var r in qry ) {
+            out.append( {
+                "pagePath"        : r.page_path,
+                "postId"          : isNull( r.post_id ) ? "" : val( r.post_id ),
+                "postTitle"       : r.post_title ?: "",
+                "postSlug"        : r.post_slug ?: "",
+                "views"           : val( r.views ),
+                "users"           : val( r.users ),
+                "avgDuration"     : val( r.avg_duration ),
+                "engagementRate"  : val( r.engagement_rate )
+            } );
+        }
+        return out;
+    }
+
+    /**
+     * Top N posts by view count — aggregates across all pagePath
+     * variants that resolved to the same post_id. Powers the
+     * dashboard snapshot's "Top performing post" slot.
+     */
+    array function topPostsLocal( numeric days = 7, numeric n = 5 ) {
+        var since = dateFormat( dateAdd( "d", -arguments.days, now() ), "yyyy-mm-dd" );
+        var qry = queryExecute(
+            "SELECT
+                a.post_id,
+                p.title AS post_title,
+                p.slug  AS post_slug,
+                SUM( a.screen_page_views ) AS views,
+                SUM( a.active_users      ) AS users
+               FROM analytics_daily a
+          INNER JOIN posts p ON p.id = a.post_id
+              WHERE a.date >= ?
+                AND a.post_id IS NOT NULL
+              GROUP BY a.post_id, p.title, p.slug
+              ORDER BY views DESC
+              LIMIT " & int( arguments.n ),
+            [ since ]
+        );
+        var out = [];
+        for ( var r in qry ) {
+            out.append( {
+                "postId"    : val( r.post_id ),
+                "postTitle" : r.post_title,
+                "postSlug"  : r.post_slug,
+                "views"     : val( r.views ),
+                "users"     : val( r.users )
+            } );
+        }
+        return out;
+    }
+
+    /**
+     * Per-post rollup — same metrics as siteRollup but filtered
+     * to one post_id. Powers the editor Analytics modal header.
+     */
+    struct function postRollup( required numeric postId, numeric days = 28 ) {
+        var since = dateFormat( dateAdd( "d", -arguments.days, now() ), "yyyy-mm-dd" );
+        var qry = queryExecute(
+            "SELECT
+                COALESCE( SUM( screen_page_views ), 0 ) AS page_views,
+                COALESCE( SUM( active_users      ), 0 ) AS active_users,
+                COALESCE( SUM( sessions          ), 0 ) AS sessions,
+                COALESCE( AVG( engagement_rate   ), 0 ) AS engagement_rate,
+                COALESCE( AVG( bounce_rate       ), 0 ) AS bounce_rate,
+                COALESCE( AVG( avg_session_duration ), 0 ) AS avg_session_duration
+               FROM analytics_daily
+              WHERE post_id = ?
+                AND date >= ?",
+            [ arguments.postId, since ]
+        );
+        if ( qry.recordCount == 0 ) return emptyPostRollup();
+        return {
+            "pageViews"           : val( qry.page_views          ),
+            "activeUsers"         : val( qry.active_users        ),
+            "sessions"            : val( qry.sessions            ),
+            "engagementRate"      : val( qry.engagement_rate     ),
+            "bounceRate"          : val( qry.bounce_rate         ),
+            "avgSessionDuration" : val( qry.avg_session_duration )
+        };
+    }
+
+    /**
+     * Per-post daily sparkline series — used by the editor
+     * Analytics modal's traffic sparkline. Returns an array
+     * of { date, views } sorted ascending.
+     */
+    array function postDailySeries( required numeric postId, numeric days = 28 ) {
+        var since = dateFormat( dateAdd( "d", -arguments.days, now() ), "yyyy-mm-dd" );
+        var qry = queryExecute(
+            "SELECT date,
+                    SUM( screen_page_views ) AS views,
+                    SUM( active_users      ) AS users
+               FROM analytics_daily
+              WHERE post_id = ?
+                AND date >= ?
+              GROUP BY date
+              ORDER BY date ASC",
+            [ arguments.postId, since ]
+        );
+        var out = [];
+        for ( var r in qry ) {
+            out.append( {
+                "date"  : dateFormat( r.date, "yyyy-mm-dd" ),
+                "views" : val( r.views ),
+                "users" : val( r.users )
+            } );
+        }
+        return out;
+    }
+
+    /**
+     * Site-wide daily series — used by the Overview chart.
+     * Same shape as postDailySeries but across all pages.
+     */
+    array function dailySeries( numeric days = 30 ) {
+        var since = dateFormat( dateAdd( "d", -arguments.days, now() ), "yyyy-mm-dd" );
+        var qry = queryExecute(
+            "SELECT date,
+                    SUM( screen_page_views ) AS views,
+                    SUM( active_users      ) AS users,
+                    SUM( sessions          ) AS sessions
+               FROM analytics_daily
+              WHERE page_path = ''
+                AND date >= ?
+              GROUP BY date
+              ORDER BY date ASC",
+            [ since ]
+        );
+        var out = [];
+        for ( var r in qry ) {
+            out.append( {
+                "date"     : dateFormat( r.date, "yyyy-mm-dd" ),
+                "views"    : val( r.views ),
+                "users"    : val( r.users ),
+                "sessions" : val( r.sessions )
+            } );
+        }
+        return out;
+    }
+
+    // --------------------------------------------------------------------
+    // Convenience reads — live API (or mock), cached
+    // --------------------------------------------------------------------
+
+    /**
+     * Top acquisition channels by sessions over N days. Uses
+     * sessionDefaultChannelGroup which groups traffic into
+     * categories like "Organic Search", "Direct", "Referral".
+     */
+    array function topAcquisitionChannels( numeric days = 7, numeric n = 10 ) {
+        return liveTopRows(
+            dimension = "sessionDefaultChannelGroup",
+            metric    = "sessions",
+            days      = arguments.days,
+            n         = arguments.n
+        );
+    }
+
+    array function topSources( numeric days = 7, numeric n = 10 ) {
+        return liveTopRows(
+            dimension = "sessionSourceMedium",
+            metric    = "sessions",
+            days      = arguments.days,
+            n         = arguments.n
+        );
+    }
+
+    array function topCountries( numeric days = 7, numeric n = 10 ) {
+        return liveTopRows(
+            dimension = "country",
+            metric    = "activeUsers",
+            days      = arguments.days,
+            n         = arguments.n
+        );
+    }
+
+    array function topCities( numeric days = 7, numeric n = 10 ) {
+        return liveTopRows(
+            dimension = "city",
+            metric    = "activeUsers",
+            days      = arguments.days,
+            n         = arguments.n
+        );
+    }
+
+    array function deviceCategoryBreakdown( numeric days = 7 ) {
+        return liveTopRows(
+            dimension = "deviceCategory",
+            metric    = "sessions",
+            days      = arguments.days,
+            n         = 25
+        );
+    }
+
+    array function browserBreakdown( numeric days = 7 ) {
+        return liveTopRows(
+            dimension = "browser",
+            metric    = "sessions",
+            days      = arguments.days,
+            n         = 25
+        );
+    }
+
+    array function osBreakdown( numeric days = 7 ) {
+        return liveTopRows(
+            dimension = "operatingSystem",
+            metric    = "sessions",
+            days      = arguments.days,
+            n         = 25
+        );
+    }
+
+    array function eventBreakdown( numeric days = 7, numeric n = 20 ) {
+        return liveTopRows(
+            dimension = "eventName",
+            metric    = "eventCount",
+            days      = arguments.days,
+            n         = arguments.n
+        );
+    }
+
+    /**
+     * Realtime active users — a single number for the dashboard
+     * tile and the Realtime report page. 30s cache.
+     */
+    numeric function realtimeActiveUsers() {
+        var body = { "metrics" : [ { "name" : "activeUsers" } ] };
+        try {
+            var resp = runRealtimeReport( body = body );
+            return extractFirstMetricValue( resp );
+        }
+        catch ( any e ) {
+            return 0;
+        }
+    }
+
+    /**
+     * Realtime per-minute + per-country + per-device breakdowns.
+     * Used by the dedicated Realtime report page. One batched
+     * call would be nicer but Realtime doesn't support
+     * batchRun — so we issue them serially (still cheap because
+     * each costs ~3 tokens).
+     */
+    struct function realtimeBreakdown() {
+        var perMinute  = safeRealtime( { "dimensions" : [ { "name" : "minutesAgo" } ], "metrics" : [ { "name" : "activeUsers" } ] } );
+        var perCountry = safeRealtime( { "dimensions" : [ { "name" : "country"     } ], "metrics" : [ { "name" : "activeUsers" } ], "limit" : 10 } );
+        var perDevice  = safeRealtime( { "dimensions" : [ { "name" : "deviceCategory" } ], "metrics" : [ { "name" : "activeUsers" } ] } );
+        var perScreen  = safeRealtime( { "dimensions" : [ { "name" : "unifiedScreenName" } ], "metrics" : [ { "name" : "activeUsers" } ], "limit" : 10 } );
+        return {
+            "perMinute"  : rowsAsBreakdown( perMinute,  "minutesAgo" ),
+            "perCountry" : rowsAsBreakdown( perCountry, "country" ),
+            "perDevice"  : rowsAsBreakdown( perDevice,  "deviceCategory" ),
+            "perScreen"  : rowsAsBreakdown( perScreen,  "unifiedScreenName" )
+        };
+    }
+
+    /**
+     * Per-post top referring sources — used by the editor
+     * Analytics modal's "top sources" mini table. Cached per
+     * post for 15 minutes.
+     */
+    array function postLiveSources( required numeric postId, numeric days = 28, numeric n = 5 ) {
+        var cacheKey = "ga.live.post." & arguments.postId & ".sources." & arguments.days;
+        var hit      = cacheGet( cacheKey );
+        if ( !isNull( hit ) ) return hit;
+
+        var slug = lookupPostSlug( arguments.postId );
+        if ( !len( slug ) ) {
+            cachePut( cacheKey, [], variables.postSourcesTtlSeconds );
+            return [];
+        }
+        var since = dateFormat( dateAdd( "d", -arguments.days, now() ), "yyyy-mm-dd" );
+        var until = dateFormat( now(), "yyyy-mm-dd" );
+        var body  = {
+            "dateRanges"      : [ { "startDate" : since, "endDate" : until } ],
+            "dimensions"      : [ { "name" : "sessionSourceMedium" } ],
+            "metrics"         : [ { "name" : "sessions" }, { "name" : "activeUsers" } ],
+            "dimensionFilter" : {
+                "filter" : {
+                    "fieldName"    : "pagePath",
+                    "stringFilter" : {
+                        "matchType" : "BEGINS_WITH",
+                        "value"     : "/blog/" & slug,
+                        "caseSensitive" : false
+                    }
+                }
+            },
+            "orderBys" : [ { "metric" : { "metricName" : "sessions" }, "desc" : true } ],
+            "limit"    : arguments.n
+        };
+        var resp = runReport( body = body );
+        var rows = rowsAsBreakdown( resp, "sessionSourceMedium" );
+        cachePut( cacheKey, rows, variables.postSourcesTtlSeconds );
+        return rows;
+    }
+
+    // --------------------------------------------------------------------
+    // Daily aggregates — read interface for the sync job
+    // --------------------------------------------------------------------
+
+    /**
+     * Pull yesterday's (or `targetDate`'s) site-wide + per-page
+     * aggregates from GA in one batchRunReports call. Returns
+     * the parsed shape the sync job loops over. Mock provider
+     * returns deterministic seeded rows.
+     */
+    struct function dailyAggregates( required string targetDate ) {
+        if ( provider() == "mock" ) {
+            return mockProvider().dailyAggregates( targetDate = arguments.targetDate );
+        }
+
+        var metricsList = [
+            { "name" : "screenPageViews"        },
+            { "name" : "activeUsers"            },
+            { "name" : "newUsers"               },
+            { "name" : "sessions"               },
+            { "name" : "engagedSessions"        },
+            { "name" : "engagementRate"         },
+            { "name" : "bounceRate"             },
+            { "name" : "averageSessionDuration" },
+            { "name" : "eventCount"             },
+            { "name" : "keyEvents"              }
+        ];
+        var siteReq = {
+            "dateRanges" : [ { "startDate" : arguments.targetDate, "endDate" : arguments.targetDate } ],
+            "metrics"    : metricsList
+        };
+        var pageReq = {
+            "dateRanges" : [ { "startDate" : arguments.targetDate, "endDate" : arguments.targetDate } ],
+            "dimensions" : [ { "name" : "pagePath" } ],
+            "metrics"    : metricsList,
+            "orderBys"   : [ { "metric" : { "metricName" : "screenPageViews" }, "desc" : true } ],
+            "limit"      : 10000
+        };
+        var resp = batchRunReports( requests = [ siteReq, pageReq ] );
+        var siteRow = ( resp.reports ?: [] ).len() >= 1 ? rowsAsBreakdown( resp.reports[ 1 ], "" ) : [];
+        var pageRows = ( resp.reports ?: [] ).len() >= 2 ? rowsAsBreakdown( resp.reports[ 2 ], "pagePath" ) : [];
+
+        // Site rollup is one row with no dimension — collapse it
+        // to a struct keyed by metric name for the sync job.
+        var siteMetrics = {};
+        if ( siteRow.len() ) {
+            for ( var k in structKeyArray( siteRow[ 1 ] ) ) {
+                if ( k != "label" ) siteMetrics[ k ] = siteRow[ 1 ][ k ];
+            }
+        }
+
+        return {
+            "siteWide" : siteMetrics,
+            "perPage"  : pageRows
+        };
+    }
+
+    /**
+     * UPSERT a single row into analytics_daily. Called by the
+     * daily sync job. `pagePath` of empty string indicates the
+     * site-wide row; otherwise resolves post_id from the slug.
+     *
+     * Uses raw INSERT ... ON DUPLICATE KEY UPDATE rather than
+     * qb's two-step lookup+upsert because qb silently converts
+     * an empty-string binding to NULL — fine for nullable
+     * columns but the site-wide row's page_path='' tripped the
+     * column's NOT NULL constraint. Raw queryExecute also halves
+     * the round-trips per row, which matters for the daily sync
+     * job's 10K+ page loop.
+     */
+    void function recordRow(
+        required string date,
+        required string pagePath,
+        required struct metrics
+    ) {
+        var postId = len( arguments.pagePath ) ? resolvePostId( arguments.pagePath ) : javaCast( "null", "" );
+
+        var sql = "
+            INSERT INTO analytics_daily
+                ( date, page_path, post_id, screen_page_views, active_users, new_users,
+                  sessions, engaged_sessions, engagement_rate, bounce_rate,
+                  avg_session_duration, event_count, key_events, fetched_at )
+            VALUES
+                ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )
+            ON DUPLICATE KEY UPDATE
+                post_id              = VALUES( post_id ),
+                screen_page_views    = VALUES( screen_page_views ),
+                active_users         = VALUES( active_users ),
+                new_users            = VALUES( new_users ),
+                sessions             = VALUES( sessions ),
+                engaged_sessions     = VALUES( engaged_sessions ),
+                engagement_rate      = VALUES( engagement_rate ),
+                bounce_rate          = VALUES( bounce_rate ),
+                avg_session_duration = VALUES( avg_session_duration ),
+                event_count          = VALUES( event_count ),
+                key_events           = VALUES( key_events ),
+                fetched_at           = VALUES( fetched_at )
+        ";
+
+        var params = [
+            { value : arguments.date,                                                    cfsqltype : "cf_sql_date"      },
+            { value : arguments.pagePath,                                                cfsqltype : "cf_sql_varchar"   },
+            { value : isNull( postId ) ? javaCast( "null", "" ) : postId,                cfsqltype : "cf_sql_bigint", null : isNull( postId ) },
+            { value : int( arguments.metrics.screenPageViews        ?: 0 ),              cfsqltype : "cf_sql_integer"   },
+            { value : int( arguments.metrics.activeUsers            ?: 0 ),              cfsqltype : "cf_sql_integer"   },
+            { value : int( arguments.metrics.newUsers               ?: 0 ),              cfsqltype : "cf_sql_integer"   },
+            { value : int( arguments.metrics.sessions               ?: 0 ),              cfsqltype : "cf_sql_integer"   },
+            { value : int( arguments.metrics.engagedSessions        ?: 0 ),              cfsqltype : "cf_sql_integer"   },
+            { value : val( arguments.metrics.engagementRate         ?: 0 ),              cfsqltype : "cf_sql_decimal"   },
+            { value : val( arguments.metrics.bounceRate             ?: 0 ),              cfsqltype : "cf_sql_decimal"   },
+            { value : val( arguments.metrics.averageSessionDuration ?: 0 ),              cfsqltype : "cf_sql_decimal"   },
+            { value : int( arguments.metrics.eventCount             ?: 0 ),              cfsqltype : "cf_sql_integer"   },
+            { value : int( arguments.metrics.keyEvents              ?: 0 ),              cfsqltype : "cf_sql_integer"   },
+            { value : dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" ),                    cfsqltype : "cf_sql_timestamp" }
+        ];
+
+        queryExecute( sql, params );
+    }
+
+    // --------------------------------------------------------------------
+    // Internal helpers
+    // --------------------------------------------------------------------
+
+    private string function provider() {
+        return trim( settingService.get( "ga.provider", "live" ) ?: "live" );
+    }
+
+    /**
+     * Portable epoch-seconds lookup. BoxLang 1.12 does NOT expose
+     * .toUnixTimestamp() as a DateTime member method, so the
+     * GSC-style `now().toUnixTimestamp()` call throws at runtime.
+     * java.time.Instant works on every JVM-backed CFML engine.
+     */
+    private numeric function nowEpochSeconds() {
+        return int( createObject( "java", "java.time.Instant" ).now().getEpochSecond() );
+    }
+
+    private any function mockProvider() {
+        return wirebox.getInstance( "MockGaProvider" );
+    }
+
+    private string function requirePropertyId() {
+        var pid = trim( settingService.get( "ga.property_id", "" ) ?: "" );
+        if ( !len( pid ) ) {
+            throw( type = "bxBlogger.GaNotConfigured", message = "Set ga.property_id (numeric GA4 property ID) before querying." );
+        }
+        return pid;
+    }
+
+    private struct function handleApiResponse( required struct response, required string label ) {
+        if ( arguments.response.statusCode == 429 ) {
+            throw( type = "bxBlogger.GaQuotaExceeded", message = "GA Data API rate-limited (429) on " & arguments.label & ". Backing off." );
+        }
+        if ( arguments.response.statusCode lt 200 || arguments.response.statusCode gte 300 ) {
+            throw( type = "bxBlogger.GaApiError", message = "GA Data API call failed on " & arguments.label & " (" & arguments.response.statusCode & "): " & arguments.response.body );
+        }
+        return jsonDeserialize( arguments.response.body );
+    }
+
+    /**
+     * Map a GA `pagePath` to a local post_id when it matches a
+     * published post slug. NULL when the path is non-post
+     * (homepage, /admin, theme demo, etc.) — those rows still
+     * land for site-wide rollups but aren't shown in the
+     * editor's per-post tab.
+     *
+     * Mirrors GscService.resolvePostId() so cross-tool views
+     * cross-reference posts consistently.
+     */
+    private any function resolvePostId( required string pagePath ) {
+        var path = arguments.pagePath;
+        // Pull /blog/{slug} or /{slug} — strip an optional host prefix.
+        var m = reFindNoCase( "^https?://[^/]+(/.*)$", path, 1, true );
+        if ( m.match.len() >= 2 ) path = m.match[ 2 ];
+        if ( !len( path ) ) return javaCast( "null", "" );
+        // Strip query string + fragment if GA leaked them in.
+        path = listFirst( path, "?" );
+        path = listFirst( path, "##" );
+
+        var slug = "";
+        if ( reFindNoCase( "^/blog/[^/]+/?$", path ) > 0 ) {
+            slug = reReplace( path, "^/blog/([^/]+)/?$", "\1", "one" );
+        } else if ( reFindNoCase( "^/[^/]+/?$", path ) > 0 ) {
+            slug = reReplace( path, "^/([^/]+)/?$", "\1", "one" );
+        }
+        slug = trim( slug );
+        if ( !len( slug ) ) return javaCast( "null", "" );
+
+        try {
+            var qb  = wirebox.getInstance( "QueryBuilder@qb" );
+            var row = qb.newQuery().from( "posts" )
+                .where( "slug", slug )
+                .selectRaw( "id" )
+                .first();
+            if ( !isNull( row ) && !( isStruct( row ) && structIsEmpty( row ) ) ) {
+                return val( row.id );
+            }
+        }
+        catch ( any e ) {}
+        return javaCast( "null", "" );
+    }
+
+    private string function lookupPostSlug( required numeric postId ) {
+        try {
+            var qb  = wirebox.getInstance( "QueryBuilder@qb" );
+            var row = qb.newQuery().from( "posts" )
+                .where( "id", arguments.postId )
+                .selectRaw( "slug" )
+                .first();
+            if ( !isNull( row ) && !( isStruct( row ) && structIsEmpty( row ) ) ) {
+                return row.slug ?: "";
+            }
+        }
+        catch ( any e ) {}
+        return "";
+    }
+
+    private struct function siteRollupOffset( required numeric days, required numeric offsetDays ) {
+        var endDate   = dateFormat( dateAdd( "d", -arguments.offsetDays, now() ), "yyyy-mm-dd" );
+        var startDate = dateFormat( dateAdd( "d", -( arguments.offsetDays + arguments.days ), now() ), "yyyy-mm-dd" );
+        var qry = queryExecute(
+            "SELECT
+                COALESCE( SUM( screen_page_views ), 0 ) AS page_views,
+                COALESCE( SUM( active_users      ), 0 ) AS active_users,
+                COALESCE( SUM( new_users         ), 0 ) AS new_users,
+                COALESCE( SUM( sessions          ), 0 ) AS sessions,
+                COALESCE( SUM( engaged_sessions  ), 0 ) AS engaged_sessions,
+                COALESCE( AVG( engagement_rate   ), 0 ) AS engagement_rate,
+                COALESCE( AVG( bounce_rate       ), 0 ) AS bounce_rate,
+                COALESCE( AVG( avg_session_duration ), 0 ) AS avg_session_duration,
+                COALESCE( SUM( event_count       ), 0 ) AS event_count,
+                COALESCE( SUM( key_events        ), 0 ) AS key_events
+               FROM analytics_daily
+              WHERE page_path = ''
+                AND date >= ?
+                AND date < ?",
+            [ startDate, endDate ]
+        );
+        if ( qry.recordCount == 0 ) return emptyRollup();
+        return {
+            "pageViews"          : val( qry.page_views          ),
+            "activeUsers"        : val( qry.active_users        ),
+            "newUsers"           : val( qry.new_users           ),
+            "sessions"           : val( qry.sessions            ),
+            "engagedSessions"    : val( qry.engaged_sessions    ),
+            "engagementRate"     : val( qry.engagement_rate     ),
+            "bounceRate"         : val( qry.bounce_rate         ),
+            "avgSessionDuration" : val( qry.avg_session_duration ),
+            "eventCount"         : val( qry.event_count         ),
+            "keyEvents"          : val( qry.key_events          )
+        };
+    }
+
+    private struct function emptyRollup() {
+        return {
+            "pageViews"           : 0,
+            "activeUsers"         : 0,
+            "newUsers"            : 0,
+            "sessions"            : 0,
+            "engagedSessions"    : 0,
+            "engagementRate"      : 0,
+            "bounceRate"          : 0,
+            "avgSessionDuration" : 0,
+            "eventCount"          : 0,
+            "keyEvents"           : 0
+        };
+    }
+
+    private struct function emptyPostRollup() {
+        return {
+            "pageViews"           : 0,
+            "activeUsers"         : 0,
+            "sessions"            : 0,
+            "engagementRate"      : 0,
+            "bounceRate"          : 0,
+            "avgSessionDuration" : 0
+        };
+    }
+
+    /**
+     * Common runReport call shape for "top N by metric over N
+     * days" — used by topSources / topCountries / etc.
+     */
+    private array function liveTopRows(
+        required string  dimension,
+        required string  metric,
+                 numeric days = 7,
+                 numeric n    = 10
+    ) {
+        var since = dateFormat( dateAdd( "d", -arguments.days, now() ), "yyyy-mm-dd" );
+        var until = dateFormat( now(), "yyyy-mm-dd" );
+        var body  = {
+            "dateRanges" : [ { "startDate" : since, "endDate" : until } ],
+            "dimensions" : [ { "name" : arguments.dimension } ],
+            "metrics"    : [ { "name" : arguments.metric }, { "name" : "activeUsers" } ],
+            "orderBys"   : [ { "metric" : { "metricName" : arguments.metric }, "desc" : true } ],
+            "limit"      : arguments.n
+        };
+        try {
+            var resp = runReport( body = body );
+            return rowsAsBreakdown( resp, arguments.dimension );
+        }
+        catch ( any e ) {
+            return [];
+        }
+    }
+
+    /**
+     * Convert a Data API report's `rows` into [{ label, <metric> }]
+     * structs keyed by metric header name. Handles the
+     * dimensionValues/metricValues offsetting via the header
+     * arrays — never assume positional stability.
+     */
+    private array function rowsAsBreakdown( required any reportOrResp, required string dimensionName ) {
+        var rep = arguments.reportOrResp;
+        if ( !isStruct( rep ) ) return [];
+        var dimHeaders = rep.dimensionHeaders ?: [];
+        var metHeaders = rep.metricHeaders    ?: [];
+        var rows       = rep.rows             ?: [];
+
+        // Locate the dimension index for `dimensionName` if present.
+        var dimIndex = 0;
+        for ( var i = 1; i <= dimHeaders.len(); i++ ) {
+            if ( dimHeaders[ i ].name == arguments.dimensionName ) {
+                dimIndex = i;
+                break;
+            }
+        }
+
+        var out = [];
+        for ( var r in rows ) {
+            var record = { "label" : "" };
+            if ( dimIndex > 0 && r.dimensionValues.len() >= dimIndex ) {
+                record.label = r.dimensionValues[ dimIndex ].value ?: "";
+            }
+            for ( var i = 1; i <= metHeaders.len(); i++ ) {
+                if ( r.metricValues.len() >= i ) {
+                    record[ metHeaders[ i ].name ] = r.metricValues[ i ].value ?: "0";
+                }
+            }
+            out.append( record );
+        }
+        return out;
+    }
+
+    private numeric function extractFirstMetricValue( required struct response ) {
+        var rows = arguments.response.rows ?: [];
+        if ( !rows.len() ) {
+            // Realtime "totals" path — some responses use `totals`
+            // rather than a row when there are no dimensions.
+            var totals = arguments.response.totals ?: [];
+            if ( totals.len() && totals[ 1 ].metricValues.len() ) {
+                return val( totals[ 1 ].metricValues[ 1 ].value ?: 0 );
+            }
+            return 0;
+        }
+        if ( !rows[ 1 ].metricValues.len() ) return 0;
+        return val( rows[ 1 ].metricValues[ 1 ].value ?: 0 );
+    }
+
+    private any function safeRealtime( required struct body ) {
+        try {
+            return runRealtimeReport( body = arguments.body );
+        }
+        catch ( any e ) {
+            return { "rows" : [], "dimensionHeaders" : [], "metricHeaders" : [] };
+        }
+    }
+
+    private string function sha256Hex( required string value ) {
+        return lcase( hash( arguments.value, "SHA-256" ) );
+    }
+
+    private any function cacheGet( required string key ) {
+        try { return cacheBox.getCache( "default" ).get( arguments.key ); }
+        catch ( any e ) { return javaCast( "null", "" ); }
+    }
+
+    private void function cachePut( required string key, required any value, required numeric ttlSeconds ) {
+        try {
+            // CacheBox set() takes timeout in MINUTES (the
+            // [[project-cfmigrations-down-cascades]] sibling
+            // [[project-cachebox-ttl-minutes]] gotcha) — divide
+            // seconds by 60 and round up so a 30-second cache
+            // gets at least 1 minute.
+            var minutes = max( 1, ceiling( arguments.ttlSeconds / 60 ) );
+            cacheBox.getCache( "default" ).set( arguments.key, arguments.value, minutes, 0 );
+        }
+        catch ( any e ) {}
+    }
+
+    // --------------------------------------------------------------------
+    // HTTP plumbing — Java HttpClient (matches the pattern used
+    // by GscService, PingSearchEnginesJob, etc.)
+    // --------------------------------------------------------------------
+
+    private struct function postForm( required string endpoint, required string body ) {
+        return sendRequest(
+            endpoint    = arguments.endpoint,
+            body        = arguments.body,
+            method      = "POST",
+            contentType = "application/x-www-form-urlencoded; charset=utf-8",
+            authToken   = ""
+        );
+    }
+
+    private struct function postJson( required string endpoint, required string body, required string authToken ) {
+        return sendRequest(
+            endpoint    = arguments.endpoint,
+            body        = arguments.body,
+            method      = "POST",
+            contentType = "application/json; charset=utf-8",
+            authToken   = arguments.authToken
+        );
+    }
+
+    private struct function getJson( required string endpoint, required string authToken ) {
+        return sendRequest(
+            endpoint    = arguments.endpoint,
+            body        = "",
+            method      = "GET",
+            contentType = "application/json; charset=utf-8",
+            authToken   = arguments.authToken
+        );
+    }
+
+    private struct function sendRequest(
+        required string endpoint,
+        required string body,
+        required string method,
+        required string contentType,
+                 string authToken = ""
+    ) {
+        var HttpClient   = createObject( "java", "java.net.http.HttpClient" );
+        var HttpRequest  = createObject( "java", "java.net.http.HttpRequest" );
+        var BodyPubs     = createObject( "java", "java.net.http.HttpRequest$BodyPublishers" );
+        var BodyHandlers = createObject( "java", "java.net.http.HttpResponse$BodyHandlers" );
+        var URI          = createObject( "java", "java.net.URI" );
+        var Duration     = createObject( "java", "java.time.Duration" );
+
+        var client = HttpClient.newBuilder()
+            .connectTimeout( Duration.ofSeconds( javaCast( "long", variables.requestTimeoutS ) ) )
+            .build();
+
+        var builder = HttpRequest.newBuilder()
+            .uri( URI.init( arguments.endpoint ) )
+            .timeout( Duration.ofSeconds( javaCast( "long", variables.requestTimeoutS ) ) )
+            .header( "Content-Type", arguments.contentType )
+            .header( "Accept",       "application/json" );
+
+        if ( len( arguments.authToken ) ) {
+            builder.header( "Authorization", "Bearer " & arguments.authToken );
+        }
+
+        if ( arguments.method == "POST" ) {
+            builder.POST( BodyPubs.ofString( arguments.body ) );
+        } else {
+            builder.GET();
+        }
+
+        var res = client.send( builder.build(), BodyHandlers.ofString() );
+        return {
+            "statusCode" : res.statusCode(),
+            "body"       : res.body() ?: ""
+        };
+    }
+
+}

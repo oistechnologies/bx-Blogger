@@ -1,0 +1,410 @@
+/**
+ * bx-Blogger — MockGaProvider (Phase 15)
+ *
+ * Stand-in for the live Google Analytics 4 Data API. Returns
+ * deterministic-ish rows seeded from each post's id so dev
+ * containers + the integration spec render the dashboard +
+ * reports without a real GA connection.
+ *
+ * Activated by `ga.provider = "mock"` in settings; the
+ * GoogleAnalyticsService delegates to this when the toggle is on.
+ *
+ * Each method returns a struct shaped EXACTLY like Google's own
+ * Data API response so the service's parsing code is identical
+ * for live + mock paths:
+ *
+ *   {
+ *     "dimensionHeaders" : [ { "name" : "pagePath" }, ... ],
+ *     "metricHeaders"    : [ { "name" : "screenPageViews", "type" : "TYPE_INTEGER" }, ... ],
+ *     "rows"             : [ { "dimensionValues" : [ { "value" : "/blog/foo" } ],
+ *                              "metricValues"    : [ { "value" : "123"        } ] }, ... ],
+ *     "rowCount"         : N
+ *   }
+ */
+class accessors="true" singleton {
+
+    property name="wirebox" inject="wirebox";
+
+    /**
+     * Mirror of GoogleAnalyticsService.runReport(). Inspects the
+     * request body to figure out which dimensions/metrics were
+     * asked for and synthesizes plausible rows.
+     */
+    struct function runReport( required struct body ) {
+        var dims    = arguments.body.dimensions ?: [];
+        var metrics = arguments.body.metrics    ?: [];
+        var limit   = arguments.body.limit      ?: 100;
+        var rangeStart = "";
+        var rangeEnd   = "";
+        if ( ( arguments.body.dateRanges ?: [] ).len() >= 1 ) {
+            rangeStart = arguments.body.dateRanges[ 1 ].startDate ?: "";
+            rangeEnd   = arguments.body.dateRanges[ 1 ].endDate   ?: "";
+        }
+
+        var dimNames = []; for ( var d in dims    ) dimNames.append( d.name );
+        var metNames = []; for ( var m in metrics ) metNames.append( m.name );
+
+        // No dimensions → single-row "totals" report. Synthesize
+        // a site-wide rollup from published-post seeds.
+        if ( !dimNames.len() ) {
+            var rollup = siteWideSeed( rangeStart, rangeEnd );
+            return buildReport(
+                dimNames   = [],
+                metNames   = metNames,
+                rows       = [ { "dimensionValues" : [], "metricValues" : metricValuesFor( metNames, rollup ) } ],
+                rowCount   = 1
+            );
+        }
+
+        // Per-page report → fabricate one row per published post + a homepage row.
+        if ( dimNames.find( "pagePath" ) > 0 ) {
+            return runReportPagePath( dimNames, metNames, limit, rangeStart, rangeEnd );
+        }
+
+        // Channel / source / country / device / browser / OS / event
+        // breakdowns — driven by the first dimension name.
+        return runReportSingleDim( dimNames, metNames, limit, rangeStart, rangeEnd );
+    }
+
+    struct function batchRunReports( required array requests ) {
+        var reports = [];
+        for ( var r in arguments.requests ) {
+            reports.append( runReport( body = r ) );
+        }
+        return { "reports" : reports };
+    }
+
+    /**
+     * Realtime mock. Different default metric set; fake a small
+     * "current users" number that wobbles a bit so the polling
+     * UI looks alive.
+     */
+    struct function runRealtimeReport( required struct body ) {
+        var dims    = arguments.body.dimensions ?: [];
+        var metrics = arguments.body.metrics    ?: [];
+        var dimNames = []; for ( var d in dims    ) dimNames.append( d.name );
+        var metNames = []; for ( var m in metrics ) metNames.append( m.name );
+
+        // No dimensions → just give a current "active users" number.
+        if ( !dimNames.len() ) {
+            // Wobble between 12-23 so the polling UI looks alive
+            // without requiring a real RNG. getTickCount() is a
+            // portable monotonically-rising number on every CFML
+            // engine; toUnixTimestamp() is BoxLang-incomplete in
+            // 1.12 (not a DateTime member function).
+            var wobble  = 12 + ( getTickCount() % 12 );
+            return buildReport(
+                dimNames = [],
+                metNames = metNames,
+                rows     = [ { "dimensionValues" : [], "metricValues" : metricValuesFor( metNames, { "activeUsers" : wobble, "screenPageViews" : wobble * 3, "eventCount" : wobble * 8, "keyEvents" : 1 } ) } ],
+                rowCount = 1
+            );
+        }
+
+        if ( dimNames[ 1 ] == "minutesAgo" ) {
+            var rows = [];
+            for ( var i = 0; i < 30; i++ ) {
+                var v = max( 0, 5 - abs( 15 - i ) + ( i % 3 ) );
+                rows.append( {
+                    "dimensionValues" : [ { "value" : i } ],
+                    "metricValues"    : metricValuesFor( metNames, { "activeUsers" : v } )
+                } );
+            }
+            return buildReport( dimNames = dimNames, metNames = metNames, rows = rows, rowCount = rows.len() );
+        }
+
+        // country / deviceCategory / unifiedScreenName realtime breakdowns.
+        var seedRows = mockBreakdownRows( dimNames[ 1 ], metNames, 5 );
+        return buildReport( dimNames = dimNames, metNames = metNames, rows = seedRows, rowCount = seedRows.len() );
+    }
+
+    /**
+     * Minimal getMetadata mock — returns the headline GA4
+     * dimensions/metrics the service uses. Sufficient for any
+     * UI that asks "is X available on this property?".
+     */
+    struct function getMetadata() {
+        return {
+            "name"       : "properties/000000000/metadata",
+            "dimensions" : [
+                { "apiName" : "pagePath",                "uiName" : "Page path"                 },
+                { "apiName" : "pageTitle",               "uiName" : "Page title"                },
+                { "apiName" : "sessionDefaultChannelGroup", "uiName" : "Session default channel group" },
+                { "apiName" : "sessionSourceMedium",     "uiName" : "Session source / medium"    },
+                { "apiName" : "country",                 "uiName" : "Country"                   },
+                { "apiName" : "city",                    "uiName" : "City"                      },
+                { "apiName" : "deviceCategory",          "uiName" : "Device category"           },
+                { "apiName" : "browser",                 "uiName" : "Browser"                   },
+                { "apiName" : "operatingSystem",         "uiName" : "Operating system"          },
+                { "apiName" : "eventName",               "uiName" : "Event name"                },
+                { "apiName" : "date",                    "uiName" : "Date"                      }
+            ],
+            "metrics" : [
+                { "apiName" : "activeUsers",            "uiName" : "Active users",             "type" : "TYPE_INTEGER" },
+                { "apiName" : "newUsers",               "uiName" : "New users",                "type" : "TYPE_INTEGER" },
+                { "apiName" : "screenPageViews",        "uiName" : "Views",                    "type" : "TYPE_INTEGER" },
+                { "apiName" : "sessions",               "uiName" : "Sessions",                 "type" : "TYPE_INTEGER" },
+                { "apiName" : "engagedSessions",        "uiName" : "Engaged sessions",         "type" : "TYPE_INTEGER" },
+                { "apiName" : "engagementRate",         "uiName" : "Engagement rate",          "type" : "TYPE_FLOAT"   },
+                { "apiName" : "bounceRate",             "uiName" : "Bounce rate",              "type" : "TYPE_FLOAT"   },
+                { "apiName" : "averageSessionDuration", "uiName" : "Avg session duration",     "type" : "TYPE_FLOAT"   },
+                { "apiName" : "eventCount",             "uiName" : "Event count",              "type" : "TYPE_INTEGER" },
+                { "apiName" : "keyEvents",              "uiName" : "Key events",               "type" : "TYPE_INTEGER" }
+            ]
+        };
+    }
+
+    /**
+     * High-level "give me yesterday's site-wide + per-page
+     * aggregates" call. The sync job uses this and writes
+     * directly to analytics_daily, so the shape is friendly to
+     * the recordRow() interface, not the raw Data API shape.
+     */
+    struct function dailyAggregates( required string targetDate ) {
+        var siteWide = siteWideSeed( arguments.targetDate, arguments.targetDate );
+        var perPage  = [];
+
+        // Homepage row.
+        perPage.append( {
+            "pagePath" : "/",
+            "metrics"  : {
+                "screenPageViews"        : 150,
+                "activeUsers"            : 90,
+                "newUsers"               : 35,
+                "sessions"               : 110,
+                "engagedSessions"        : 70,
+                "engagementRate"         : 0.6364,
+                "bounceRate"             : 0.3636,
+                "averageSessionDuration" : 95.4,
+                "eventCount"             : 540,
+                "keyEvents"              : 4
+            }
+        } );
+
+        var qb = wirebox.getInstance( "QueryBuilder@qb" );
+        var posts = qb.newQuery().from( "posts" )
+            .where( "status", "published" )
+            .where( "post_type", "post" )
+            .select( [ "id", "slug" ] )
+            .limit( 50 )
+            .get();
+
+        for ( var p in posts ) {
+            var seed       = val( p.id );
+            var views      = 10 + ( seed % 60 );
+            var users      = 5  + ( seed % 30 );
+            var sessions   = 7  + ( seed % 35 );
+            var engaged    = max( 0, sessions - ( seed % 5 ) );
+            var engagement = sessions > 0 ? ( engaged / sessions ) : 0;
+            var duration   = 30 + ( seed % 180 );
+            perPage.append( {
+                "pagePath" : "/blog/" & p.slug,
+                "metrics"  : {
+                    "screenPageViews"        : views,
+                    "activeUsers"            : users,
+                    "newUsers"               : max( 1, int( users / 3 ) ),
+                    "sessions"               : sessions,
+                    "engagedSessions"        : engaged,
+                    "engagementRate"         : engagement,
+                    "bounceRate"             : 1 - engagement,
+                    "averageSessionDuration" : duration,
+                    "eventCount"             : views * 3,
+                    "keyEvents"              : max( 0, int( views / 30 ) )
+                }
+            } );
+        }
+
+        return { "siteWide" : siteWide, "perPage" : perPage };
+    }
+
+    // --------------------------------------------------------------------
+    // Internal seed helpers
+    // --------------------------------------------------------------------
+
+    /**
+     * Synthesize a site-wide rollup. The numbers loosely scale
+     * with the published-post count so a fresh dev DB and a
+     * seeded one both look plausible.
+     */
+    private struct function siteWideSeed( required string rangeStart, required string rangeEnd ) {
+        var qb = wirebox.getInstance( "QueryBuilder@qb" );
+        var postCount = qb.newQuery().from( "posts" )
+            .where( "status", "published" )
+            .where( "post_type", "post" )
+            .count();
+        var base    = max( 5, postCount );
+        var views   = 150 + base * 80;
+        var users   = 90  + base * 45;
+        var sess    = 110 + base * 55;
+        var engaged = int( sess * 0.62 );
+        return {
+            "screenPageViews"        : views,
+            "activeUsers"            : users,
+            "newUsers"               : int( users * 0.35 ),
+            "sessions"               : sess,
+            "engagedSessions"        : engaged,
+            "engagementRate"         : 0.6234,
+            "bounceRate"             : 0.3766,
+            "averageSessionDuration" : 102.3,
+            "eventCount"             : views * 4,
+            "keyEvents"              : int( views / 30 )
+        };
+    }
+
+    private struct function runReportPagePath(
+        required array  dimNames,
+        required array  metNames,
+        required numeric limit,
+        required string rangeStart,
+        required string rangeEnd
+    ) {
+        var qb = wirebox.getInstance( "QueryBuilder@qb" );
+        var posts = qb.newQuery().from( "posts" )
+            .where( "status", "published" )
+            .where( "post_type", "post" )
+            .select( [ "id", "slug", "title" ] )
+            .limit( arguments.limit )
+            .get();
+
+        var rows = [];
+        // Homepage first so it tops "top pages" lists when seeded data is small.
+        rows.append( buildPathRow( arguments.dimNames, arguments.metNames, "/", "Home", 150, 90, 110 ) );
+
+        for ( var p in posts ) {
+            var seed = val( p.id );
+            var v    = 10 + ( seed % 60 );
+            var u    = 5  + ( seed % 30 );
+            var s    = 7  + ( seed % 35 );
+            rows.append( buildPathRow( arguments.dimNames, arguments.metNames, "/blog/" & p.slug, p.title ?: ( "Post " & p.id ), v, u, s ) );
+            if ( rows.len() >= arguments.limit ) break;
+        }
+
+        return buildReport( dimNames = arguments.dimNames, metNames = arguments.metNames, rows = rows, rowCount = rows.len() );
+    }
+
+    private struct function runReportSingleDim(
+        required array  dimNames,
+        required array  metNames,
+        required numeric limit,
+        required string rangeStart,
+        required string rangeEnd
+    ) {
+        var rows = mockBreakdownRows( arguments.dimNames[ 1 ], arguments.metNames, min( arguments.limit, 25 ) );
+        return buildReport( dimNames = arguments.dimNames, metNames = arguments.metNames, rows = rows, rowCount = rows.len() );
+    }
+
+    private array function mockBreakdownRows( required string dimName, required array metNames, numeric n = 10 ) {
+        var labels = labelsFor( arguments.dimName );
+        var rows   = [];
+        var i      = 0;
+        for ( var label in labels ) {
+            i++;
+            if ( i > arguments.n ) break;
+            // Decreasing magnitudes so "top N" sort order looks right out of the box.
+            var v = max( 1, 200 - ( i * 18 ) );
+            rows.append( {
+                "dimensionValues" : [ { "value" : label } ],
+                "metricValues"    : metricValuesFor( arguments.metNames, {
+                    "activeUsers"            : v,
+                    "sessions"               : int( v * 1.2 ),
+                    "screenPageViews"        : int( v * 2.1 ),
+                    "engagementRate"         : 0.55,
+                    "bounceRate"             : 0.45,
+                    "averageSessionDuration" : 80 + ( i * 5 ),
+                    "eventCount"             : v * 3,
+                    "newUsers"               : int( v * 0.4 ),
+                    "engagedSessions"        : int( v * 0.7 ),
+                    "keyEvents"              : max( 1, int( v / 40 ) )
+                } )
+            } );
+        }
+        return rows;
+    }
+
+    private struct function buildPathRow(
+        required array  dimNames,
+        required array  metNames,
+        required string pagePath,
+        required string pageTitle,
+        required numeric views,
+        required numeric users,
+        required numeric sessions
+    ) {
+        // Build dimensionValues in the exact order the request asked for.
+        var dimValues = [];
+        for ( var d in arguments.dimNames ) {
+            switch ( d ) {
+                case "pagePath":  dimValues.append( { "value" : arguments.pagePath  } ); break;
+                case "pageTitle": dimValues.append( { "value" : arguments.pageTitle } ); break;
+                default:          dimValues.append( { "value" : "" } );
+            }
+        }
+        var engaged    = max( 0, arguments.sessions - 2 );
+        var engagement = arguments.sessions > 0 ? ( engaged / arguments.sessions ) : 0;
+        return {
+            "dimensionValues" : dimValues,
+            "metricValues"    : metricValuesFor( arguments.metNames, {
+                "screenPageViews"        : arguments.views,
+                "activeUsers"            : arguments.users,
+                "newUsers"               : int( arguments.users * 0.35 ),
+                "sessions"               : arguments.sessions,
+                "engagedSessions"        : engaged,
+                "engagementRate"         : engagement,
+                "bounceRate"             : 1 - engagement,
+                "averageSessionDuration" : 60 + ( arguments.views % 90 ),
+                "eventCount"             : arguments.views * 3,
+                "keyEvents"              : max( 0, int( arguments.views / 30 ) )
+            } )
+        };
+    }
+
+    private array function labelsFor( required string dimName ) {
+        switch ( arguments.dimName ) {
+            case "sessionDefaultChannelGroup":
+                return [ "Organic Search", "Direct", "Referral", "Organic Social", "Email", "Paid Search", "Display", "(Other)" ];
+            case "sessionSourceMedium":
+                return [ "google / organic", "(direct) / (none)", "twitter.com / referral", "linkedin.com / referral", "newsletter / email", "facebook.com / referral", "bing / organic", "duckduckgo / organic" ];
+            case "country":
+                return [ "United States", "United Kingdom", "Canada", "Germany", "Australia", "France", "Netherlands", "India", "Brazil", "Japan" ];
+            case "city":
+                return [ "New York", "London", "Toronto", "Berlin", "Sydney", "Paris", "Amsterdam", "Bangalore", "Sao Paulo", "Tokyo" ];
+            case "deviceCategory":
+                return [ "desktop", "mobile", "tablet" ];
+            case "browser":
+                return [ "Chrome", "Safari", "Edge", "Firefox", "Samsung Internet", "Opera" ];
+            case "operatingSystem":
+                return [ "Windows", "Macintosh", "iOS", "Android", "Linux", "Chrome OS" ];
+            case "eventName":
+                return [ "page_view", "scroll", "session_start", "first_visit", "user_engagement", "click", "view_search_results", "form_start", "form_submit" ];
+            case "unifiedScreenName":
+                return [ "Home", "About", "Posts", "Search", "Tag: bx", "Category: News" ];
+            default:
+                return [ "alpha", "beta", "gamma", "delta", "epsilon" ];
+        }
+    }
+
+    private array function metricValuesFor( required array metNames, required struct values ) {
+        var out = [];
+        for ( var m in arguments.metNames ) {
+            out.append( { "value" : ( arguments.values[ m ] ?: 0 ) & "" } );
+        }
+        return out;
+    }
+
+    private struct function buildReport(
+        required array  dimNames,
+        required array  metNames,
+        required array  rows,
+        required numeric rowCount
+    ) {
+        var dimHeaders = []; for ( var d in arguments.dimNames ) dimHeaders.append( { "name" : d } );
+        var metHeaders = []; for ( var m in arguments.metNames ) metHeaders.append( { "name" : m, "type" : "TYPE_INTEGER" } );
+        return {
+            "dimensionHeaders" : dimHeaders,
+            "metricHeaders"    : metHeaders,
+            "rows"             : arguments.rows,
+            "rowCount"         : arguments.rowCount
+        };
+    }
+
+}

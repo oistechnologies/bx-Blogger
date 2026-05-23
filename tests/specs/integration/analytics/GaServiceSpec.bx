@@ -1,0 +1,373 @@
+/**
+ * bx-Blogger — GaServiceSpec (Phase 15.B)
+ *
+ * Validates GoogleAnalyticsService + MockGaProvider without
+ * firing real Google traffic. Covers:
+ *
+ *   - status() reflects configured / connected flags + provider.
+ *   - buildAuthUrl() includes scope, redirect_uri, state, access_type;
+ *     throws GaNotConfigured when no client_id.
+ *   - exchangeCodeForTokens() mock fast-path stores tokens
+ *     + connected_account_email + connected_at.
+ *   - currentAccessToken() returns "mock-access-token" in mock mode.
+ *   - runReport / batchRunReports / runRealtimeReport / getMetadata
+ *     against the mock return GA-shaped response structs.
+ *   - recordRow() upserts into analytics_daily and resolves
+ *     /blog/{slug} to a post_id.
+ *   - siteRollup / topPagesLocal / topPostsLocal / postRollup /
+ *     postDailySeries / dailySeries read aggregations correctly.
+ *   - dailyAggregates() returns { siteWide, perPage } from mock.
+ *
+ * Doesn't exercise the OAuth code-exchange path against a real
+ * Google endpoint — that would need a live HTTP stub server. The
+ * mock fast-path is exercised instead so the wire's connect()
+ * path stays unit-testable.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.svc        = getInstance( "GoogleAnalyticsService" );
+        variables.qb         = getInstance( "QueryBuilder@qb" );
+        variables.settingSvc = getInstance( "SettingService" );
+
+        variables.savedSettings = {
+            "ga.provider"                : variables.settingSvc.get( "ga.provider", "live" ),
+            "ga.refresh_token"           : variables.settingSvc.get( "ga.refresh_token", "" ),
+            "ga.access_token"            : variables.settingSvc.get( "ga.access_token", "" ),
+            "ga.token_expires_at"        : variables.settingSvc.get( "ga.token_expires_at", "0" ),
+            "ga.property_id"             : variables.settingSvc.get( "ga.property_id", "" ),
+            "ga.measurement_id"          : variables.settingSvc.get( "ga.measurement_id", "" ),
+            "ga.connected_account_email" : variables.settingSvc.get( "ga.connected_account_email", "" ),
+            "ga.connected_at"            : variables.settingSvc.get( "ga.connected_at", "" ),
+            "ga.last_sync_at"            : variables.settingSvc.get( "ga.last_sync_at", "" )
+        };
+
+        // Seed mock-provider settings for the spec.
+        variables.settingSvc.set( key = "ga.provider",       value = "mock",        type = "string" );
+        variables.settingSvc.set( key = "ga.property_id",    value = "123456789",   type = "string" );
+        variables.settingSvc.set( key = "ga.measurement_id", value = "G-TESTONLY1", type = "string" );
+
+        variables.testAuthor = createTestUser( {}, "", "author" );
+    }
+
+    function afterAll() {
+        for ( var k in variables.savedSettings ) {
+            var t = ( k == "ga.token_expires_at" ) ? "int" : "string";
+            variables.settingSvc.set( key = k, value = variables.savedSettings[ k ] ?: "", type = t );
+        }
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "Phase 15.B — GoogleAnalyticsService + MockGaProvider", function() {
+
+            describe( "status", function() {
+
+                it( "reports configured + connected booleans + provider name", function() {
+                    var st = variables.svc.status();
+                    expect( st.provider     ).toBe( "mock" );
+                    expect( st.connected    ).toBeTrue();
+                    expect( st.hasProperty  ).toBeTrue();
+                    expect( st.propertyId   ).toBe( "123456789" );
+                    expect( st.measurementId ).toBe( "G-TESTONLY1" );
+                } );
+
+            } );
+
+            describe( "exchangeCodeForTokens (mock fast-path)", function() {
+
+                it( "stores mock tokens + connected_account_email + connected_at without an OAuth roundtrip", function() {
+                    variables.svc.exchangeCodeForTokens( code = "anything", redirectUri = "/admin/settings/ga/callback" );
+                    expect( variables.settingSvc.get( "ga.refresh_token", "" )           ).toBe( "mock-refresh-token" );
+                    expect( variables.settingSvc.get( "ga.access_token",  "" )           ).toBe( "mock-access-token"  );
+                    expect( variables.settingSvc.get( "ga.connected_account_email", "" ) ).toBe( "mock@example.com"   );
+                    expect( len( variables.settingSvc.get( "ga.connected_at", "" ) ) ).toBeGT( 0 );
+                } );
+
+            } );
+
+            describe( "currentAccessToken (mock fast-path)", function() {
+
+                it( "returns the mock access token without refresh", function() {
+                    expect( variables.svc.currentAccessToken() ).toBe( "mock-access-token" );
+                } );
+
+            } );
+
+            describe( "buildAuthUrl", function() {
+
+                it( "includes scope, redirect_uri, state, access_type when client_id is configured", function() {
+                    var priorProv = variables.settingSvc.get( "ga.provider", "live" );
+                    var priorCid  = variables.settingSvc.get( "ga.oauth_client_id", "" );
+                    variables.settingSvc.set( key = "ga.provider",        value = "live",                                     type = "string" );
+                    variables.settingSvc.set( key = "ga.oauth_client_id", value = "spec-client.apps.googleusercontent.com",   type = "string" );
+
+                    try {
+                        var authUrl = variables.svc.buildAuthUrl(
+                            redirectUri = "http://localhost:8080/admin/settings/ga/callback",
+                            state       = "spec-nonce-123"
+                        );
+                        expect( authUrl ).toInclude( "accounts.google.com/o/oauth2/v2/auth" );
+                        expect( authUrl ).toInclude( "client_id=spec" );
+                        expect( authUrl ).toInclude( "googleusercontent" );
+                        expect( authUrl ).toInclude( "state=spec" );
+                        expect( authUrl ).toInclude( "scope=" );
+                        expect( authUrl ).toInclude( "analytics" );
+                        expect( authUrl ).toInclude( "access_type=offline" );
+                    }
+                    finally {
+                        variables.settingSvc.set( key = "ga.provider",        value = priorProv, type = "string" );
+                        variables.settingSvc.set( key = "ga.oauth_client_id", value = priorCid,  type = "string" );
+                    }
+                } );
+
+                it( "throws GaNotConfigured when no client_id is set", function() {
+                    var priorProv = variables.settingSvc.get( "ga.provider", "live" );
+                    var priorCid  = variables.settingSvc.get( "ga.oauth_client_id", "" );
+                    variables.settingSvc.set( key = "ga.provider",        value = "live", type = "string" );
+                    variables.settingSvc.set( key = "ga.oauth_client_id", value = "",     type = "string" );
+                    try {
+                        expect( function() {
+                            variables.svc.buildAuthUrl( redirectUri = "https://x.test/cb", state = "n" );
+                        } ).toThrow( type = "bxBlogger.GaNotConfigured" );
+                    }
+                    finally {
+                        variables.settingSvc.set( key = "ga.provider",        value = priorProv, type = "string" );
+                        variables.settingSvc.set( key = "ga.oauth_client_id", value = priorCid,  type = "string" );
+                    }
+                } );
+
+            } );
+
+            describe( "runReport (mock provider)", function() {
+
+                it( "returns a GA-shaped response struct for a no-dimensions site-wide totals report", function() {
+                    var resp = variables.svc.runReport( body = {
+                        "dateRanges" : [ { "startDate" : "7daysAgo", "endDate" : "yesterday" } ],
+                        "metrics"    : [ { "name" : "activeUsers" }, { "name" : "screenPageViews" } ]
+                    } );
+                    expect( resp ).toHaveKey( "metricHeaders" );
+                    expect( resp ).toHaveKey( "rows" );
+                    expect( resp.metricHeaders.len() ).toBe( 2 );
+                    expect( resp.rows.len() ).toBeGTE( 1 );
+                    expect( resp.rows[ 1 ].metricValues.len() ).toBe( 2 );
+                } );
+
+                it( "returns one row per pagePath when pagePath dimension is requested", function() {
+                    var post = makePost();
+                    variables.qb.newQuery().from( "posts" )
+                        .where( "id", post.getId() )
+                        .update( { "status" : "published" } );
+
+                    var resp = variables.svc.runReport( body = {
+                        "dateRanges" : [ { "startDate" : "yesterday", "endDate" : "yesterday" } ],
+                        "dimensions" : [ { "name" : "pagePath" } ],
+                        "metrics"    : [ { "name" : "screenPageViews" } ],
+                        "limit"      : 10
+                    } );
+                    expect( resp.dimensionHeaders.len() ).toBe( 1 );
+                    expect( resp.dimensionHeaders[ 1 ].name ).toBe( "pagePath" );
+                    expect( resp.rows.len() ).toBeGTE( 1 );
+                    // First row should be the homepage seed.
+                    expect( resp.rows[ 1 ].dimensionValues[ 1 ].value ).toBe( "/" );
+                } );
+
+            } );
+
+            describe( "batchRunReports (mock provider)", function() {
+
+                it( "returns one report per request, in order", function() {
+                    var resp = variables.svc.batchRunReports( requests = [
+                        { "dateRanges" : [ { "startDate" : "yesterday", "endDate" : "yesterday" } ], "metrics" : [ { "name" : "activeUsers" } ] },
+                        { "dateRanges" : [ { "startDate" : "yesterday", "endDate" : "yesterday" } ], "dimensions" : [ { "name" : "country" } ], "metrics" : [ { "name" : "sessions" } ], "limit" : 5 }
+                    ] );
+                    expect( resp ).toHaveKey( "reports" );
+                    expect( resp.reports.len() ).toBe( 2 );
+                    expect( resp.reports[ 2 ].dimensionHeaders[ 1 ].name ).toBe( "country" );
+                } );
+
+                it( "throws on more than 5 requests", function() {
+                    var requests = [];
+                    for ( var i = 1; i <= 6; i++ ) {
+                        requests.append( { "metrics" : [ { "name" : "activeUsers" } ] } );
+                    }
+                    expect( function() {
+                        variables.svc.batchRunReports( requests = requests );
+                    } ).toThrow( type = "bxBlogger.GaApiError" );
+                } );
+
+            } );
+
+            describe( "runRealtimeReport + realtimeActiveUsers (mock provider)", function() {
+
+                it( "returns a single-row totals shape for activeUsers", function() {
+                    var resp = variables.svc.runRealtimeReport( body = { "metrics" : [ { "name" : "activeUsers" } ] } );
+                    expect( resp.rows.len() ).toBe( 1 );
+                    expect( resp.metricHeaders[ 1 ].name ).toBe( "activeUsers" );
+                } );
+
+                it( "realtimeActiveUsers() returns a positive integer", function() {
+                    var n = variables.svc.realtimeActiveUsers();
+                    expect( n ).toBeGTE( 0 );
+                    expect( isNumeric( n ) ).toBeTrue();
+                } );
+
+            } );
+
+            describe( "getMetadata (mock provider)", function() {
+
+                it( "returns dimensions + metrics catalog", function() {
+                    var meta = variables.svc.getMetadata();
+                    expect( meta ).toHaveKey( "dimensions" );
+                    expect( meta ).toHaveKey( "metrics" );
+                    expect( meta.dimensions.len() ).toBeGTE( 5 );
+                    expect( meta.metrics.len()    ).toBeGTE( 5 );
+                } );
+
+            } );
+
+            describe( "recordRow + analytics_daily round-trip", function() {
+
+                it( "upserts a per-page row and resolves /blog/{slug} to a post_id", function() {
+                    var post = makePost();
+                    variables.qb.newQuery().from( "posts" )
+                        .where( "id", post.getId() )
+                        .update( {
+                            "status"       : "published",
+                            "published_at" : dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" )
+                        } );
+
+                    var pagePath = "/blog/" & post.getSlug();
+                    variables.svc.recordRow(
+                        date     = dateFormat( now(), "yyyy-mm-dd" ),
+                        pagePath = pagePath,
+                        metrics  = {
+                            "screenPageViews"        : 100,
+                            "activeUsers"            : 60,
+                            "sessions"               : 70,
+                            "engagedSessions"        : 50,
+                            "engagementRate"         : 0.7143,
+                            "bounceRate"             : 0.2857,
+                            "averageSessionDuration" : 145.6,
+                            "eventCount"             : 300,
+                            "keyEvents"              : 3,
+                            "newUsers"               : 25
+                        }
+                    );
+
+                    var row = variables.qb.newQuery().from( "analytics_daily" )
+                        .where( "page_path", pagePath )
+                        .first();
+                    expect( val( row.post_id ?: 0 ) ).toBe( post.getId() );
+                    expect( val( row.screen_page_views ) ).toBe( 100 );
+                    expect( val( row.engagement_rate ) ).toBe( 0.7143 );
+                } );
+
+                it( "second write to same (date, page_path) UPSERTs in place", function() {
+                    var post = makePost();
+                    variables.qb.newQuery().from( "posts" )
+                        .where( "id", post.getId() )
+                        .update( { "status" : "published" } );
+
+                    var pagePath = "/blog/" & post.getSlug();
+                    var d        = dateFormat( now(), "yyyy-mm-dd" );
+
+                    variables.svc.recordRow( date = d, pagePath = pagePath, metrics = { "screenPageViews" : 5,  "activeUsers" : 3 } );
+                    variables.svc.recordRow( date = d, pagePath = pagePath, metrics = { "screenPageViews" : 50, "activeUsers" : 40 } );
+
+                    var rows = variables.qb.newQuery().from( "analytics_daily" )
+                        .where( "page_path", pagePath )
+                        .where( "date", d )
+                        .get();
+                    expect( rows.len() ).toBe( 1 );
+                    expect( val( rows[ 1 ].screen_page_views ) ).toBe( 50 );
+                    expect( val( rows[ 1 ].active_users      ) ).toBe( 40 );
+                } );
+
+                it( "site-wide row uses page_path='' and post_id NULL", function() {
+                    var d = dateFormat( now(), "yyyy-mm-dd" );
+                    variables.svc.recordRow( date = d, pagePath = "", metrics = {
+                        "screenPageViews" : 999,
+                        "activeUsers"     : 555,
+                        "sessions"        : 700
+                    } );
+                    // queryExecute bypasses qb's empty-string-to-null
+                    // binding behavior on the lookup side. Site-wide
+                    // rows have page_path='' literal and qb's where()
+                    // would otherwise resolve to WHERE page_path IS NULL.
+                    var qry = queryExecute(
+                        "SELECT screen_page_views, post_id FROM analytics_daily WHERE date = ? AND page_path = ''",
+                        [ d ]
+                    );
+                    expect( qry.recordCount ).toBe( 1 );
+                    expect( val( qry.screen_page_views ) ).toBe( 999 );
+                    expect( isNull( qry.post_id ) || qry.post_id == "" ).toBeTrue();
+                } );
+
+            } );
+
+            describe( "siteRollup + topPagesLocal + topPostsLocal", function() {
+
+                it( "siteRollup returns the 10-key rollup struct", function() {
+                    var roll = variables.svc.siteRollup( 28 );
+                    expect( roll ).toHaveKey( "pageViews"          );
+                    expect( roll ).toHaveKey( "activeUsers"        );
+                    expect( roll ).toHaveKey( "sessions"           );
+                    expect( roll ).toHaveKey( "engagementRate"     );
+                    expect( roll ).toHaveKey( "bounceRate"         );
+                    expect( roll ).toHaveKey( "avgSessionDuration" );
+                } );
+
+                it( "siteRollupCompare returns current/previous/deltaPct struct", function() {
+                    var cmp = variables.svc.siteRollupCompare( 7 );
+                    expect( cmp ).toHaveKey( "current"  );
+                    expect( cmp ).toHaveKey( "previous" );
+                    expect( cmp ).toHaveKey( "deltaPct" );
+                } );
+
+                it( "topPagesLocal returns an array of well-shaped rows", function() {
+                    var rows = variables.svc.topPagesLocal( days = 28, n = 10 );
+                    expect( isArray( rows ) ).toBeTrue();
+                    // After the prior recordRow tests we'll have at least 1 row.
+                    if ( rows.len() ) {
+                        expect( rows[ 1 ] ).toHaveKey( "pagePath" );
+                        expect( rows[ 1 ] ).toHaveKey( "views"    );
+                        expect( rows[ 1 ] ).toHaveKey( "users"    );
+                    }
+                } );
+
+            } );
+
+            describe( "dailyAggregates (mock) — sync-job interface", function() {
+
+                it( "returns { siteWide, perPage } structs with usable metric keys", function() {
+                    var post = makePost();
+                    variables.qb.newQuery().from( "posts" )
+                        .where( "id", post.getId() )
+                        .update( { "status" : "published" } );
+
+                    var agg = variables.svc.dailyAggregates( targetDate = dateFormat( now(), "yyyy-mm-dd" ) );
+                    expect( agg ).toHaveKey( "siteWide" );
+                    expect( agg ).toHaveKey( "perPage"  );
+                    expect( agg.siteWide ).toHaveKey( "screenPageViews" );
+                    expect( agg.siteWide ).toHaveKey( "activeUsers"     );
+                    expect( agg.perPage.len() ).toBeGTE( 1 );
+                    expect( agg.perPage[ 1 ] ).toHaveKey( "pagePath" );
+                    expect( agg.perPage[ 1 ] ).toHaveKey( "metrics"  );
+                } );
+
+            } );
+
+        } );
+    }
+
+    private any function makePost() {
+        return getInstance( "PostService" ).create( {
+            "authorId"     : variables.testAuthor.getId(),
+            "title"        : "Phase 15.B GA " & createUUID(),
+            "bodyMarkdown" : "Body for GA service spec."
+        } );
+    }
+
+}
