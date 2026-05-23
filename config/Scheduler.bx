@@ -111,6 +111,15 @@ class {
         task( "gsc-daily-sync" )
             .call( function() { dispatchJob( "GscDailySyncJob" ); } )
             .everyDayAt( "04:30" );
+
+        // Daily 04:35 — pull yesterday's GA4 site-wide + per-page
+        // aggregates into `analytics_daily`. Five minutes after the
+        // GSC sync so the two integrations don't share the same
+        // Google rate-limit minute. Same no-op-when-not-connected
+        // behavior as GSC.
+        task( "ga-daily-sync" )
+            .call( function() { dispatchJob( "GaDailySyncJob" ); } )
+            .everyDayAt( "04:35" );
     }
 
     /**

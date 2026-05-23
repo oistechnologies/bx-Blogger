@@ -1,0 +1,104 @@
+/**
+ * bx-Blogger — GaDailySyncJobSpec (Phase 15.D)
+ *
+ * Validates the daily sync job's end-to-end behavior via the mock
+ * provider: pulls aggregates, upserts site-wide + per-page rows,
+ * updates last_sync_at, skips internal paths, no-ops when not
+ * connected.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function beforeAll() {
+        super.beforeAll();
+        variables.qb         = getInstance( "QueryBuilder@qb" );
+        variables.settingSvc = getInstance( "SettingService" );
+
+        variables.savedSettings = {
+            "ga.provider"          : variables.settingSvc.get( "ga.provider", "live" ),
+            "ga.refresh_token"     : variables.settingSvc.get( "ga.refresh_token", "" ),
+            "ga.property_id"       : variables.settingSvc.get( "ga.property_id", "" ),
+            "ga.last_sync_at"      : variables.settingSvc.get( "ga.last_sync_at", "" )
+        };
+
+        variables.testAuthor = createTestUser( {}, "", "author" );
+    }
+
+    function afterAll() {
+        for ( var k in variables.savedSettings ) {
+            variables.settingSvc.set( key = k, value = variables.savedSettings[ k ] ?: "", type = "string" );
+        }
+        super.afterAll();
+    }
+
+    function run() {
+        describe( "GaDailySyncJob (Phase 15.D)", function() {
+
+            it( "no-ops gracefully when GA is not connected", function() {
+                variables.settingSvc.set( key = "ga.provider",      value = "live", type = "string" );
+                variables.settingSvc.set( key = "ga.refresh_token", value = "",     type = "string" );
+
+                var beforeCount = countRows();
+                var job = getInstance( "GaDailySyncJob" );
+                job.handle();
+                expect( countRows() ).toBe( beforeCount );
+            } );
+
+            it( "writes site-wide + per-page rows end-to-end via the mock provider", function() {
+                // Seed mock + at least one published post so the
+                // mock has something to fabricate around.
+                variables.settingSvc.set( key = "ga.provider",       value = "mock",      type = "string" );
+                variables.settingSvc.set( key = "ga.property_id",    value = "123456789", type = "string" );
+                variables.settingSvc.set( key = "ga.refresh_token",  value = "",          type = "string" );  // mock skips the refresh check
+
+                var post = makePost();
+                variables.qb.newQuery().from( "posts" )
+                    .where( "id", post.getId() )
+                    .update( { "status" : "published" } );
+
+                var beforeCount = countRows();
+                var job = getInstance( "GaDailySyncJob" );
+                job.setProperties( { "date" : dateFormat( now(), "yyyy-mm-dd" ) } );
+                job.handle();
+
+                expect( countRows() ).toBeGT( beforeCount );
+                expect( len( variables.settingSvc.get( "ga.last_sync_at", "" ) ) ).toBeGT( 0 );
+
+                // Site-wide row must exist (page_path='').
+                var siteCountQry = queryExecute(
+                    "SELECT COUNT(*) AS n FROM analytics_daily WHERE page_path = '' AND date = ?",
+                    [ dateFormat( now(), "yyyy-mm-dd" ) ]
+                );
+                expect( val( siteCountQry.n ) ).toBeGTE( 1 );
+            } );
+
+            it( "skips /admin/* and /api/* paths", function() {
+                variables.settingSvc.set( key = "ga.provider",      value = "mock",      type = "string" );
+                variables.settingSvc.set( key = "ga.property_id",   value = "123456789", type = "string" );
+
+                var job = getInstance( "GaDailySyncJob" );
+                job.setProperties( { "date" : dateFormat( now(), "yyyy-mm-dd" ) } );
+                job.handle();
+
+                var adminRows = queryExecute(
+                    "SELECT COUNT(*) AS n FROM analytics_daily WHERE page_path LIKE '/admin/%' OR page_path LIKE '/api/%'"
+                );
+                expect( val( adminRows.n ) ).toBe( 0 );
+            } );
+
+        } );
+    }
+
+    private numeric function countRows() {
+        var qry = queryExecute( "SELECT COUNT(*) AS n FROM analytics_daily" );
+        return val( qry.n );
+    }
+
+    private any function makePost() {
+        return getInstance( "PostService" ).create( {
+            "authorId"     : variables.testAuthor.getId(),
+            "title"        : "Phase 15.D GA Sync " & createUUID(),
+            "bodyMarkdown" : "Body for GA daily sync spec."
+        } );
+    }
+
+}

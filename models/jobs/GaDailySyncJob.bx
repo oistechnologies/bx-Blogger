@@ -1,0 +1,124 @@
+/**
+ * bx-Blogger — GaDailySyncJob (Phase 15.D)
+ *
+ * Pulls one day of Google Analytics 4 aggregates and writes the
+ * site-wide row + one row per page into `analytics_daily`.
+ * Scheduled daily 04:35 from config/Scheduler.bx; can be
+ * dispatched manually with `{ date: "yyyy-mm-dd" }` to backfill
+ * a missing day.
+ *
+ * One call per run: `gaService.dailyAggregates(targetDate)` which
+ * internally batches the site-wide + per-page reports into one
+ * batchRunReports request. Cheap on quota.
+ *
+ * Skips gracefully when GA is not configured / not connected —
+ * the job logs and returns. Lets the dev environment cycle the
+ * scheduler without alerting.
+ *
+ * Logs via writeLog (not WireBox-backed logger) because cbq
+ * workers run on non-request JVM threads where the
+ * wirebox.system.logging.LogEvent module path isn't resolvable
+ * (CLAUDE.md "CFML Logging From Non-Request JVM Threads" rule).
+ */
+class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
+
+    function handle() {
+        var props   = variables.properties ?: {};
+        var wirebox = application.wireBox;
+        var ga      = wirebox.getInstance( "GoogleAnalyticsService" );
+        var setting = wirebox.getInstance( "SettingService" );
+
+        var st = ga.status();
+        if ( !st.connected ) {
+            writeLog(
+                file = "bxblogger",
+                type = "information",
+                text = "GaDailySyncJob: GA not connected — skipping sync"
+            );
+            return;
+        }
+        if ( st.provider != "mock" && !st.hasProperty ) {
+            writeLog(
+                file = "bxblogger",
+                type = "information",
+                text = "GaDailySyncJob: ga.property_id not set — skipping sync"
+            );
+            return;
+        }
+
+        // Pull yesterday's data by default. GA4 has a ~24-48h
+        // reporting-aggregation lag so "yesterday" is the first
+        // window with stable numbers.
+        var targetDate = structKeyExists( props, "date" ) && len( props.date ?: "" )
+            ? props.date
+            : dateFormat( dateAdd( "d", -1, now() ), "yyyy-mm-dd" );
+
+        try {
+            var agg = ga.dailyAggregates( targetDate = targetDate );
+        }
+        catch ( bxBlogger.GaQuotaExceeded e ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "GaDailySyncJob: hit 429 — aborting today's sync, will retry on next schedule"
+            );
+            return;
+        }
+        catch ( any e ) {
+            writeLog(
+                file = "bxblogger",
+                type = "error",
+                text = "GaDailySyncJob: " & ( e.Message ?: "(no message)" )
+            );
+            return;
+        }
+
+        var written = 0;
+
+        // Site-wide row (page_path='', post_id NULL).
+        try {
+            if ( !structIsEmpty( agg.siteWide ?: {} ) ) {
+                ga.recordRow( date = targetDate, pagePath = "", metrics = agg.siteWide );
+                written++;
+            }
+        }
+        catch ( any siteErr ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "GaDailySyncJob: site-wide row write failed: " & ( siteErr.Message ?: "" )
+            );
+        }
+
+        // Per-page rows. Skip any path that's clearly admin / api / internal.
+        for ( var row in ( agg.perPage ?: [] ) ) {
+            var page = trim( row.pagePath ?: "" );
+            if ( !len( page ) ) continue;
+            if ( reFindNoCase( "^/(admin|api|_)/", page ) > 0 ) continue;
+            if ( page == "/admin" || page == "/api" ) continue;
+            try {
+                ga.recordRow(
+                    date     = targetDate,
+                    pagePath = page,
+                    metrics  = row.metrics ?: {}
+                );
+                written++;
+            }
+            catch ( any rowErr ) {
+                writeLog(
+                    file = "bxblogger",
+                    type = "warning",
+                    text = "GaDailySyncJob: row write failed for " & page & ": " & ( rowErr.Message ?: "" )
+                );
+            }
+        }
+
+        setting.set( key = "ga.last_sync_at", value = dateTimeFormat( now(), "yyyy-mm-dd HH:nn:ss" ), type = "string" );
+        writeLog(
+            file = "bxblogger",
+            type = "information",
+            text = "GaDailySyncJob: synced " & written & " rows for " & targetDate
+        );
+    }
+
+}

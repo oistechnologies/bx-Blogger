@@ -43,7 +43,8 @@ data = {
     "authUrl"       : "",
     "flashOk"       : "",
     "flashError"    : "",
-    "canConnect"    : false
+    "canConnect"    : false,
+    "syncBusy"      : false
 };
 
 function onMount( e, rc, prc, params ) {
@@ -145,6 +146,25 @@ function disconnect() {
     data.flashOk = "Disconnected.";
 }
 
+/**
+ * Dispatch GaDailySyncJob for an immediate one-off backfill so
+ * the operator doesn't have to wait until 04:35 tomorrow to see
+ * data. Job no-ops gracefully when not connected, so this is
+ * safe to invoke even from a half-configured state.
+ */
+function runSyncNow() {
+    if ( !data.canConnect ) return;
+    data.syncBusy = true;
+    try {
+        getInstance( "GaDailySyncJob" ).dispatch();
+        data.flashOk = "Sync queued. Refresh in a few minutes to see updated data.";
+    }
+    catch ( any e ) {
+        data.flashError = "Failed to queue sync: " & e.message;
+    }
+    finally { data.syncBusy = false; }
+}
+
 private string function computeRedirectUri() {
     var appUrl = getSystemSetting( "APP_URL", "" );
     if ( !len( appUrl ) ) {
@@ -208,6 +228,11 @@ private string function computeRedirectUri() {
                                 </bx:if>
                                 Last sync: #len( st.lastSyncAt ?: "" ) ? encodeForHTML( st.lastSyncAt ) : "<em>never</em>"#
                             </p>
+                            <button class="btn btn-sm btn-outline-primary me-2" wire:click="runSyncNow" wire:target="runSyncNow" wire:loading.attr="disabled">
+                                <i class="bi bi-arrow-clockwise me-1" wire:loading.remove wire:target="runSyncNow"></i>
+                                <span class="spinner-border spinner-border-sm me-1" wire:loading wire:target="runSyncNow"></span>
+                                Run sync now
+                            </button>
                             <button class="btn btn-sm btn-outline-danger" wire:click="disconnect">
                                 <i class="bi bi-x-circle me-1"></i> Disconnect
                             </button>
