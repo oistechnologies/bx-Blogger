@@ -492,6 +492,13 @@
 									<i class="bi bi-google nav-icon"></i><span class="nav-label">Search Console</span>
 								</a>
 							</bx:if>
+							<bx:if cbauth.isLoggedIn() && cbauth.getUser().hasPermission( "ga.connect" )>
+								<a class="nav-link nav-sub #( currentEvent == 'admin:Settings.ga' ? 'active' : '' )#"
+								   href="/admin/settings/ga"
+								   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Google Analytics">
+									<i class="bi bi-bar-chart-line nav-icon"></i><span class="nav-label">Google Analytics</span>
+								</a>
+							</bx:if>
 							<bx:if canSysAiPrompts>
 								<a class="nav-link nav-sub #( currentEvent.startsWith( 'admin:AiPrompts.' ) ? 'active' : '' )#"
 								   href="/admin/ai-prompts"

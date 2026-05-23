@@ -144,7 +144,7 @@ class extends="coldbox.system.EventHandler" {
         }
 
         try {
-            var redirectUri = buildGscRedirectUri( event );
+            var redirectUri = buildGoogleRedirectUri( event, "gsc" );
             getInstance( "GscService" ).exchangeCodeForTokens( code = code, redirectUri = redirectUri );
             flash.put( "notice", "Connected to Google Search Console." );
         }
@@ -155,13 +155,78 @@ class extends="coldbox.system.EventHandler" {
     }
 
     /**
-     * Build the absolute redirect URI for the OAuth flow. Google
-     * requires this match the URI registered in the OAuth client
-     * configuration — operators typically register
-     * `${APP_URL}/admin/settings/gsc/callback` in the Google
-     * Cloud Console.
+     * Phase 15 — Google Analytics integration. Mirrors the GSC
+     * pattern: connection wire walks the operator through OAuth,
+     * displays status, surfaces last-sync, and exposes the
+     * measurement_id used by the public-site gtag emission.
+     * Permission-gated to `ga.connect` (super_admin).
      */
-    private string function buildGscRedirectUri( required any event ) {
+    function ga( event, rc, prc ) {
+        prc.pageTitle = "Google Analytics";
+        event.setView( view = "settings/ga" );
+    }
+
+    /**
+     * OAuth callback target for the GA flow. Same shape as
+     * gscCallback — CSRF verify against cachebox nonce, exchange
+     * code for tokens via GoogleAnalyticsService, flash + relocate.
+     * Permission gate matches the connect-side wire so this can't
+     * be invoked by a less-privileged user even if they intercept
+     * the callback URL.
+     */
+    function gaCallback( event, rc, prc ) {
+        var user = getInstance( "AuthenticationService@cbauth" ).getUser();
+        if ( !user.hasPermission( "ga.connect" ) ) {
+            relocate( url = "/admin" );
+            return;
+        }
+
+        var code  = trim( rc.code  ?: "" );
+        var state = trim( rc.state ?: "" );
+        var err   = trim( rc.error ?: "" );
+
+        if ( len( err ) ) {
+            flash.put( "error", "GA connection failed: " & err );
+            relocate( url = "/admin/settings/ga" );
+            return;
+        }
+
+        var cacheKey = "ga.oauth_state." & user.getId();
+        var cache    = getInstance( "cachebox" ).getCache( "default" );
+        var expected = cache.get( cacheKey );
+        if ( isNull( expected ) ) expected = "";
+        if ( !len( expected ) || compare( state, expected ) != 0 ) {
+            flash.put( "error", "GA OAuth state mismatch — try the connect flow again." );
+            relocate( url = "/admin/settings/ga" );
+            return;
+        }
+        try { cache.clear( cacheKey ); } catch ( any e ) {}
+
+        if ( !len( code ) ) {
+            flash.put( "error", "GA OAuth callback missing authorization code." );
+            relocate( url = "/admin/settings/ga" );
+            return;
+        }
+
+        try {
+            var redirectUri = buildGoogleRedirectUri( event, "ga" );
+            getInstance( "GoogleAnalyticsService" ).exchangeCodeForTokens( code = code, redirectUri = redirectUri );
+            flash.put( "notice", "Connected to Google Analytics." );
+        }
+        catch ( any e ) {
+            flash.put( "error", "GA token exchange failed: " & e.message );
+        }
+        relocate( url = "/admin/settings/ga" );
+    }
+
+    /**
+     * Build the absolute redirect URI for a Google OAuth flow.
+     * Both GSC and GA register `${APP_URL}/admin/settings/{segment}/callback`
+     * in their respective Google Cloud Console OAuth clients;
+     * `segment` is "gsc" or "ga". One helper keeps the
+     * APP_URL-vs-request-host fallback logic in a single place.
+     */
+    private string function buildGoogleRedirectUri( required any event, required string segment ) {
         var appUrl = getSystemSetting( "APP_URL", "" );
         if ( !len( appUrl ) ) {
             // Fall back to the request's own scheme + host so dev
@@ -169,7 +234,7 @@ class extends="coldbox.system.EventHandler" {
             appUrl = arguments.event.getHTTPHeader( "X-Forwarded-Proto", "http" ) & "://" & arguments.event.getHTTPHeader( "Host", "localhost:8080" );
         }
         if ( right( appUrl, 1 ) == "/" ) appUrl = left( appUrl, len( appUrl ) - 1 );
-        return appUrl & "/admin/settings/gsc/callback";
+        return appUrl & "/admin/settings/" & arguments.segment & "/callback";
     }
 
     function ogImage( event, rc, prc ) {

@@ -1,0 +1,104 @@
+/**
+ * bx-Blogger — GaSettingsHandlerSpec (Phase 15.C)
+ *
+ * Smoke checks for the admin:Settings.ga handler + its companion
+ * route, view, and wire. Mirrors AiPromptsHandlerSpec — proves the
+ * files compile + are present where the layout expects them, and
+ * the ga.connect + ga.view permissions / role grants are in the
+ * shape the wire and sidebar expect. The live HTTP round-trip is
+ * validated by curl during the verification pass.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function run() {
+        describe( "admin:Settings.ga (Phase 15.C)", function() {
+
+            it( "handler file Settings.bx exposes ga() and gaCallback() actions", function() {
+                var modulePath = getController().getSetting( "modules" ).admin.path;
+                var handlerPath = modulePath & "/handlers/Settings.bx";
+                expect( fileExists( handlerPath ) ).toBeTrue();
+                var source = fileRead( handlerPath );
+                expect( source ).toInclude( "function ga(" );
+                expect( source ).toInclude( "function gaCallback(" );
+                // Refactor must have happened — shared helper, not the GSC-only one.
+                expect( source ).toInclude( "buildGoogleRedirectUri" );
+            } );
+
+            it( "view file settings/ga.bxm is present", function() {
+                var modulePath = getController().getSetting( "modules" ).admin.path;
+                expect( fileExists( modulePath & "/views/settings/ga.bxm" ) ).toBeTrue();
+            } );
+
+            it( "wire template lives at the app-root path the wire() helper resolves", function() {
+                // CBWIRE two-file module-wire bug workaround — single-file
+                // wires live under app-root /wires/ until the patched
+                // CBWIRE ships and we can migrate to modules_app/admin/wires/.
+                var wirePath = expandPath( "/wires/settings/gaIntegration.bxm" );
+                expect( fileExists( wirePath ) ).toBeTrue();
+            } );
+
+            it( "ga.connect permission is super_admin-only", function() {
+                var qb = getInstance( "QueryBuilder@qb" );
+                var grants = qb.newQuery()
+                    .from( "role_permissions" )
+                    .join( "permissions", "role_permissions.permission_id", "permissions.id" )
+                    .join( "roles",       "role_permissions.role_id",       "roles.id" )
+                    .where( "permissions.slug", "ga.connect" )
+                    .select( "roles.slug AS role_slug" )
+                    .get();
+                var roleSlugs = grants.map( function( r ) { return r.role_slug; } );
+                expect( roleSlugs ).toInclude( "super_admin" );
+                expect( roleSlugs ).notToInclude( "admin"  );
+                expect( roleSlugs ).notToInclude( "editor" );
+                expect( roleSlugs ).notToInclude( "author" );
+            } );
+
+            it( "ga.view permission is granted to super_admin + admin + editor", function() {
+                var qb = getInstance( "QueryBuilder@qb" );
+                var grants = qb.newQuery()
+                    .from( "role_permissions" )
+                    .join( "permissions", "role_permissions.permission_id", "permissions.id" )
+                    .join( "roles",       "role_permissions.role_id",       "roles.id" )
+                    .where( "permissions.slug", "ga.view" )
+                    .select( "roles.slug AS role_slug" )
+                    .get();
+                var roleSlugs = grants.map( function( r ) { return r.role_slug; } );
+                expect( roleSlugs ).toInclude( "super_admin" );
+                expect( roleSlugs ).toInclude( "admin" );
+                expect( roleSlugs ).toInclude( "editor" );
+                expect( roleSlugs ).notToInclude( "author" );
+            } );
+
+            it( "router registers /admin/settings/ga and /admin/settings/ga/callback before the conventional catch-all", function() {
+                var routerPath = getController().getSetting( "modules" ).admin.path & "/config/Router.bx";
+                expect( fileExists( routerPath ) ).toBeTrue();
+                var source = fileRead( routerPath );
+                // Both specific routes must be present.
+                expect( source ).toInclude( "settings/ga/callback" );
+                expect( source ).toInclude( "Settings.gaCallback" );
+                expect( source ).toInclude( "settings/ga" );
+                expect( source ).toInclude( "Settings.ga" );
+                // And both must come before the conventional catch-all so
+                // ColdBox doesn't swallow the multi-segment URL. Match the
+                // actual route() invocation rather than a bare substring —
+                // `:handler/:action?` also appears in earlier comments and
+                // find() returns the first occurrence.
+                var gaIdx       = find( "route( ""settings/ga""", source );
+                var catchAllIdx = find( "route( "":handler/:action?""", source );
+                expect( gaIdx ).toBeGT( 0 );
+                expect( catchAllIdx ).toBeGT( 0 );
+                expect( gaIdx ).toBeLT( catchAllIdx );
+            } );
+
+            it( "admin sidebar layout includes the GA link gated on ga.connect", function() {
+                var modulePath = getController().getSetting( "modules" ).admin.path;
+                var layout = fileRead( modulePath & "/layouts/Main.bxm" );
+                expect( layout ).toInclude( "ga.connect" );
+                expect( layout ).toInclude( "/admin/settings/ga" );
+                expect( layout ).toInclude( "Google Analytics" );
+            } );
+
+        } );
+    }
+
+}

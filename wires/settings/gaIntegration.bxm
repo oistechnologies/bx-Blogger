@@ -1,0 +1,337 @@
+<bx:script>
+// @startWire
+/**
+ * settings.gaIntegration — Phase 15 admin form for the
+ * Google Analytics OAuth connection.
+ *
+ * Operator flow:
+ *   1. Paste OAuth client_id + client_secret from Google Cloud
+ *      Console (project must have the Google Analytics Data API
+ *      enabled and the OAuth consent screen configured).
+ *   2. Paste the numeric GA4 property ID (Admin -> Property
+ *      details, looks like 123456789) and the G-XXXX measurement
+ *      ID (Admin -> Data streams). The property ID powers reads
+ *      via the Data API; the measurement ID drives the public-
+ *      site gtag.js emission.
+ *   3. Click "Connect" -> generates a CSRF nonce + redirects
+ *      to Google's consent screen with scope analytics.readonly.
+ *   4. Google redirects back to /admin/settings/ga/callback,
+ *      which exchanges the code for refresh + access tokens.
+ *   5. Status banner flips green; daily sync job picks up
+ *      yesterday's aggregates on the next 04:35 cron.
+ *
+ * Permission gate: `ga.connect` (super_admin). Provider toggle
+ * (live vs mock) + Consent Mode v2 dropdown live in the form.
+ */
+
+property name="settingService" inject="SettingService";
+property name="gaService"      inject="GoogleAnalyticsService";
+property name="cbauth"         inject="AuthenticationService@cbauth";
+property name="event"          inject="coldbox:requestContext";
+property name="cacheBox"       inject="cachebox";
+
+data = {
+    "clientId"      : "",
+    "clientSecret"  : "",
+    "propertyId"    : "",
+    "measurementId" : "",
+    "provider"      : "live",
+    "emitGtag"      : true,
+    "consentMode"   : "none",
+    "status"        : {},
+    "redirectUri"   : "",
+    "authUrl"       : "",
+    "flashOk"       : "",
+    "flashError"    : "",
+    "canConnect"    : false
+};
+
+function onMount( e, rc, prc, params ) {
+    var u = cbauth.isLoggedIn() ? cbauth.getUser() : "";
+    data.canConnect = !isSimpleValue( u ) && u.hasPermission( "ga.connect" );
+    if ( !data.canConnect ) return;
+
+    data.clientId      = settingService.get( "ga.oauth_client_id",     "" );
+    data.clientSecret  = settingService.get( "ga.oauth_client_secret", "" );
+    data.propertyId    = settingService.get( "ga.property_id",         "" );
+    data.measurementId = settingService.get( "ga.measurement_id",      "" );
+    data.provider      = settingService.get( "ga.provider",            "live" );
+    data.emitGtag      = settingService.get( "ga.emit_gtag",           "true", "bool" );
+    data.consentMode   = settingService.get( "ga.consent_mode",        "none" );
+    data.status        = gaService.status();
+    data.redirectUri   = computeRedirectUri();
+}
+
+function saveSettings() {
+    if ( !data.canConnect ) return;
+    settingService.set( key = "ga.oauth_client_id",     value = trim( data.clientId      ?: "" ), type = "string" );
+    settingService.set( key = "ga.oauth_client_secret", value = trim( data.clientSecret  ?: "" ), type = "string" );
+    settingService.set( key = "ga.property_id",         value = trim( data.propertyId    ?: "" ), type = "string" );
+    settingService.set( key = "ga.measurement_id",      value = trim( data.measurementId ?: "" ), type = "string" );
+    settingService.set( key = "ga.provider",            value = trim( data.provider      ?: "live" ), type = "string" );
+    settingService.set( key = "ga.emit_gtag",           value = data.emitGtag ? "true" : "false",     type = "bool"   );
+    settingService.set( key = "ga.consent_mode",        value = trim( data.consentMode   ?: "none" ), type = "string" );
+
+    // Bust live-API + snapshot caches so a property or
+    // credential change shows fresh data on the next read.
+    try { gaService.invalidateCaches(); } catch ( any e ) {}
+
+    onMount( e = "", rc = {}, prc = {}, params = {} );
+    data.flashOk = "Settings saved.";
+}
+
+/**
+ * Kick off the OAuth flow. Stamps a CSRF nonce in cachebox keyed
+ * by userId (NOT the session scope, which is unreliable in the
+ * CBWIRE request context), builds the auth URL, and asks the
+ * wire to redirect the browser.
+ *
+ * Two regressions baked into this code as named-argument tests:
+ *   - CacheBox set() timeout is in MINUTES, numeric. Passing a
+ *     timespan collapses it to a sub-second value.
+ *   - CBWIRE Component.redirect()'s first arg is `redirectURL`,
+ *     not `url`. A mismatched arg leaves _redirect null which
+ *     later throws "len() on a null object".
+ */
+function connect() {
+    if ( !data.canConnect ) return;
+    if ( data.provider == "mock" ) {
+        try {
+            gaService.exchangeCodeForTokens( code = "mock-code", redirectUri = data.redirectUri );
+            data.flashOk = "Connected to mock GA provider.";
+            data.status  = gaService.status();
+        }
+        catch ( any e ) {
+            data.flashError = "Mock connect failed: " & e.message;
+        }
+        return;
+    }
+
+    var nonce = createUUID();
+    try {
+        cacheBox.getCache( "default" ).set(
+            "ga.oauth_state." & cbauth.getUser().getId(),
+            nonce,
+            10, // timeout minutes — enough for an OAuth round-trip
+            0   // lastAccessTimeout — disabled
+        );
+    }
+    catch ( any cacheErr ) {
+        data.flashError = "Could not stash CSRF nonce: " & cacheErr.message;
+        return;
+    }
+
+    // `var url` would collide with the URL scope; use `authUrl`.
+    try {
+        var authUrl = gaService.buildAuthUrl( redirectUri = data.redirectUri, state = nonce );
+        redirect( redirectURL = authUrl );
+    }
+    catch ( bxBlogger.GaNotConfigured e ) {
+        data.flashError = e.message;
+    }
+}
+
+function disconnect() {
+    if ( !data.canConnect ) return;
+    settingService.set( key = "ga.refresh_token",           value = "",  type = "string" );
+    settingService.set( key = "ga.access_token",            value = "",  type = "string" );
+    settingService.set( key = "ga.token_expires_at",        value = "0", type = "int"    );
+    settingService.set( key = "ga.connected_account_email", value = "",  type = "string" );
+    settingService.set( key = "ga.connected_at",            value = "",  type = "string" );
+
+    try { gaService.invalidateCaches(); } catch ( any e ) {}
+
+    data.status  = gaService.status();
+    data.flashOk = "Disconnected.";
+}
+
+private string function computeRedirectUri() {
+    var appUrl = getSystemSetting( "APP_URL", "" );
+    if ( !len( appUrl ) ) {
+        try { appUrl = "http://" & event.getHTTPHeader( "Host", "localhost:8080" ); }
+        catch ( any e ) { appUrl = "http://localhost:8080"; }
+    }
+    if ( right( appUrl, 1 ) == "/" ) appUrl = left( appUrl, len( appUrl ) - 1 );
+    return appUrl & "/admin/settings/ga/callback";
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<div>
+    <bx:if !args.canConnect>
+        <div class="alert alert-warning">
+            <i class="bi bi-shield-lock me-1"></i>
+            You don't have permission to connect Google Analytics.
+        </div>
+    <bx:else>
+        <bx:if len( args.flashOk )>
+            <div class="alert alert-success alert-dismissible">
+                #encodeForHTML( args.flashOk )#
+                <button type="button" class="btn-close" wire:click="$set('flashOk','')"></button>
+            </div>
+        </bx:if>
+        <bx:if len( args.flashError )>
+            <div class="alert alert-danger alert-dismissible">
+                #encodeForHTML( args.flashError )#
+                <button type="button" class="btn-close" wire:click="$set('flashError','')"></button>
+            </div>
+        </bx:if>
+
+        <bx:set st = args.status>
+        <div class="row g-4">
+            <div class="col-12 col-xl-7">
+
+                <!-- Connection status card -->
+                <div class="card stat-card stat-card-primary">
+                    <div class="card-header card-header-soft card-header-soft-primary d-flex justify-content-between align-items-center">
+                        <span class="h6 mb-0">Connection status</span>
+                        <bx:if st.connected ?: false>
+                            <span class="badge bg-success"><i class="bi bi-check2-circle me-1"></i>Connected</span>
+                        <bx:elseif st.configured ?: false>
+                            <span class="badge bg-warning text-dark">Configured, not connected</span>
+                        <bx:else>
+                            <span class="badge bg-secondary">Not configured</span>
+                        </bx:if>
+                    </div>
+                    <div class="card-body">
+                        <bx:if ( st.connected ?: false )>
+                            <p class="small mb-2">
+                                Property: <code>#encodeForHTML( st.propertyId ?: "(none set)" )#</code><br>
+                                Measurement ID: <code>#encodeForHTML( st.measurementId ?: "(none set)" )#</code><br>
+                                Provider: <code>#encodeForHTML( st.provider ?: "live" )#</code><br>
+                                <bx:if len( st.connectedAs ?: "" )>
+                                    Connected as: <code>#encodeForHTML( st.connectedAs )#</code><br>
+                                </bx:if>
+                                <bx:if len( st.connectedAt ?: "" )>
+                                    Connected at: #encodeForHTML( st.connectedAt )#<br>
+                                </bx:if>
+                                Last sync: #len( st.lastSyncAt ?: "" ) ? encodeForHTML( st.lastSyncAt ) : "<em>never</em>"#
+                            </p>
+                            <button class="btn btn-sm btn-outline-danger" wire:click="disconnect">
+                                <i class="bi bi-x-circle me-1"></i> Disconnect
+                            </button>
+                        <bx:else>
+                            <p class="small text-muted mb-2">
+                                Paste your OAuth client_id + client_secret from <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Google Cloud Console</a>,
+                                set the numeric property ID + measurement ID, then click <strong>Connect</strong>.
+                            </p>
+                            <button class="btn btn-sm btn-success" wire:click="connect"
+                                    <bx:if !( st.configured ?: false )>disabled</bx:if>>
+                                <i class="bi bi-link-45deg me-1"></i> Connect
+                            </button>
+                            <bx:if !( st.configured ?: false )>
+                                <span class="text-muted small ms-2">Save settings first.</span>
+                            </bx:if>
+                        </bx:if>
+                    </div>
+                </div>
+
+                <!-- Credentials + property form -->
+                <div class="card stat-card stat-card-info mt-3">
+                    <div class="card-header card-header-soft card-header-soft-info">
+                        <span class="h6 mb-0">OAuth client + property</span>
+                    </div>
+                    <div class="card-body">
+                        <form wire:submit.prevent="saveSettings">
+                            <div class="mb-3">
+                                <label for="gaClientId" class="form-label small">Client ID</label>
+                                <input id="gaClientId" type="text"
+                                       class="form-control form-control-sm font-monospace"
+                                       wire:model.blur="clientId"
+                                       maxlength="500">
+                            </div>
+                            <div class="mb-3">
+                                <label for="gaClientSecret" class="form-label small">Client Secret</label>
+                                <input id="gaClientSecret" type="password"
+                                       class="form-control form-control-sm font-monospace"
+                                       wire:model.blur="clientSecret"
+                                       maxlength="500">
+                            </div>
+                            <div class="mb-3">
+                                <label for="gaPropertyId" class="form-label small">Property ID (numeric)</label>
+                                <input id="gaPropertyId" type="text"
+                                       class="form-control form-control-sm font-monospace"
+                                       wire:model.blur="propertyId"
+                                       placeholder="e.g. 123456789"
+                                       maxlength="50">
+                                <div class="form-text small">From GA Admin -> Property details. Not the G-XXXX measurement ID.</div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="gaMeasurementId" class="form-label small">Measurement ID (gtag.js)</label>
+                                <input id="gaMeasurementId" type="text"
+                                       class="form-control form-control-sm font-monospace"
+                                       wire:model.blur="measurementId"
+                                       placeholder="e.g. G-XXXXXXXXXX"
+                                       maxlength="50">
+                                <div class="form-text small">From GA Admin -> Data streams. Drives the public-site gtag emission.</div>
+                            </div>
+                            <div class="row g-2">
+                                <div class="col-md-6 mb-3">
+                                    <label for="gaProvider" class="form-label small">Provider</label>
+                                    <select id="gaProvider"
+                                            class="form-select form-select-sm"
+                                            wire:model.blur="provider">
+                                        <option value="live" <bx:if args.provider == "live">selected</bx:if>>Live (Google API)</option>
+                                        <option value="mock" <bx:if args.provider == "mock">selected</bx:if>>Mock (dev / preview only)</option>
+                                    </select>
+                                    <div class="form-text small">Mock returns deterministic seeded data; safe for dev.</div>
+                                </div>
+                                <div class="col-md-6 mb-3">
+                                    <label for="gaConsentMode" class="form-label small">Consent Mode v2</label>
+                                    <select id="gaConsentMode"
+                                            class="form-select form-select-sm"
+                                            wire:model.blur="consentMode">
+                                        <option value="none"     <bx:if args.consentMode == "none">selected</bx:if>>none (operator handles compliance)</option>
+                                        <option value="basic_eu" <bx:if args.consentMode == "basic_eu">selected</bx:if>>basic_eu (default-denied)</option>
+                                        <option value="strict"   <bx:if args.consentMode == "strict">selected</bx:if>>strict (default-denied + doc comment)</option>
+                                    </select>
+                                    <div class="form-text small">If you serve EU visitors, set basic_eu and pair with a cookie banner.</div>
+                                </div>
+                            </div>
+                            <div class="form-check mb-3">
+                                <input id="gaEmitGtag" type="checkbox"
+                                       class="form-check-input"
+                                       wire:model.blur="emitGtag"
+                                       <bx:if args.emitGtag>checked</bx:if>>
+                                <label for="gaEmitGtag" class="form-check-label small">
+                                    Auto-emit gtag.js on every public page when measurement_id is set
+                                </label>
+                            </div>
+                            <button type="submit" class="btn btn-primary">Save</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Setup checklist -->
+            <div class="col-12 col-xl-5">
+                <div class="card stat-card stat-card-warning">
+                    <div class="card-header card-header-soft card-header-soft-warning">
+                        <span class="h6 mb-0">Setup checklist</span>
+                    </div>
+                    <div class="card-body small">
+                        <ol class="ps-3 mb-3">
+                            <li>Open <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener">Google Cloud Console -> New project</a> and name it something memorable.</li>
+                            <li>Enable the <a href="https://console.cloud.google.com/apis/library/analyticsdata.googleapis.com" target="_blank" rel="noopener">Google Analytics Data API</a>.</li>
+                            <li>Configure the <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noopener">OAuth consent screen</a>: type <strong>External</strong>, add scope <code>analytics.readonly</code>, add yourself as a test user.</li>
+                            <li>Create an OAuth 2.0 <strong>Web application</strong> client at <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Credentials</a>. Add this redirect URI:<br>
+                                <code class="small">#encodeForHTML( args.redirectUri )#</code>
+                            </li>
+                            <li>Copy the Client ID + Client Secret into the form on the left.</li>
+                            <li>Find your <strong>numeric Property ID</strong> at <a href="https://analytics.google.com" target="_blank" rel="noopener">analytics.google.com</a> -> Admin -> Property details (looks like <code>123456789</code>, NOT <code>G-XXXX</code>).</li>
+                            <li>Find your <strong>Measurement ID</strong> at GA Admin -> Data streams -> click the web stream (<code>G-XXXXXXXXXX</code>).</li>
+                            <li>Save -> Connect. Approve consent on Google's screen. You'll land back here with a green badge.</li>
+                            <li>If you serve EU visitors, set Consent Mode to <code>basic_eu</code> and pair with a cookie banner (out of scope here).</li>
+                        </ol>
+                        <p class="text-muted mb-0">
+                            The OAuth scope used is <code>analytics.readonly</code> — bx-Blogger never writes to your GA account.
+                            Note: <code>analytics.readonly</code> is a <em>sensitive scope</em>; Google's consent-screen verification takes 2-6 weeks the first time you publish.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </bx:if>
+</div>
+</bx:output>
