@@ -332,7 +332,7 @@ private boolean function requirePerm( required string perm ) {
 												<button class="btn btn-outline-secondary" wire:click="moveUp(#s.getId()#)" title="Move up">&##9650;</button>
 												<button class="btn btn-outline-secondary" wire:click="moveDown(#s.getId()#)" title="Move down">&##9660;</button>
 											</div>
-											<div class="text-muted small">##s.getSortOrder()#</div>
+											<div class="text-muted small">###s.getSortOrder()#</div>
 										</td>
 										<td class="text-end">
 											<div class="btn-group btn-group-sm" role="group" aria-label="Row actions">
