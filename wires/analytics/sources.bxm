@@ -104,6 +104,8 @@ private boolean function isGaConnected() {
 </bx:script>
 
 <bx:output>
+<div>
+
 <bx:if !args.canView>
     <div class="alert alert-warning"><i class="bi bi-shield-lock me-1"></i> You don't have permission to view Analytics.</div>
 <bx:elseif !args.connected>
@@ -162,4 +164,5 @@ private boolean function isGaConnected() {
         </div>
     </div>
 </bx:if>
+</div>
 </bx:output>

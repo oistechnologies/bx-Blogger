@@ -158,6 +158,8 @@ private string function fmtDuration( numeric seconds ) {
 </bx:script>
 
 <bx:output>
+<div>
+
 <bx:if !args.canView>
     <!-- Render nothing — user has no ga.view permission. -->
 <bx:else>
@@ -264,4 +266,5 @@ private string function fmtDuration( numeric seconds ) {
         </div>
     </div>
 </bx:if>
+</div>
 </bx:output>

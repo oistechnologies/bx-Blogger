@@ -197,6 +197,8 @@ private string function deltaClass( numeric pct ) {
 </bx:script>
 
 <bx:output>
+<div>
+
 <bx:if !args.canView>
     <div class="alert alert-warning">
         <i class="bi bi-shield-lock me-1"></i> You don't have permission to view Analytics.
@@ -378,4 +380,5 @@ private string function deltaClass( numeric pct ) {
         </div>
     </div>
 </bx:if>
+</div>
 </bx:output>
