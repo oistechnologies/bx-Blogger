@@ -125,13 +125,13 @@ private boolean function isGaConnected() {
 
     <ul class="nav nav-tabs mb-3">
         <li class="nav-item">
-            <a class="nav-link #( args.tab == "channels"     ? "active" : "" )#" href="javascript:void(0)" wire:click="setTab('channels')">Channels</a>
+            <button type="button" class="nav-link #( args.tab == "channels"     ? "active" : "" )#" wire:click="setTab('channels')">Channels</button>
         </li>
         <li class="nav-item">
-            <a class="nav-link #( args.tab == "sourceMedium" ? "active" : "" )#" href="javascript:void(0)" wire:click="setTab('sourceMedium')">Source / Medium</a>
+            <button type="button" class="nav-link #( args.tab == "sourceMedium" ? "active" : "" )#" wire:click="setTab('sourceMedium')">Source / Medium</button>
         </li>
         <li class="nav-item">
-            <a class="nav-link #( args.tab == "campaigns"    ? "active" : "" )#" href="javascript:void(0)" wire:click="setTab('campaigns')">Campaigns</a>
+            <button type="button" class="nav-link #( args.tab == "campaigns"    ? "active" : "" )#" wire:click="setTab('campaigns')">Campaigns</button>
         </li>
     </ul>
 

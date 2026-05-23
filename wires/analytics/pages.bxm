@@ -205,12 +205,12 @@ string function sortIcon( required string column ) {
                 <table class="table table-sm table-striped align-middle mb-0">
                     <thead class="table-light">
                         <tr>
-                            <th><a class="text-decoration-none text-reset" href="javascript:void(0)" wire:click="sort('page_path')">Page #sortIcon( "page_path" )#</a></th>
-                            <th class="text-end"><a class="text-decoration-none text-reset" href="javascript:void(0)" wire:click="sort('views')">Views #sortIcon( "views" )#</a></th>
-                            <th class="text-end"><a class="text-decoration-none text-reset" href="javascript:void(0)" wire:click="sort('users')">Users #sortIcon( "users" )#</a></th>
-                            <th class="text-end"><a class="text-decoration-none text-reset" href="javascript:void(0)" wire:click="sort('avg_duration')">Avg time #sortIcon( "avg_duration" )#</a></th>
-                            <th class="text-end"><a class="text-decoration-none text-reset" href="javascript:void(0)" wire:click="sort('engagement_rate')">Engagement #sortIcon( "engagement_rate" )#</a></th>
-                            <th class="text-end"><a class="text-decoration-none text-reset" href="javascript:void(0)" wire:click="sort('bounce_rate')">Bounce #sortIcon( "bounce_rate" )#</a></th>
+                            <th><button type="button" class="btn btn-link btn-sm p-0 text-decoration-none text-reset fw-semibold" wire:click="sort('page_path')">Page #sortIcon( "page_path" )#</button></th>
+                            <th class="text-end"><button type="button" class="btn btn-link btn-sm p-0 text-decoration-none text-reset fw-semibold" wire:click="sort('views')">Views #sortIcon( "views" )#</button></th>
+                            <th class="text-end"><button type="button" class="btn btn-link btn-sm p-0 text-decoration-none text-reset fw-semibold" wire:click="sort('users')">Users #sortIcon( "users" )#</button></th>
+                            <th class="text-end"><button type="button" class="btn btn-link btn-sm p-0 text-decoration-none text-reset fw-semibold" wire:click="sort('avg_duration')">Avg time #sortIcon( "avg_duration" )#</button></th>
+                            <th class="text-end"><button type="button" class="btn btn-link btn-sm p-0 text-decoration-none text-reset fw-semibold" wire:click="sort('engagement_rate')">Engagement #sortIcon( "engagement_rate" )#</button></th>
+                            <th class="text-end"><button type="button" class="btn btn-link btn-sm p-0 text-decoration-none text-reset fw-semibold" wire:click="sort('bounce_rate')">Bounce #sortIcon( "bounce_rate" )#</button></th>
                         </tr>
                     </thead>
                     <tbody>

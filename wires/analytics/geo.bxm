@@ -88,10 +88,10 @@ private boolean function isGaConnected() {
 
     <ul class="nav nav-tabs mb-3">
         <li class="nav-item">
-            <a class="nav-link #( args.tab == "countries" ? "active" : "" )#" href="javascript:void(0)" wire:click="setTab('countries')">Countries</a>
+            <button type="button" class="nav-link #( args.tab == "countries" ? "active" : "" )#" wire:click="setTab('countries')">Countries</button>
         </li>
         <li class="nav-item">
-            <a class="nav-link #( args.tab == "cities"    ? "active" : "" )#" href="javascript:void(0)" wire:click="setTab('cities')">Cities</a>
+            <button type="button" class="nav-link #( args.tab == "cities"    ? "active" : "" )#" wire:click="setTab('cities')">Cities</button>
         </li>
     </ul>
 
