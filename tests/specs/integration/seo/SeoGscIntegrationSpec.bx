@@ -173,6 +173,100 @@ class extends="tests.support.BaseIntegrationSpec" {
 
             } );
 
+            /**
+             * Regression test for the "Cannot invoke method [len()]
+             * on a null object" crash that surfaced when an operator
+             * clicked Connect on a live site.
+             *
+             * Root cause: the wire was calling CBWIRE's redirect
+             * helper with the wrong named argument
+             * (`redirect( url = ... )`) instead of the documented
+             * `redirect( redirectURL = ... )`. CBWIRE silently stored
+             * a null `_redirect`, then later did `_redirect.len()`
+             * → "len() on a null object".
+             *
+             * We verify here that CBWIRE's `Component.redirect()`
+             * actually queues the URL when called with the correct
+             * argument name. If a future CBWIRE upgrade changes the
+             * arg name, this spec catches it.
+             */
+            describe( "CBWIRE redirect() — argument-name contract", function() {
+
+                it( "queues a redirect URL when called with `redirectURL = ...`", function() {
+                    // Pull a wire we already know loads cleanly; any
+                    // wire extends cbwire.models.Component so its
+                    // redirect() inherits from the base class.
+                    var builder = getInstance( "SingleFileComponentBuilder@cbwire" );
+                    var Comp = builder.build(
+                        componentPath = "wires.settings.gscIntegration",
+                        componentName = "settings.gscIntegration"
+                    );
+                    Comp.redirect( redirectURL = "https://accounts.google.com/o/oauth2/v2/auth?test=1" );
+                    // Accessor exposed by `accessors="true"` on the
+                    // base Component (uses an underscore — see
+                    // Component.cfc `property name="_redirect"`).
+                    var queued = Comp.get_redirect();
+                    expect( isNull( queued ) ).toBeFalse( "redirect() must store a non-null URL" );
+                    expect( len( queued ) ).toBeGT( 0, "redirect() must store a non-empty URL" );
+                    expect( queued ).toInclude( "accounts.google.com" );
+                } );
+
+            } );
+
+            describe( "GscService.buildAuthUrl", function() {
+
+                it( "builds a Google OAuth URL when a client_id is configured", function() {
+                    // Stash + seed a fake client_id; flip provider to
+                    // "live" so we exercise the real code path the
+                    // wire hits in production.
+                    var priorProv = variables.settingSvc.get( "gsc.provider", "live" );
+                    var priorCid  = variables.settingSvc.get( "gsc.oauth_client_id", "" );
+                    variables.settingSvc.set( key = "gsc.provider",         value = "live",                                      type = "string" );
+                    variables.settingSvc.set( key = "gsc.oauth_client_id",  value = "spec-client.apps.googleusercontent.com",    type = "string" );
+
+                    try {
+                        // `var url` would collide with the URL scope
+                        // (CLAUDE.md reserved-scope gotcha) — same
+                        // class of bug as the wire fix this regression
+                        // covers. Use `authUrl`.
+                        var authUrl = variables.svc.buildAuthUrl(
+                            redirectUri = "http://localhost:8080/admin/settings/gsc/callback",
+                            state       = "spec-nonce-123"
+                        );
+                        expect( authUrl ).toInclude( "accounts.google.com/o/oauth2/v2/auth" );
+                        // BoxLang's urlEncodedFormat() over-encodes
+                        // unreserved characters (`.` `-`), so we
+                        // assert on a substring that survives that.
+                        expect( authUrl ).toInclude( "client_id=spec" );
+                        expect( authUrl ).toInclude( "googleusercontent" );
+                        expect( authUrl ).toInclude( "state=spec" );
+                        expect( authUrl ).toInclude( "scope=" );
+                        expect( authUrl ).toInclude( "access_type=offline" );
+                    }
+                    finally {
+                        variables.settingSvc.set( key = "gsc.provider",        value = priorProv, type = "string" );
+                        variables.settingSvc.set( key = "gsc.oauth_client_id", value = priorCid,  type = "string" );
+                    }
+                } );
+
+                it( "throws GscNotConfigured when no client_id is set", function() {
+                    var priorProv = variables.settingSvc.get( "gsc.provider", "live" );
+                    var priorCid  = variables.settingSvc.get( "gsc.oauth_client_id", "" );
+                    variables.settingSvc.set( key = "gsc.provider",        value = "live", type = "string" );
+                    variables.settingSvc.set( key = "gsc.oauth_client_id", value = "",     type = "string" );
+                    try {
+                        expect( function() {
+                            variables.svc.buildAuthUrl( redirectUri = "https://x.test/cb", state = "n" );
+                        } ).toThrow( type = "bxBlogger.GscNotConfigured" );
+                    }
+                    finally {
+                        variables.settingSvc.set( key = "gsc.provider",        value = priorProv, type = "string" );
+                        variables.settingSvc.set( key = "gsc.oauth_client_id", value = priorCid,  type = "string" );
+                    }
+                } );
+
+            } );
+
             describe( "GscDailySyncJob.handle()", function() {
 
                 it( "writes rows end-to-end via the mock provider", function() {

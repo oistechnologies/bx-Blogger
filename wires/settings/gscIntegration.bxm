@@ -92,13 +92,16 @@ function connect() {
     // callback handler reads + clears it on Google's redirect
     // back. Avoids `session` scope access from the wire (which
     // is unreliable in CBWIRE's request context) and keeps the
-    // nonce out of any client-visible storage. 10-minute TTL
-    // is plenty for an OAuth round-trip.
+    // nonce out of any client-visible storage. CacheBox's set()
+    // takes `timeout` in MINUTES (CacheBoxProvider compares with
+    // dateDiff("n", ...)) — passing createTimespan() collapsed
+    // to a day-fraction here would expire the nonce in < 1s.
     try {
         cacheBox.getCache( "default" ).set(
             "gsc.oauth_state." & cbauth.getUser().getId(),
             nonce,
-            createTimespan( 0, 0, 10, 0 )
+            10, // timeout minutes — enough for an OAuth round-trip
+            0   // lastAccessTimeout — disabled
         );
     }
     catch ( any cacheErr ) {
@@ -108,10 +111,15 @@ function connect() {
 
     // `var url` collides with BoxLang's URL scope (CLAUDE.md
     // reserved-scope gotcha) — using `authUrl` avoids the
-    // silent fall-through that produced "len() on null".
+    // silent fall-through. The named arg below MUST be
+    // `redirectURL` — CBWIRE Component.redirect()'s signature
+    // is `redirect( redirectURL, redirectUsingNavigate )`. A
+    // mismatched arg name (e.g. `url=`) leaves the internal
+    // `_redirect` slot null and Component.cfc later calls
+    // `_redirect.len()` → "len() on null".
     try {
         var authUrl = gscService.buildAuthUrl( redirectUri = data.redirectUri, state = nonce );
-        redirect( url = authUrl );
+        redirect( redirectURL = authUrl );
     }
     catch ( bxBlogger.GscNotConfigured e ) {
         data.flashError = e.message;
