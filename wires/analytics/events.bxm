@@ -1,0 +1,123 @@
+<bx:script>
+// @startWire
+/**
+ * analytics.events — Phase 15.H Events report.
+ *
+ * Single table: eventName / eventCount / activeUsers. The event
+ * substring filter is client-side (operator types to narrow the
+ * visible rows without re-hitting the API).
+ */
+
+property name="gaService" inject="GoogleAnalyticsService";
+property name="cbauth"    inject="AuthenticationService@cbauth";
+
+data = {
+    "canView"   : false,
+    "connected" : false,
+    "days"      : 7,
+    "filter"    : "",
+    "rows"      : [],
+    "loading"   : false
+};
+
+function onMount( event, rc, prc, params ) {
+    var u = cbauth.isLoggedIn() ? cbauth.getUser() : "";
+    data.canView = !isSimpleValue( u ) && u.hasPermission( "ga.view" );
+    if ( !data.canView ) return;
+    hydrate();
+}
+
+function setRange( numeric days ) {
+    if ( !data.canView ) return;
+    data.days = max( 1, int( arguments.days ) );
+    hydrate();
+}
+
+function refresh() {
+    if ( !data.canView ) return;
+    try { gaService.invalidateCaches(); } catch ( any e ) {}
+    hydrate();
+}
+
+private void function hydrate() {
+    data.loading   = true;
+    data.connected = isGaConnected();
+    if ( !data.connected ) {
+        data.rows    = [];
+        data.loading = false;
+        return;
+    }
+    try { data.rows = gaService.eventBreakdown( days = data.days, n = 50 ); }
+    catch ( any e ) { data.rows = []; }
+    data.loading = false;
+}
+
+array function visibleRows() {
+    if ( !len( data.filter ) ) return data.rows;
+    var needle = lcase( data.filter );
+    var out    = [];
+    for ( var r in data.rows ) {
+        if ( lcase( r.label ?: "" ) contains needle ) out.append( r );
+    }
+    return out;
+}
+
+private boolean function isGaConnected() {
+    try { return gaService.status().connected; }
+    catch ( any e ) { return false; }
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:if !args.canView>
+    <div class="alert alert-warning"><i class="bi bi-shield-lock me-1"></i> You don't have permission to view Analytics.</div>
+<bx:elseif !args.connected>
+    <div class="card stat-card stat-card-secondary"><div class="card-body text-center p-5">
+        <h4>Google Analytics is not connected</h4>
+        <a class="btn btn-primary" href="/admin/settings/ga"><i class="bi bi-link-45deg me-1"></i> Connect Google Analytics</a>
+    </div></div>
+<bx:else>
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+        <div class="btn-group btn-group-sm">
+            <button class="btn #( args.days == 7  ? "btn-primary" : "btn-outline-primary" )#" wire:click="setRange(7)" >Last 7d</button>
+            <button class="btn #( args.days == 28 ? "btn-primary" : "btn-outline-primary" )#" wire:click="setRange(28)">Last 28d</button>
+            <button class="btn #( args.days == 90 ? "btn-primary" : "btn-outline-primary" )#" wire:click="setRange(90)">Last 90d</button>
+        </div>
+        <button class="btn btn-sm btn-outline-secondary" wire:click="refresh"><i class="bi bi-arrow-clockwise me-1"></i> Refresh</button>
+    </div>
+
+    <div class="input-group input-group-sm mb-3">
+        <span class="input-group-text"><i class="bi bi-search"></i></span>
+        <input type="text" class="form-control" placeholder="Filter by event name..." wire:model.live="filter">
+    </div>
+
+    <div class="card stat-card stat-card-warning">
+        <div class="card-body p-0">
+            <bx:set visible = visibleRows()>
+            <bx:if !visible.len()>
+                <p class="text-muted small m-3 mb-0">No matching events for this window.</p>
+            <bx:else>
+                <table class="table table-sm table-striped align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Event</th>
+                            <th class="text-end">Count</th>
+                            <th class="text-end">Active users</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <bx:loop array="#visible#" item="r">
+                            <tr>
+                                <td class="small"><code>#encodeForHTML( r.label ?: "(not set)" )#</code></td>
+                                <td class="text-end small">#numberFormat( int( r.eventCount  ?: 0 ) )#</td>
+                                <td class="text-end small">#numberFormat( int( r.activeUsers ?: 0 ) )#</td>
+                            </tr>
+                        </bx:loop>
+                    </tbody>
+                </table>
+            </bx:if>
+        </div>
+    </div>
+</bx:if>
+</bx:output>

@@ -1,0 +1,165 @@
+<bx:script>
+// @startWire
+/**
+ * analytics.sources — Phase 15.H Acquisition report.
+ *
+ * Three tabs:
+ *   - Channels (sessionDefaultChannelGroup)
+ *   - Source / Medium (sessionSourceMedium)
+ *   - Campaigns (sessionCampaignName)
+ *
+ * All three are live-API reads (cached 5 min by query hash).
+ */
+
+property name="gaService" inject="GoogleAnalyticsService";
+property name="cbauth"    inject="AuthenticationService@cbauth";
+
+data = {
+    "canView"   : false,
+    "connected" : false,
+    "days"      : 7,
+    "tab"       : "channels",
+    "rows"      : [],
+    "loading"   : false
+};
+
+function onMount( event, rc, prc, params ) {
+    var u = cbauth.isLoggedIn() ? cbauth.getUser() : "";
+    data.canView = !isSimpleValue( u ) && u.hasPermission( "ga.view" );
+    if ( !data.canView ) return;
+    hydrate();
+}
+
+function setRange( numeric days ) {
+    if ( !data.canView ) return;
+    data.days = max( 1, int( arguments.days ) );
+    hydrate();
+}
+
+function setTab( required string tab ) {
+    if ( !data.canView ) return;
+    data.tab = arguments.tab;
+    hydrate();
+}
+
+function refresh() {
+    if ( !data.canView ) return;
+    try { gaService.invalidateCaches(); } catch ( any e ) {}
+    hydrate();
+}
+
+private void function hydrate() {
+    data.loading   = true;
+    data.connected = isGaConnected();
+    if ( !data.connected ) {
+        data.rows    = [];
+        data.loading = false;
+        return;
+    }
+    try {
+        switch ( data.tab ) {
+            case "sourceMedium":
+                data.rows = gaService.topSources( days = data.days, n = 50 );
+                break;
+            case "campaigns":
+                data.rows = liveDim( "sessionCampaignName", "sessions", data.days, 50 );
+                break;
+            default:
+                data.rows = gaService.topAcquisitionChannels( days = data.days, n = 50 );
+        }
+    }
+    catch ( any e ) { data.rows = []; }
+    data.loading = false;
+}
+
+private array function liveDim( required string dim, required string metric, required numeric days, required numeric n ) {
+    var since = dateFormat( dateAdd( "d", -arguments.days, now() ), "yyyy-mm-dd" );
+    var until = dateFormat( now(), "yyyy-mm-dd" );
+    var body  = {
+        "dateRanges" : [ { "startDate" : since, "endDate" : until } ],
+        "dimensions" : [ { "name" : arguments.dim } ],
+        "metrics"    : [ { "name" : arguments.metric }, { "name" : "activeUsers" } ],
+        "orderBys"   : [ { "metric" : { "metricName" : arguments.metric }, "desc" : true } ],
+        "limit"      : arguments.n
+    };
+    var resp = gaService.runReport( body = body );
+    var out  = [];
+    var dimHeaders = resp.dimensionHeaders ?: [];
+    var metHeaders = resp.metricHeaders    ?: [];
+    for ( var r in ( resp.rows ?: [] ) ) {
+        var rec = { "label" : ( r.dimensionValues.len() ? ( r.dimensionValues[ 1 ].value ?: "" ) : "" ) };
+        for ( var i = 1; i <= metHeaders.len(); i++ ) {
+            if ( r.metricValues.len() >= i ) rec[ metHeaders[ i ].name ] = r.metricValues[ i ].value ?: "0";
+        }
+        out.append( rec );
+    }
+    return out;
+}
+
+private boolean function isGaConnected() {
+    try { return gaService.status().connected; }
+    catch ( any e ) { return false; }
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:if !args.canView>
+    <div class="alert alert-warning"><i class="bi bi-shield-lock me-1"></i> You don't have permission to view Analytics.</div>
+<bx:elseif !args.connected>
+    <div class="card stat-card stat-card-secondary"><div class="card-body text-center p-5">
+        <h4>Google Analytics is not connected</h4>
+        <a class="btn btn-primary" href="/admin/settings/ga"><i class="bi bi-link-45deg me-1"></i> Connect Google Analytics</a>
+    </div></div>
+<bx:else>
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+        <div class="btn-group btn-group-sm">
+            <button class="btn #( args.days == 7  ? "btn-primary" : "btn-outline-primary" )#" wire:click="setRange(7)" >Last 7d</button>
+            <button class="btn #( args.days == 28 ? "btn-primary" : "btn-outline-primary" )#" wire:click="setRange(28)">Last 28d</button>
+            <button class="btn #( args.days == 90 ? "btn-primary" : "btn-outline-primary" )#" wire:click="setRange(90)">Last 90d</button>
+        </div>
+        <button class="btn btn-sm btn-outline-secondary" wire:click="refresh">
+            <i class="bi bi-arrow-clockwise me-1"></i> Refresh
+        </button>
+    </div>
+
+    <ul class="nav nav-tabs mb-3">
+        <li class="nav-item">
+            <a class="nav-link #( args.tab == "channels"     ? "active" : "" )#" href="javascript:void(0)" wire:click="setTab('channels')">Channels</a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link #( args.tab == "sourceMedium" ? "active" : "" )#" href="javascript:void(0)" wire:click="setTab('sourceMedium')">Source / Medium</a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link #( args.tab == "campaigns"    ? "active" : "" )#" href="javascript:void(0)" wire:click="setTab('campaigns')">Campaigns</a>
+        </li>
+    </ul>
+
+    <div class="card stat-card stat-card-info">
+        <div class="card-body p-0">
+            <bx:if !args.rows.len()>
+                <p class="text-muted small m-3 mb-0">No data for this window / tab yet.</p>
+            <bx:else>
+                <table class="table table-sm table-striped align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th><bx:if args.tab == "channels">Channel<bx:elseif args.tab == "sourceMedium">Source / Medium<bx:else>Campaign</bx:if></th>
+                            <th class="text-end">Sessions</th>
+                            <th class="text-end">Active users</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <bx:loop array="#args.rows#" item="r">
+                            <tr>
+                                <td class="small">#encodeForHTML( len( r.label ?: "" ) ? r.label : "(not set)" )#</td>
+                                <td class="text-end small">#numberFormat( int( r.sessions    ?: 0 ) )#</td>
+                                <td class="text-end small">#numberFormat( int( r.activeUsers ?: 0 ) )#</td>
+                            </tr>
+                        </bx:loop>
+                    </tbody>
+                </table>
+            </bx:if>
+        </div>
+    </div>
+</bx:if>
+</bx:output>

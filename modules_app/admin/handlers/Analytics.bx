@@ -52,6 +52,41 @@ class extends="coldbox.system.EventHandler" {
     }
 
     /**
+     * Acquisition — channel / source-medium / campaign breakdowns
+     * via tabs. Each tab calls a different live-API method on
+     * GoogleAnalyticsService.
+     */
+    function sources( event, rc, prc ) {
+        prc.pageTitle = "Analytics — Acquisition";
+        event.setView( view = "analytics/sources" );
+    }
+
+    /**
+     * Geography — country + city breakdowns via tabs.
+     */
+    function geo( event, rc, prc ) {
+        prc.pageTitle = "Analytics — Geography";
+        event.setView( view = "analytics/geo" );
+    }
+
+    /**
+     * Devices — device category + browser + operating system
+     * breakdowns, stacked.
+     */
+    function devices( event, rc, prc ) {
+        prc.pageTitle = "Analytics — Devices";
+        event.setView( view = "analytics/devices" );
+    }
+
+    /**
+     * Events — eventName breakdown with optional substring filter.
+     */
+    function events( event, rc, prc ) {
+        prc.pageTitle = "Analytics — Events";
+        event.setView( view = "analytics/events" );
+    }
+
+    /**
      * Top pages CSV export. Pulls every row matching the current
      * filters (no pagination) and streams as a CSV attachment.
      * Filters are passed via the URL query string so a wire-side

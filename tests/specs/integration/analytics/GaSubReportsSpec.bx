@@ -1,0 +1,53 @@
+/**
+ * bx-Blogger — GaSubReportsSpec (Phase 15.H)
+ *
+ * Smoke checks for the 4 drilldown reports: Acquisition,
+ * Geography, Devices, Events. Each is a handler action + view +
+ * wire + route + sidebar sub-link.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    function run() {
+        describe( "Phase 15.H — Acquisition / Geography / Devices / Events reports", function() {
+
+            it( "handler exposes sources(), geo(), devices(), events() actions", function() {
+                var src = fileRead( getController().getSetting( "modules" ).admin.path & "/handlers/Analytics.bx" );
+                expect( src ).toInclude( "function sources(" );
+                expect( src ).toInclude( "function geo("     );
+                expect( src ).toInclude( "function devices(" );
+                expect( src ).toInclude( "function events("  );
+            } );
+
+            it( "view + wire files exist for all 4 reports", function() {
+                var modulePath = getController().getSetting( "modules" ).admin.path;
+                for ( var name in [ "sources", "geo", "devices", "events" ] ) {
+                    expect( fileExists( modulePath & "/views/analytics/" & name & ".bxm" ) ).toBeTrue();
+                    expect( fileExists( expandPath( "/wires/analytics/" & name & ".bxm" ) ) ).toBeTrue();
+                }
+            } );
+
+            it( "all 4 routes are registered before the catch-all", function() {
+                var router = fileRead( getController().getSetting( "modules" ).admin.path & "/config/Router.bx" );
+                var catchAllIdx = find( "route( "":handler/:action?""", router );
+                for ( var slug in [ "sources", "geo", "devices", "events" ] ) {
+                    var idx = find( "route( ""analytics/" & slug & """", router );
+                    expect( idx ).toBeGT( 0,           "route for " & slug & " missing" );
+                    expect( idx ).toBeLT( catchAllIdx, "route for " & slug & " is after the catch-all" );
+                }
+            } );
+
+            it( "sidebar has 4 new sub-links inside the Analytics collapse group", function() {
+                var layout = fileRead( getController().getSetting( "modules" ).admin.path & "/layouts/Main.bxm" );
+                for ( var slug in [ "sources", "geo", "devices", "events" ] ) {
+                    expect( layout ).toInclude( "/admin/analytics/" & slug );
+                }
+                expect( layout ).toInclude( "Acquisition" );
+                expect( layout ).toInclude( "Geography"   );
+                expect( layout ).toInclude( "Devices"     );
+                expect( layout ).toInclude( "Events"      );
+            } );
+
+        } );
+    }
+
+}

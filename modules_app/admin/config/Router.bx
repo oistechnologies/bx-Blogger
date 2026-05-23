@@ -69,7 +69,12 @@ class {
         // 15.G — Top pages + CSV export.
         route( "analytics/pages/csv" ).to( "Analytics.pagesCsv" );
         route( "analytics/pages"     ).to( "Analytics.pages"    );
-        route( "analytics"           ).to( "Analytics.index"    );
+        // 15.H — Acquisition / Geography / Devices / Events drilldowns.
+        route( "analytics/sources" ).to( "Analytics.sources" );
+        route( "analytics/geo"     ).to( "Analytics.geo"     );
+        route( "analytics/devices" ).to( "Analytics.devices" );
+        route( "analytics/events"  ).to( "Analytics.events"  );
+        route( "analytics"         ).to( "Analytics.index"   );
 
         // Phase UX — self-service account lives inside the admin shell
         // (previously /account at the app root). Specific sub-routes

@@ -459,6 +459,26 @@
 							   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Top Pages">
 								<i class="bi bi-file-text nav-icon"></i><span class="nav-label">Top Pages</span>
 							</a>
+							<a class="nav-link nav-sub #( currentEvent == 'admin:Analytics.sources' ? 'active' : '' )#"
+							   href="/admin/analytics/sources"
+							   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Acquisition">
+								<i class="bi bi-broadcast nav-icon"></i><span class="nav-label">Acquisition</span>
+							</a>
+							<a class="nav-link nav-sub #( currentEvent == 'admin:Analytics.geo' ? 'active' : '' )#"
+							   href="/admin/analytics/geo"
+							   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Geography">
+								<i class="bi bi-globe-americas nav-icon"></i><span class="nav-label">Geography</span>
+							</a>
+							<a class="nav-link nav-sub #( currentEvent == 'admin:Analytics.devices' ? 'active' : '' )#"
+							   href="/admin/analytics/devices"
+							   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Devices">
+								<i class="bi bi-laptop nav-icon"></i><span class="nav-label">Devices</span>
+							</a>
+							<a class="nav-link nav-sub #( currentEvent == 'admin:Analytics.events' ? 'active' : '' )#"
+							   href="/admin/analytics/events"
+							   data-bs-toggle="tooltip" data-bs-placement="right" data-bs-trigger="manual" title="Events">
+								<i class="bi bi-lightning nav-icon"></i><span class="nav-label">Events</span>
+							</a>
 						</div>
 					</bx:if>
 

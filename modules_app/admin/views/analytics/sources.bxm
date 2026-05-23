@@ -1,0 +1,5 @@
+<bx:output>
+#view( view = "partials/heading", args = { "title" : "Analytics — Acquisition" } )#
+
+#wire( name = "analytics.sources" )#
+</bx:output>

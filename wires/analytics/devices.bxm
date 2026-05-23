@@ -1,0 +1,155 @@
+<bx:script>
+// @startWire
+/**
+ * analytics.devices — Phase 15.H Devices report.
+ *
+ * Three stacked tables: Device category / Browser / Operating system.
+ * Single date-range applies to all three.
+ */
+
+property name="gaService" inject="GoogleAnalyticsService";
+property name="cbauth"    inject="AuthenticationService@cbauth";
+
+data = {
+    "canView"    : false,
+    "connected"  : false,
+    "days"       : 7,
+    "deviceCats" : [],
+    "browsers"   : [],
+    "oses"       : [],
+    "loading"    : false
+};
+
+function onMount( event, rc, prc, params ) {
+    var u = cbauth.isLoggedIn() ? cbauth.getUser() : "";
+    data.canView = !isSimpleValue( u ) && u.hasPermission( "ga.view" );
+    if ( !data.canView ) return;
+    hydrate();
+}
+
+function setRange( numeric days ) {
+    if ( !data.canView ) return;
+    data.days = max( 1, int( arguments.days ) );
+    hydrate();
+}
+
+function refresh() {
+    if ( !data.canView ) return;
+    try { gaService.invalidateCaches(); } catch ( any e ) {}
+    hydrate();
+}
+
+private void function hydrate() {
+    data.loading   = true;
+    data.connected = isGaConnected();
+    if ( !data.connected ) {
+        data.deviceCats = [];
+        data.browsers   = [];
+        data.oses       = [];
+        data.loading    = false;
+        return;
+    }
+    try { data.deviceCats = gaService.deviceCategoryBreakdown( data.days ); }
+    catch ( any e ) { data.deviceCats = []; }
+    try { data.browsers   = gaService.browserBreakdown( data.days ); }
+    catch ( any e ) { data.browsers   = []; }
+    try { data.oses       = gaService.osBreakdown( data.days ); }
+    catch ( any e ) { data.oses       = []; }
+    data.loading = false;
+}
+
+private boolean function isGaConnected() {
+    try { return gaService.status().connected; }
+    catch ( any e ) { return false; }
+}
+// @endWire
+</bx:script>
+
+<bx:output>
+<bx:if !args.canView>
+    <div class="alert alert-warning"><i class="bi bi-shield-lock me-1"></i> You don't have permission to view Analytics.</div>
+<bx:elseif !args.connected>
+    <div class="card stat-card stat-card-secondary"><div class="card-body text-center p-5">
+        <h4>Google Analytics is not connected</h4>
+        <a class="btn btn-primary" href="/admin/settings/ga"><i class="bi bi-link-45deg me-1"></i> Connect Google Analytics</a>
+    </div></div>
+<bx:else>
+    <div class="d-flex flex-wrap justify-content-between align-items-center mb-3 gap-2">
+        <div class="btn-group btn-group-sm">
+            <button class="btn #( args.days == 7  ? "btn-primary" : "btn-outline-primary" )#" wire:click="setRange(7)" >Last 7d</button>
+            <button class="btn #( args.days == 28 ? "btn-primary" : "btn-outline-primary" )#" wire:click="setRange(28)">Last 28d</button>
+            <button class="btn #( args.days == 90 ? "btn-primary" : "btn-outline-primary" )#" wire:click="setRange(90)">Last 90d</button>
+        </div>
+        <button class="btn btn-sm btn-outline-secondary" wire:click="refresh"><i class="bi bi-arrow-clockwise me-1"></i> Refresh</button>
+    </div>
+
+    <div class="row g-3">
+        <div class="col-12 col-lg-4">
+            <div class="card stat-card stat-card-primary">
+                <div class="card-header card-header-soft card-header-soft-primary"><span class="h6 mb-0">Device category</span></div>
+                <div class="card-body p-0">
+                    <bx:if !args.deviceCats.len()>
+                        <p class="text-muted small m-3 mb-0">No data.</p>
+                    <bx:else>
+                        <table class="table table-sm mb-0 align-middle">
+                            <thead class="table-light"><tr><th>Category</th><th class="text-end">Sessions</th></tr></thead>
+                            <tbody>
+                                <bx:loop array="#args.deviceCats#" item="r">
+                                    <tr>
+                                        <td class="small">#encodeForHTML( r.label ?: "(not set)" )#</td>
+                                        <td class="text-end small">#numberFormat( int( r.sessions ?: 0 ) )#</td>
+                                    </tr>
+                                </bx:loop>
+                            </tbody>
+                        </table>
+                    </bx:if>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-lg-4">
+            <div class="card stat-card stat-card-info">
+                <div class="card-header card-header-soft card-header-soft-info"><span class="h6 mb-0">Browser</span></div>
+                <div class="card-body p-0">
+                    <bx:if !args.browsers.len()>
+                        <p class="text-muted small m-3 mb-0">No data.</p>
+                    <bx:else>
+                        <table class="table table-sm mb-0 align-middle">
+                            <thead class="table-light"><tr><th>Browser</th><th class="text-end">Sessions</th></tr></thead>
+                            <tbody>
+                                <bx:loop array="#args.browsers#" item="r">
+                                    <tr>
+                                        <td class="small">#encodeForHTML( r.label ?: "(not set)" )#</td>
+                                        <td class="text-end small">#numberFormat( int( r.sessions ?: 0 ) )#</td>
+                                    </tr>
+                                </bx:loop>
+                            </tbody>
+                        </table>
+                    </bx:if>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-lg-4">
+            <div class="card stat-card stat-card-success">
+                <div class="card-header card-header-soft card-header-soft-success"><span class="h6 mb-0">Operating system</span></div>
+                <div class="card-body p-0">
+                    <bx:if !args.oses.len()>
+                        <p class="text-muted small m-3 mb-0">No data.</p>
+                    <bx:else>
+                        <table class="table table-sm mb-0 align-middle">
+                            <thead class="table-light"><tr><th>OS</th><th class="text-end">Sessions</th></tr></thead>
+                            <tbody>
+                                <bx:loop array="#args.oses#" item="r">
+                                    <tr>
+                                        <td class="small">#encodeForHTML( r.label ?: "(not set)" )#</td>
+                                        <td class="text-end small">#numberFormat( int( r.sessions ?: 0 ) )#</td>
+                                    </tr>
+                                </bx:loop>
+                            </tbody>
+                        </table>
+                    </bx:if>
+                </div>
+            </div>
+        </div>
+    </div>
+</bx:if>
+</bx:output>
