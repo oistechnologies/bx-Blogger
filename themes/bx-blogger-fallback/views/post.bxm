@@ -39,7 +39,7 @@
                         &middot; #prc.post.getReadingTimeMinutes()# min read
                     </bx:if>
                 </p>
-                <bx:if len( prc.post.getExcerpt() ?: "" )>
+                <bx:if ( prc.post.getShowExcerptOnPost() ?: false ) && len( prc.post.getExcerpt() ?: "" )>
                     <p class="lead mb-0">#encodeForHTML( prc.post.getExcerpt() )#</p>
                 </bx:if>
             </div>

@@ -19,7 +19,7 @@
         </p>
     </header>
 
-    <bx:if len( prc.post.getExcerpt() ?: "" )>
+    <bx:if ( prc.post.getShowExcerptOnPost() ?: false ) && len( prc.post.getExcerpt() ?: "" )>
         <p class="lead fs-4 text-secondary-emphasis mb-5 text-center fw-light">
             #encodeForHTML( prc.post.getExcerpt() )#
         </p>

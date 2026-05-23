@@ -37,6 +37,7 @@ data = {
     "title"          : "",
     "slug"           : "",
     "excerpt"        : "",
+    "showExcerptOnPost" : false,
     "bodyMarkdown"   : "",
     "bodyPreview"    : "",
     "status"         : "draft",
@@ -145,6 +146,7 @@ private function loadFromDb( required id ) {
     data.title          = post.getTitle() ?: "";
     data.slug           = post.getSlug() ?: "";
     data.excerpt        = post.getExcerpt() ?: "";
+    data.showExcerptOnPost = !!( post.getShowExcerptOnPost() ?: 0 );
     data.bodyMarkdown   = post.getBodyMarkdown() ?: "";
     data.status         = post.getStatus() ?: "draft";
     data.postType       = post.getPostType() ?: "post";
@@ -1281,6 +1283,7 @@ private struct function collectAttrs() {
         "title"          : trim( data.title ),
         "slug"           : len( trim( data.slug ) ) ? data.slug : postService.slugify( data.title ),
         "excerpt"        : data.excerpt,
+        "showExcerptOnPost" : data.showExcerptOnPost ? 1 : 0,
         "bodyMarkdown"   : data.bodyMarkdown,
         "postType"       : data.postType,
         "visibility"     : data.visibility,
@@ -1594,6 +1597,17 @@ private string function ogGeneratedAtFor( required any post ) {
 						          maxlength="500"
 						          wire:model.blur="excerpt"
 						          placeholder="Short summary shown on archive pages and OG cards"></textarea>
+						<div class="form-check form-switch mt-2">
+							<input class="form-check-input" type="checkbox" role="switch"
+							       id="showExcerptOnPost"
+							       wire:model.live="showExcerptOnPost">
+							<label class="form-check-label" for="showExcerptOnPost">
+								Show excerpt above body on this post's page
+							</label>
+							<div class="form-text">
+								By default the excerpt only appears on listings/cards. Tick to also display it above the body on this post's individual page.
+							</div>
+						</div>
 					</div>
 					<div class="mb-3">
 						<label for="postBody" class="form-label d-flex justify-content-between align-items-center">
