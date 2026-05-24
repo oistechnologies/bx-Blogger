@@ -109,6 +109,8 @@ class extends="coldbox.system.EventHandler" {
     function gscCallback( event, rc, prc ) {
         var user = getInstance( "AuthenticationService@cbauth" ).getUser();
         if ( !user.hasPermission( "seo.gsc.connect" ) ) {
+            writeLog( file = "bxblogger", type = "warning",
+                text = "gscCallback: user lacks seo.gsc.connect permission (userId=" & ( user.getId() ?: "(none)" ) & ")" );
             relocate( url = "/admin" );
             return;
         }
@@ -118,6 +120,8 @@ class extends="coldbox.system.EventHandler" {
         var err   = trim( rc.error ?: "" );
 
         if ( len( err ) ) {
+            writeLog( file = "bxblogger", type = "error",
+                text = "gscCallback: Google returned error param: " & err );
             flash.put( "error", "GSC connection failed: " & err );
             relocate( url = "/admin/settings/gsc" );
             return;
@@ -131,6 +135,11 @@ class extends="coldbox.system.EventHandler" {
         var expected = cache.get( cacheKey );
         if ( isNull( expected ) ) expected = "";
         if ( !len( expected ) || compare( state, expected ) != 0 ) {
+            writeLog( file = "bxblogger", type = "error",
+                text = "gscCallback: CSRF state mismatch. userId=" & user.getId()
+                     & " cacheKey=" & cacheKey
+                     & " cacheHit="    & ( len( expected ) gt 0 ? "true" : "false (nonce missing/evicted/expired)" )
+                     & " inboundState=" & state );
             flash.put( "error", "GSC OAuth state mismatch — try the connect flow again." );
             relocate( url = "/admin/settings/gsc" );
             return;
@@ -138,6 +147,7 @@ class extends="coldbox.system.EventHandler" {
         try { cache.clear( cacheKey ); } catch ( any e ) {}
 
         if ( !len( code ) ) {
+            writeLog( file = "bxblogger", type = "error", text = "gscCallback: missing authorization code in callback URL" );
             flash.put( "error", "GSC OAuth callback missing authorization code." );
             relocate( url = "/admin/settings/gsc" );
             return;
@@ -145,10 +155,20 @@ class extends="coldbox.system.EventHandler" {
 
         try {
             var redirectUri = buildGoogleRedirectUri( event, "gsc" );
+            writeLog( file = "bxblogger", type = "information",
+                text = "gscCallback: exchanging code with redirect_uri=" & redirectUri );
             getInstance( "GscService" ).exchangeCodeForTokens( code = code, redirectUri = redirectUri );
+            writeLog( file = "bxblogger", type = "information", text = "gscCallback: token exchange succeeded" );
             flash.put( "notice", "Connected to Google Search Console." );
         }
         catch ( any e ) {
+            // Log the full message + detail so the operator can see
+            // Google's actual error response in the app log even when
+            // the flash UI is truncated.
+            writeLog( file = "bxblogger", type = "error",
+                text = "gscCallback: token exchange FAILED. message=" & ( e.message ?: "" )
+                     & " | detail=" & ( e.detail ?: "" )
+                     & " | type=" & ( e.type ?: "" ) );
             flash.put( "error", "GSC token exchange failed: " & e.message );
         }
         relocate( url = "/admin/settings/gsc" );
@@ -177,6 +197,8 @@ class extends="coldbox.system.EventHandler" {
     function gaCallback( event, rc, prc ) {
         var user = getInstance( "AuthenticationService@cbauth" ).getUser();
         if ( !user.hasPermission( "ga.connect" ) ) {
+            writeLog( file = "bxblogger", type = "warning",
+                text = "gaCallback: user lacks ga.connect permission (userId=" & ( user.getId() ?: "(none)" ) & ")" );
             relocate( url = "/admin" );
             return;
         }
@@ -186,6 +208,8 @@ class extends="coldbox.system.EventHandler" {
         var err   = trim( rc.error ?: "" );
 
         if ( len( err ) ) {
+            writeLog( file = "bxblogger", type = "error",
+                text = "gaCallback: Google returned error param: " & err );
             flash.put( "error", "GA connection failed: " & err );
             relocate( url = "/admin/settings/ga" );
             return;
@@ -196,6 +220,11 @@ class extends="coldbox.system.EventHandler" {
         var expected = cache.get( cacheKey );
         if ( isNull( expected ) ) expected = "";
         if ( !len( expected ) || compare( state, expected ) != 0 ) {
+            writeLog( file = "bxblogger", type = "error",
+                text = "gaCallback: CSRF state mismatch. userId=" & user.getId()
+                     & " cacheKey=" & cacheKey
+                     & " cacheHit="    & ( len( expected ) gt 0 ? "true" : "false (nonce missing/evicted/expired)" )
+                     & " inboundState=" & state );
             flash.put( "error", "GA OAuth state mismatch — try the connect flow again." );
             relocate( url = "/admin/settings/ga" );
             return;
@@ -203,6 +232,7 @@ class extends="coldbox.system.EventHandler" {
         try { cache.clear( cacheKey ); } catch ( any e ) {}
 
         if ( !len( code ) ) {
+            writeLog( file = "bxblogger", type = "error", text = "gaCallback: missing authorization code in callback URL" );
             flash.put( "error", "GA OAuth callback missing authorization code." );
             relocate( url = "/admin/settings/ga" );
             return;
@@ -210,10 +240,17 @@ class extends="coldbox.system.EventHandler" {
 
         try {
             var redirectUri = buildGoogleRedirectUri( event, "ga" );
+            writeLog( file = "bxblogger", type = "information",
+                text = "gaCallback: exchanging code with redirect_uri=" & redirectUri );
             getInstance( "GoogleAnalyticsService" ).exchangeCodeForTokens( code = code, redirectUri = redirectUri );
+            writeLog( file = "bxblogger", type = "information", text = "gaCallback: token exchange succeeded" );
             flash.put( "notice", "Connected to Google Analytics." );
         }
         catch ( any e ) {
+            writeLog( file = "bxblogger", type = "error",
+                text = "gaCallback: token exchange FAILED. message=" & ( e.message ?: "" )
+                     & " | detail=" & ( e.detail ?: "" )
+                     & " | type=" & ( e.type ?: "" ) );
             flash.put( "error", "GA token exchange failed: " & e.message );
         }
         relocate( url = "/admin/settings/ga" );
