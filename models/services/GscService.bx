@@ -111,7 +111,7 @@ class accessors="true" singleton {
         if ( !len( refresh ) || !len( access ) ) {
             throw( type = "bxBlogger.GscOAuthError", message = "Token exchange response missing refresh_token or access_token." );
         }
-        var expAt = int( now().toUnixTimestamp() ) + int( expIn );
+        var expAt = nowEpochSeconds() + int( expIn );
 
         settingService.set( key = "gsc.refresh_token",    value = refresh, type = "string" );
         settingService.set( key = "gsc.access_token",     value = access,  type = "string" );
@@ -130,7 +130,7 @@ class accessors="true" singleton {
 
         var access  = trim( settingService.get( "gsc.access_token", "" ) ?: "" );
         var expAt   = val( settingService.get( "gsc.token_expires_at", 0 ) );
-        var nowEpoch = int( now().toUnixTimestamp() );
+        var nowEpoch = nowEpochSeconds();
 
         if ( len( access ) && expAt > ( nowEpoch + 60 ) ) {
             return access;
@@ -166,7 +166,7 @@ class accessors="true" singleton {
         if ( !len( access ) ) {
             throw( type = "bxBlogger.GscOAuthError", message = "Token refresh response missing access_token." );
         }
-        var expAt = int( now().toUnixTimestamp() ) + int( expIn );
+        var expAt = nowEpochSeconds() + int( expIn );
         settingService.set( key = "gsc.access_token",     value = access, type = "string" );
         settingService.set( key = "gsc.token_expires_at", value = expAt,  type = "int"    );
         return access;
@@ -435,6 +435,18 @@ class accessors="true" singleton {
 
     private any function mockProvider() {
         return wirebox.getInstance( "MockGscProvider" );
+    }
+
+    /**
+     * Portable epoch-seconds lookup. BoxLang 1.12 does NOT expose
+     * .toUnixTimestamp() as a DateTime member method, so the
+     * `now().toUnixTimestamp()` call throws at runtime with
+     * "The method [toUnixTimestamp] is not present in the [DateTime] object".
+     * java.time.Instant works on every JVM-backed CFML engine.
+     * Mirrors GoogleAnalyticsService.nowEpochSeconds().
+     */
+    private numeric function nowEpochSeconds() {
+        return int( createObject( "java", "java.time.Instant" ).now().getEpochSecond() );
     }
 
     // --------------------------------------------------------------------
