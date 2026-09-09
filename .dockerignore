@@ -21,8 +21,17 @@ themes/*/assets
 dist
 build
 
-# Test artifacts
-tests/results
+# Test suite + artifacts.
+#
+# `tests/` is excluded from the IMAGE deliberately. In the flat layout the
+# project root IS the web root, so a shipped `tests/runner.bxm` is a real file
+# at `/tests/runner.bxm` that runs the whole integration suite on a plain GET —
+# against whatever database the container is pointed at. Nothing in the running
+# app needs `tests/`.
+#
+# Dev and CI are unaffected: docker-compose.yml bind-mounts `./:/app`, so the
+# dev container gets tests/ from the host checkout, not from the image.
+tests
 coverage
 
 # OS

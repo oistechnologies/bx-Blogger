@@ -39,12 +39,12 @@
         "hyper":"^8.2.0",
         "cbstorages":"^3.5.0+5",
         "BCrypt":"^3.2.0+1",
-        "cbq":"^5.0.7"
+        "cbq":"^5.0.7",
+        "commandbox-boxlang":"*"
     },
     "devDependencies":{
         "testbox":"*",
         "route-visualizer":"*",
-        "commandbox-boxlang":"*",
         "commandbox-cfformat":"*",
         "cbdebugger":"^4.4.0+6"
     },

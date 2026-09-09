@@ -1,0 +1,159 @@
+/**
+ * bx-Blogger — CbDebuggerConfigSpec
+ *
+ * Regression guard for the production heap leak.
+ *
+ * cbdebugger attaches a LogBox TracerAppender to the ROOT logger whenever
+ * `enabled && tracers.enabled`. Every log line then reaches
+ * DebuggerService.pushTracer(), which appends the whole BoxLang `arguments`
+ * scope to a per-thread array. On HTTP threads that array dies with the
+ * request; on the long-lived scheduler / cbq / async executor threads it does
+ * not, so it grows for the life of the container.
+ *
+ * Shipped to production this leaked ~500 MB/day. Both live sites reached
+ * ~392,000 retained tracer objects — about 75% of the live heap — inside 24
+ * hours and died with `OutOfMemoryError: Java heap space`, needing a manual
+ * container restart each time.
+ *
+ * Two independent guards keep it out of production:
+ *   1. config/modules/cbdebugger.cfc gates `enabled` + `debugMode` on
+ *      ENVIRONMENT, failing safe to production.
+ *   2. docker/Dockerfile builds the released image with
+ *      `box install --production`, so the module is absent entirely.
+ *
+ * This spec covers both, plus the JVM safety net in server.json.
+ *
+ * It asserts on config SOURCE rather than on live module settings, because
+ * the suite runs with ENVIRONMENT=development — the environment where the
+ * debugger is supposed to be ON. There is no in-process way to observe the
+ * production branch without mutating the system property, and
+ * BaseIntegrationSpec warns that doing so leaks into the running app context.
+ *
+ * Two CLAUDE.md constraints shape the mechanics here:
+ *   - Global BIFs called from inside an it() closure dispatch as methods on
+ *     BaseSpec and throw. Every fileRead / jsonDeserialize therefore lives in
+ *     a class method below, and the closures only call those.
+ *   - Backslash escapes inside double-quoted strings trip the parser, so
+ *     whitespace is normalised with the POSIX "[\s]+" class once and the
+ *     assertions are plain substring matches. That also keeps them stable if
+ *     cfformat realigns the source.
+ */
+class extends="tests.support.BaseIntegrationSpec" {
+
+    /**
+     * Read a repo file and collapse all runs of whitespace to single spaces,
+     * so assertions survive re-alignment by cfformat.
+     */
+    private string function flatSource( required string relPath ) {
+        return reReplace( fileRead( expandPath( "/root/" & arguments.relPath ) ), "[\s]+", " ", "all" );
+    }
+
+    private struct function readJson( required string relPath ) {
+        return jsonDeserialize( fileRead( expandPath( "/root/" & arguments.relPath ) ) );
+    }
+
+    private string function jvmArgs() {
+        return readJson( "server.json" ).jvm.args;
+    }
+
+    function run() {
+        describe( "config/modules/cbdebugger.cfc", function() {
+
+            it( "binds the master switches to the environment, not a literal", function() {
+                var src = flatSource( "config/modules/cbdebugger.cfc" );
+                expect( src ).toInclude( "enabled : isDev" );
+                expect( src ).toInclude( "debugMode : isDev" );
+            } );
+
+            it( "fails safe to production when ENVIRONMENT is unset", function() {
+                // An unset or misspelled ENVIRONMENT must leave the debugger
+                // OFF, never on — so the getSystemSetting default is
+                // "production", not "development".
+                var src = flatSource( "config/modules/cbdebugger.cfc" );
+                expect( src ).toInclude( 'getSystemSetting( "ENVIRONMENT", "production" )' );
+                expect( src ).toInclude( '== "development"' );
+            } );
+
+        } );
+
+        describe( ".gitignore", function() {
+
+            it( "keeps config/modules/ tracked so the ENVIRONMENT gate actually ships", function() {
+                // This is the regression that caused the outage, and it is the
+                // one most likely to come back — nothing about a gitignore
+                // pattern looks dangerous.
+                //
+                // An unanchored `modules/` pattern matches a directory of that
+                // name at ANY depth, so it silently swallowed `config/modules/`
+                // along with the intended root-level ForgeBox install dir. The
+                // cbdebugger ENVIRONMENT gate therefore existed only on
+                // developer laptops; CI built from a clean clone where the file
+                // was absent, and the module loaded with its own defaults
+                // (`enabled: true`, `tracers.enabled: true`) — the exact pair
+                // that registers the leaking root-logger appender.
+                var src = flatSource( ".gitignore" );
+                expect( src ).toInclude( " /modules/ " );
+                expect( src ).notToInclude( " modules/ /coldbox/" );
+            } );
+
+        } );
+
+        describe( "production image build", function() {
+
+            it( "installs without devDependencies via the BOX_INSTALL_ARGS arg", function() {
+                var src = flatSource( "docker/Dockerfile" );
+                expect( src ).toInclude( "ARG BOX_INSTALL_ARGS" );
+                expect( src ).toInclude( "box install ${BOX_INSTALL_ARGS}" );
+            } );
+
+            it( "keeps commandbox-boxlang as a runtime dependency", function() {
+                // It is what teaches CommandBox the `cfengine: boxlang@1` in
+                // server.json. Back under devDependencies, a --production
+                // build would ship an image that cannot start its own server.
+                var box = readJson( "box.json" );
+                expect( box.dependencies ).toHaveKey( "commandbox-boxlang" );
+                expect( box.devDependencies ).notToHaveKey( "commandbox-boxlang" );
+            } );
+
+            it( "still treats cbdebugger and testbox as dev-only", function() {
+                var box = readJson( "box.json" );
+                expect( box.devDependencies ).toHaveKey( "cbdebugger" );
+                expect( box.dependencies ).notToHaveKey( "cbdebugger" );
+                expect( box.devDependencies ).toHaveKey( "testbox" );
+            } );
+
+            it( "keeps the test suite out of the image", function() {
+                // Flat layout means the project root IS the web root, so a
+                // shipped tests/runner.bxm would be a live endpoint that runs
+                // the whole integration suite against the production database
+                // on a plain GET.
+                var ignore = flatSource( ".dockerignore" );
+                expect( ignore ).toInclude( " tests coverage" );
+            } );
+
+        } );
+
+        describe( "server.json JVM args", function() {
+
+            it( "uses CommandBox's bare interpolation form for the timezone", function() {
+                // ${env.APP_TIMEZONE} is not a form CommandBox expands. It
+                // resolved to empty, so the JVM ran with a bare
+                // `-Duser.timezone=` while APP_TIMEZONE was set correctly.
+                expect( jvmArgs() ).toInclude( "-Duser.timezone=${APP_TIMEZONE}" );
+                expect( jvmArgs() ).notToInclude( "${env." );
+            } );
+
+            it( "exits and dumps the heap on OOM instead of thrashing forever", function() {
+                // Without ExitOnOutOfMemoryError the JVM survives its own OOM
+                // and GC-thrashes indefinitely: the container never exits,
+                // `restart: unless-stopped` never fires, /__health keeps
+                // answering 200, and the site stays down until a human
+                // notices and restarts it by hand.
+                expect( jvmArgs() ).toInclude( "-XX:+ExitOnOutOfMemoryError" );
+                expect( jvmArgs() ).toInclude( "-XX:+HeapDumpOnOutOfMemoryError" );
+            } );
+
+        } );
+    }
+
+}

@@ -25,10 +25,16 @@ lib/
 !/lib/
 !/lib/*.jar
 
-# ForgeBox-installed dependencies — restored via `box install` (flat layout)
-modules/
-coldbox/
-testbox/
+# ForgeBox-installed dependencies — restored via `box install` (flat layout).
+#
+# Leading slashes anchor these to the repo root. An unanchored `modules/`
+# matches a directory of that name at ANY depth, which silently swallowed
+# `config/modules/` — the directory holding hand-authored ColdBox module
+# configuration that must ship. See the note further down; that accident was
+# the root cause of a recurring production heap-exhaustion outage.
+/modules/
+/coldbox/
+/testbox/
 
 # BoxLang runtime state — generated at runtime, never source-controlled
 runtime/classes/
@@ -39,8 +45,19 @@ runtime/logs/
 # ColdBox auto-generated module config stubs (some modules drop these on install).
 # NOTE: `config/cbq.bx` is NOT ignored — Phase 6.A replaced the auto-generated
 # stub with a hand-authored connection + worker-pool config that must ship.
+#
+# `config/modules/` is NOT ignored either, as of the cbdebugger heap-leak fix.
+# It used to be, and that was the actual root cause of a recurring production
+# outage: the ENVIRONMENT gate everyone assumed was protecting production lived
+# in `config/modules/cbdebugger.cfc`, which never left anybody's laptop. CI
+# built images from a clean clone, so the module loaded with its own defaults —
+# `enabled: true` and `tracers.enabled: true` — which is exactly the pair that
+# attaches a leaking TracerAppender to the root logger.
+#
+# Module config is application config. It has to be reviewable and it has to
+# ship. Anything auto-generated and genuinely disposable should be deleted, not
+# hidden here.
 app/config/modules/
-config/modules/
 
 # Node / Vite build artifacts
 node_modules/

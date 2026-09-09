@@ -188,6 +188,158 @@ jobs:
         if: always()
         run: docker compose down --volumes --remove-orphans
 
+  prod-image-smoke:
+    name: Production Image Smoke Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # Runs in parallel with `tests`, not inside it. The suite there exercises
+    # the DEV image (devDependencies included); the image we actually publish
+    # is built with `--production`, and until this job existed nothing ever
+    # booted that shape before it reached a live site.
+    #
+    # What this catches: a runtime dependency mis-filed under devDependencies.
+    # `commandbox-boxlang` is the sharp one — it is what teaches CommandBox the
+    # `cfengine: boxlang@1` in server.json, so if it drifts back under
+    # devDependencies the released image cannot start its own server. That
+    # failure is invisible in every other job here.
+    #
+    # Asserts on /__health rather than the test suite, because testbox is
+    # (correctly) absent from this build.
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Seed .env
+        run: cp .env.example .env
+
+      - name: Start MySQL only
+        # The app under test comes from the production image below, not from
+        # compose. Only the database is borrowed.
+        run: |
+          docker compose up -d mysql
+          echo "Waiting for MySQL…"
+          for i in $(seq 1 45); do
+            if docker compose exec -T mysql mysqladmin ping -h localhost --silent 2>/dev/null; then
+              echo "✓ MySQL up after ${i}×2s"; break
+            fi
+            sleep 2
+          done
+
+      - name: Build production-mode image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          load: true
+          tags: bx-blogger-app:prod-smoke
+          build-args: |
+            BOX_INSTALL_ARGS=--production
+          # Shares every layer up to `box install` with the dev build. The
+          # install and warmup layers re-run because the ARG differs — that is
+          # precisely what this job exists to exercise.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Boot it and probe /__health
+        run: |
+          set -euo pipefail
+
+          # Join the compose network so `mysql:3306` resolves exactly as it
+          # does for the app service, and publish a port so the runner's own
+          # curl can reach it without assuming curl exists inside the image.
+          NETWORK=$(docker network ls --format '{{.Name}}' | grep -E 'bx-blogger$' | head -1)
+          if [ -z "${NETWORK}" ]; then
+            echo "::error::Could not find the compose network"
+            docker network ls
+            exit 1
+          fi
+          echo "Using network: ${NETWORK}"
+
+          docker run -d --name prod-smoke \
+            --network "${NETWORK}" \
+            --env-file .env \
+            -e ENVIRONMENT=production \
+            -p 18080:8080 \
+            bx-blogger-app:prod-smoke
+
+          ok=0
+          for i in $(seq 1 90); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:18080/__health || echo "000")
+            if [ "$code" = "200" ]; then echo "✓ healthy after ${i}×2s"; ok=1; break; fi
+            sleep 2
+          done
+
+          if [ "$ok" != "1" ]; then
+            echo "::error::Production-mode image failed to serve /__health"
+            docker logs prod-smoke 2>&1 | tail -150
+            exit 1
+          fi
+
+      - name: Assert the leak sources are absent
+        run: |
+          set -euo pipefail
+
+          # cbdebugger attaches a TracerAppender to the root logger and retains
+          # every log message in the heap forever. It must never ship.
+          if docker exec prod-smoke test -d /app/modules/cbdebugger; then
+            echo "::error::cbdebugger is present in the production image"
+            exit 1
+          fi
+
+          # Flat layout means the project root IS the web root, so a shipped
+          # tests/runner.bxm is a live endpoint that runs the whole integration
+          # suite against whatever database the container points at.
+          if docker exec prod-smoke test -e /app/tests; then
+            echo "::error::tests/ is present in the production image"
+            exit 1
+          fi
+
+          echo "✓ cbdebugger and tests/ absent from the production image"
+
+      - name: Assert JVM flags actually reached the JVM
+        # A JVM arg that silently fails to apply looks identical to one that
+        # worked. That is exactly how `-Duser.timezone=${env.APP_TIMEZONE}`
+        # went unnoticed for months while resolving to an empty value.
+        run: |
+          set -euo pipefail
+          # Find the server JVM by scanning /proc rather than assuming PID 1,
+          # so this keeps working if the entrypoint ever stops exec-ing.
+          ARGS=$(docker exec prod-smoke sh -c \
+            'for p in /proc/[0-9]*/cmdline; do tr "\0" " " < "$p" 2>/dev/null; echo; done' \
+            | grep -m1 -- "-Xmx" || true)
+
+          if [ -z "${ARGS}" ]; then
+            echo "::error::Could not locate the server JVM process"
+            docker exec prod-smoke ps -ef || true
+            exit 1
+          fi
+          echo "JVM args: ${ARGS}"
+
+          for flag in "-XX:+ExitOnOutOfMemoryError" "-XX:+HeapDumpOnOutOfMemoryError"; do
+            case " ${ARGS} " in
+              *" ${flag} "*) echo "✓ ${flag}" ;;
+              *) echo "::error::${flag} did not reach the JVM"; exit 1 ;;
+            esac
+          done
+
+          case " ${ARGS} " in
+            *" -Duser.timezone= "*) echo "::error::-Duser.timezone resolved to an empty value"; exit 1 ;;
+            *" -Duser.timezone="*)  echo "✓ -Duser.timezone is non-empty" ;;
+            *) echo "::error::-Duser.timezone is missing entirely"; exit 1 ;;
+          esac
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker rm -f prod-smoke 2>/dev/null || true
+          docker compose down -v 2>/dev/null || true
+
   publish-image:
     name: Publish image to GHCR
     # Phase 10.C.2 — publish the app image to GitHub Container Registry
@@ -199,7 +351,7 @@ jobs:
     # Fires only on `push` (main-branch commits + semver tag pushes) or
     # manual `workflow_dispatch`. PRs run tests but never publish.
     runs-on: ubuntu-latest
-    needs: tests
+    needs: [ tests, prod-image-smoke ]
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     # Bumped from 20→45 when the arm64 leg was added. The Dockerfile skips
     # warmup-server.sh under cross-arch QEMU emulation, but `box install`
@@ -268,6 +420,18 @@ jobs:
           file: docker/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          # The RELEASED image ships runtime dependencies only. This is the
+          # guard that keeps cbdebugger out of production: it attaches a
+          # TracerAppender to the root logger and retains every log message
+          # in the heap forever, which OOM'd both live sites daily.
+          # config/modules/cbdebugger.cfc gates itself on ENVIRONMENT too —
+          # these are two deliberate, independent guards.
+          #
+          # Validated by the `prod-image-smoke` job, which boots this exact
+          # build shape. Without it the first place --production would ever
+          # run is production.
+          build-args: |
+            BOX_INSTALL_ARGS=--production
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

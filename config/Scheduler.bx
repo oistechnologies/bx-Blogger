@@ -132,6 +132,50 @@ class {
         task( "ga-anomaly-detection" )
             .call( function() { dispatchJob( "GaAnomalyDetectionJob" ); } )
             .every( 15, "minutes" );
+
+        // Hourly — one heap line to stdout so the memory curve is
+        // readable straight from `docker compose logs` / the Dokploy log
+        // pane, with no JDK tools and no auth.
+        //
+        // The runtime image ships a JRE (server.json pins
+        // openjdk21_jre), so there is no jcmd or jmap in the container to
+        // attach with, and /__health/full is permission-gated. This task
+        // is the only zero-friction way to watch heap over days.
+        //
+        // It earns its place: a cbdebugger leak took both production
+        // sites down roughly daily and was invisible until someone
+        // attached an external tool to a dying container. A flat
+        // `used_mb` across 24h is the evidence that the leak is gone.
+        //
+        // Inline rather than dispatched — reading a JMX counter is
+        // microseconds, so a cbq round-trip would cost more than the
+        // work. writeLog(), not the LogBox `log.*` methods, per the
+        // non-request-thread rule in CLAUDE.md; onAnyTaskError() below
+        // uses the same call for the same reason. If HealthService fails
+        // to resolve on the scheduler thread this surfaces as a warning
+        // notification, not an outage.
+        task( "log-heap-usage" )
+            .call( function() {
+                var h = application.wireBox.getInstance( "HealthService" ).heap();
+                // heap() returns { ok:false, error } on failure, with none of
+                // the numeric keys — reading them unguarded would throw
+                // "key [USED_MB] not located" and turn a diagnostic into a
+                // task failure.
+                if ( !h.ok ) {
+                    writeLog(
+                        file = "bxblogger",
+                        type = "warning",
+                        text = "heap probe failed: " & ( h.error ?: "unknown" )
+                    );
+                    return;
+                }
+                writeLog(
+                    file = "bxblogger",
+                    type = "information",
+                    text = "heap used_mb=#h.used_mb# committed_mb=#h.committed_mb# max_mb=#h.max_mb# used_pct=#h.used_pct#"
+                );
+            } )
+            .everyHour();
     }
 
     /**

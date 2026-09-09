@@ -148,6 +148,31 @@ class extends="tests.support.BaseIntegrationSpec" {
                 } );
             } );
 
+            describe( "heap()", function() {
+                it( "reports live JVM heap numbers", function() {
+                    var h = svc.heap();
+                    expect( h.ok ).toBeTrue();
+                    expect( structKeyExists( h, "used_mb"      ) ).toBeTrue();
+                    expect( structKeyExists( h, "committed_mb" ) ).toBeTrue();
+                    expect( structKeyExists( h, "max_mb"       ) ).toBeTrue();
+                    expect( structKeyExists( h, "used_pct"     ) ).toBeTrue();
+                    // A running JVM always has some heap in use.
+                    expect( h.used_mb ).toBeGT( 0 );
+                } );
+
+                it( "reports used <= committed", function() {
+                    var h = svc.heap();
+                    expect( h.used_mb ).toBeLTE( h.committed_mb );
+                } );
+
+                it( "always returns the `ok` key so callers can branch safely", function() {
+                    // config/Scheduler.bx's hourly log-heap-usage task reads
+                    // h.ok before touching the numeric keys — on the failure
+                    // path those keys are absent.
+                    expect( structKeyExists( svc.heap(), "ok" ) ).toBeTrue();
+                } );
+            } );
+
             describe( "full() — detailed rollup", function() {
                 it( "is a superset of minimal() + adds the ops fields", function() {
                     var out = svc.full();
@@ -165,6 +190,14 @@ class extends="tests.support.BaseIntegrationSpec" {
                     expect( structKeyExists( out, "disk_free_uploads_pct" ) ).toBeTrue();
                     expect( structKeyExists( out, "active_theme"          ) ).toBeTrue();
                     expect( structKeyExists( out, "fallback_theme_active" ) ).toBeTrue();
+                    expect( structKeyExists( out, "heap"                  ) ).toBeTrue();
+                } );
+
+                it( "does NOT expose heap on minimal() — that drives the 200/503 probe", function() {
+                    // The container HEALTHCHECK and CI's boot poll read
+                    // minimal(). Heap pressure must never be able to pull the
+                    // instance out of rotation or fail CI startup.
+                    expect( structKeyExists( svc.minimal(), "heap" ) ).toBeFalse();
                 } );
 
                 it( "returns `ok` overall when DB + cache both pass", function() {

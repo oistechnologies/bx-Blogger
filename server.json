@@ -6,7 +6,22 @@
 	"jvm":{
 		"heapSize":"2048",
 		"javaVersion":"openjdk21_jre",
-		"args":"-Duser.timezone=${env.APP_TIMEZONE}"
+		"_argsComment":[
+			"${APP_TIMEZONE} is the bare form — CommandBox expands ${VAR}, not",
+			"${env.VAR}. The old ${env.APP_TIMEZONE} silently resolved to empty,",
+			"so the running JVM carried a bare `-Duser.timezone=`. box.json's",
+			"cfmigrations block already used the correct bare form.",
+			"",
+			"The OOM flags turn heap exhaustion into a heap dump plus a fast",
+			"restart instead of a silent multi-hour outage: without",
+			"ExitOnOutOfMemoryError the JVM survives its own OOM and thrashes GC",
+			"forever, so the container never exits, `restart: unless-stopped`",
+			"never fires, and /__health keeps answering 200 while the site is",
+			"unusable. HeapDumpPath points at the backups mount, which is bound",
+			"to a host path in both site composes, so a dump outlives the",
+			"container. Budget disk for it — a dump is up to the full heap size."
+		],
+		"args":"-Duser.timezone=${APP_TIMEZONE} -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/var/backups/bx-blogger -XX:+ExitOnOutOfMemoryError"
 	},
 	"web":{
 		"http":{
