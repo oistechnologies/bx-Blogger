@@ -76,7 +76,8 @@ class accessors="true" singleton {
             "mail_reachable"          : mailReachable(),
             "disk_free_uploads_pct"   : diskFreeUploadsPct(),
             "active_theme"            : activeTheme(),
-            "fallback_theme_active"   : isFallbackThemeActive()
+            "fallback_theme_active"   : isFallbackThemeActive(),
+            "heap"                    : heap()
         }, true );
         return base;
     }
@@ -234,6 +235,44 @@ class accessors="true" singleton {
                 "ok"       : true,
                 "path"     : path,
                 "free_pct" : numberFormat( ( usable / total ) * 100, "9.99" )
+            };
+        }
+        catch ( any e ) {
+            return { "ok" : false, "error" : e.message ?: "" };
+        }
+    }
+
+    /**
+     * JVM heap usage. Deliberately exposed on `full()` only — never on
+     * `minimal()`.
+     *
+     * `minimal()` drives the 200-vs-503 that the container HEALTHCHECK and
+     * CI's boot poll read. Rolling heap into that would let memory pressure
+     * pull the instance out of rotation and fail CI startup, which is a
+     * bigger outage than the thing it would be warning about. Heap belongs
+     * in the ops view, where a human reads it.
+     *
+     * Exists so the memory curve is observable without JDK tooling: the
+     * runtime image ships a JRE (server.json pins openjdk21_jre), so there
+     * is no jcmd / jmap in the container to attach with. Paired with the
+     * hourly `log-heap-usage` task in config/Scheduler.bx, which writes this
+     * to stdout for the container log.
+     *
+     * `getMax()` returns -1 when no ceiling is set, so used_pct is guarded
+     * rather than dividing by it blindly.
+     */
+    struct function heap() {
+        try {
+            var ManagementFactory = createObject( "java", "java.lang.management.ManagementFactory" );
+            var usage             = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
+            var used              = usage.getUsed();
+            var max               = usage.getMax();
+            return {
+                "ok"           : true,
+                "used_mb"      : round( used / 1024 / 1024 ),
+                "committed_mb" : round( usage.getCommitted() / 1024 / 1024 ),
+                "max_mb"       : max <= 0 ? -1 : round( max / 1024 / 1024 ),
+                "used_pct"     : max <= 0 ? -1 : numberFormat( ( used / max ) * 100, "9.99" )
             };
         }
         catch ( any e ) {

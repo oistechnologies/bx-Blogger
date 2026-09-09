@@ -90,10 +90,30 @@ COPY ./ ${APP_DIR}/
 # so this replaces the themes/ dir wholesale — safe and idempotent.
 COPY --from=theme-builder /build/themes ${APP_DIR}/themes
 
-# Install ColdBox + modules from box.json. Dev image includes devDependencies
-# (testbox, cbdebugger, etc.) so `docker compose exec app box run-script test`
-# works. Production image should rebuild with `box install --production`.
-RUN cd ${APP_DIR} && box install
+# Install ColdBox + modules from box.json.
+#
+# BOX_INSTALL_ARGS is empty by default, which installs devDependencies
+# (testbox, cbdebugger, route-visualizer, cfformat) so `docker compose exec
+# app box testbox run` works in the dev container. CI's publish-image job
+# passes `--production` so the RELEASED image ships runtime deps only.
+#
+# This is load-bearing, not tidiness. cbdebugger attaches a TracerAppender to
+# the root logger and retains every log message in the heap forever (see
+# DebuggerService.pushTracer — it appends the whole `arguments` scope to a
+# per-thread array that is never cleared on long-lived scheduler / cbq /
+# async pool threads). Shipping it to production leaked ~500 MB/day and OOM'd
+# both live sites roughly daily. `config/modules/cbdebugger.cfc` gates itself
+# on ENVIRONMENT as well — but note that file was gitignored until this fix and
+# so never reached a built image, which is why the module ran with its own
+# permissive defaults in production. This arg is the guard that does not depend
+# on a config file being present.
+#
+# NOTE: `commandbox-boxlang` is deliberately a REGULAR dependency in box.json,
+# not a devDependency — it is what teaches CommandBox the `cfengine:
+# "boxlang@1"` in server.json. Moving it back under devDependencies would make
+# `--production` builds fail to start the server.
+ARG BOX_INSTALL_ARGS=""
+RUN cd ${APP_DIR} && box install ${BOX_INSTALL_ARGS}
 
 # Ortus image ships a warmup script that starts the server once during build,
 # compiles classes into the server home, and shuts down. Subsequent container
