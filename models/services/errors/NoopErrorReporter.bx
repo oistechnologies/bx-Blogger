@@ -33,8 +33,8 @@ class accessors="true" singleton {
         try {
             var msg = "Uncaught exception"
                 & ( len( arguments.errorReference ) ? " ref=" & arguments.errorReference : "" )
-                & " type=[" & ( arguments.exception.type    ?: "unknown" ) & "]"
-                & " message=[" & ( arguments.exception.message ?: "(no message)" ) & "]";
+                & " type=[" & fieldOf( arguments.exception, "type", "unknown" ) & "]"
+                & " message=[" & fieldOf( arguments.exception, "message", "(no message)" ) & "]";
             writeLog( file = "bxblogger", type = "error", text = msg );
         }
         catch ( any e ) {
@@ -44,6 +44,40 @@ class accessors="true" singleton {
             // throw here would cascade into a second exception and a
             // blank page for the user.
         }
+    }
+
+    /**
+     * Read one field off either shape that reaches a reporter: a
+     * cfcatch-style struct, or the `coldbox.system.web.context.
+     * ExceptionBean` that `Main.onException` actually passes, whose
+     * values sit behind getters and answer null to key access.
+     *
+     * Deliberately duplicated from EmailErrorReporter rather than
+     * shared: this class is the log-only fallback that runs when
+     * everything else is broken, so it takes no dependency it
+     * doesn't strictly need. Keep the two in sync.
+     */
+    private string function fieldOf(
+        required any    exception,
+        required string name,
+                 string fallback = ""
+    ) {
+        if ( isNull( arguments.exception ) ) return arguments.fallback;
+        try {
+            if ( isObject( arguments.exception ) ) {
+                var viaGetter = invoke( arguments.exception, "get" & arguments.name );
+                if ( !isNull( viaGetter ) && isSimpleValue( viaGetter ) && len( viaGetter ) ) {
+                    return viaGetter;
+                }
+                return arguments.fallback;
+            }
+            if ( isStruct( arguments.exception ) ) {
+                var fromKey = arguments.exception[ arguments.name ] ?: "";
+                if ( isSimpleValue( fromKey ) && len( fromKey ) ) return fromKey;
+            }
+        }
+        catch ( any e ) { /* unreadable field — use the fallback */ }
+        return arguments.fallback;
     }
 
 }

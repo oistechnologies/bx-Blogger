@@ -116,6 +116,9 @@ class accessors="true" singleton {
         settingService.set( key = "gsc.refresh_token",    value = refresh, type = "string" );
         settingService.set( key = "gsc.access_token",     value = access,  type = "string" );
         settingService.set( key = "gsc.token_expires_at", value = expAt,   type = "int"    );
+        // A completed consent flow is exactly what the flag was
+        // asking for — drop it so syncs resume on the next tick.
+        clearReauthRequired();
     }
 
     /**
@@ -158,6 +161,19 @@ class accessors="true" singleton {
 
         var response = postForm( variables.tokenUrl, body );
         if ( response.statusCode lt 200 || response.statusCode gte 300 ) {
+            // `invalid_grant` on a refresh_token grant is TERMINAL —
+            // the token was revoked, expired, or belongs to a
+            // different client. Retrying can never succeed; only an
+            // operator re-running the consent flow fixes it. Without
+            // this branch the daily sync re-reports the same dead
+            // token at ERROR level on every run, forever.
+            if ( isInvalidGrant( response.body ) ) {
+                markReauthRequired( response.body );
+                throw(
+                    type    = "bxBlogger.GscReauthRequired",
+                    message = "GSC refresh token rejected (invalid_grant) — reconnect at /admin/settings/gsc."
+                );
+            }
             throw( type = "bxBlogger.GscOAuthError", message = "Token refresh failed: " & response.body );
         }
         var parsed = jsonDeserialize( response.body );
@@ -169,7 +185,83 @@ class accessors="true" singleton {
         var expAt = nowEpochSeconds() + int( expIn );
         settingService.set( key = "gsc.access_token",     value = access, type = "string" );
         settingService.set( key = "gsc.token_expires_at", value = expAt,  type = "int"    );
+        clearReauthRequired();
         return access;
+    }
+
+    /**
+     * True when a Google OAuth error body carries
+     * `"error": "invalid_grant"`.
+     *
+     * Note we do NOT delete the stored refresh token on this signal.
+     * A client_id/client_secret mismatch produces the same error
+     * code, and discarding a token that is still valid under the
+     * correct credentials would turn a config typo into data loss.
+     * Flagging is reversible; deleting is not.
+     */
+    private boolean function isInvalidGrant( required string errorBody ) {
+        try {
+            var parsed = jsonDeserialize( arguments.errorBody );
+            if ( isStruct( parsed ) ) return ( parsed.error ?: "" ) == "invalid_grant";
+        }
+        catch ( any e ) { /* non-JSON body — fall through to the probe */ }
+        return findNoCase( "invalid_grant", arguments.errorBody ) gt 0;
+    }
+
+    /**
+     * Record that the connection needs operator re-consent, and
+     * notify admins exactly once (on the transition, not on every
+     * subsequent failed refresh).
+     */
+    private void function markReauthRequired( required string errorBody ) {
+        try {
+            var alreadyFlagged = settingService.get( "gsc.reauth_required", false );
+            settingService.set( key = "gsc.reauth_required", value = true, type = "bool" );
+            settingService.set(
+                key   = "gsc.reauth_reason",
+                value = left( "Token refresh rejected: " & arguments.errorBody, 500 ),
+                type  = "string"
+            );
+            if ( alreadyFlagged ) return;
+
+            // Best-effort. This can run on a cbq worker thread where
+            // WireBox-backed logging isn't resolvable, so failures
+            // here fall back to writeLog per the CLAUDE.md
+            // non-request-thread rule.
+            wirebox.getInstance( "NotificationService" ).notifyAllAdmins(
+                type     = "gsc_reauth_required",
+                title    = "Google Search Console needs reconnecting",
+                body     = "GSC rejected the stored refresh token (invalid_grant). "
+                         & "Search-analytics syncs are paused until you reconnect at /admin/settings/gsc.",
+                link     = "/admin/settings/gsc",
+                severity = "warning",
+                channels = [ "db", "email" ]
+            );
+        }
+        catch ( any e ) {
+            try {
+                writeLog(
+                    file = "bxblogger",
+                    type = "warning",
+                    text = "GscService: could not record reauth_required — " & ( e.message ?: "" )
+                );
+            }
+            catch ( any innerErr ) { /* give up */ }
+        }
+    }
+
+    /**
+     * Drop the re-consent flag once a refresh (or a fresh connect)
+     * succeeds. Guarded on the current value so the happy path
+     * doesn't write to `settings` on every token refresh.
+     */
+    private void function clearReauthRequired() {
+        try {
+            if ( !settingService.get( "gsc.reauth_required", false ) ) return;
+            settingService.set( key = "gsc.reauth_required", value = false, type = "bool"   );
+            settingService.set( key = "gsc.reauth_reason",   value = "",    type = "string" );
+        }
+        catch ( any e ) { /* flag is advisory — never block a good token */ }
     }
 
     /**
@@ -183,13 +275,22 @@ class accessors="true" singleton {
         var propertyUrl  = trim( settingService.get( "gsc.property_url",        "" ) ?: "" );
         var lastSync     = trim( settingService.get( "gsc.last_sync_at",        "" ) ?: "" );
 
+        // `connected` deliberately still means "a refresh token is
+        // stored", not "that token works" — a dozen call sites gate
+        // their UI on it and flipping it on a dead token would hide
+        // the very screen the operator needs to fix this. The
+        // re-consent state is additive so callers can opt in.
+        var needsReauth = prov == "mock" ? false : settingService.get( "gsc.reauth_required", false );
+
         return {
-            "provider"      : prov,
-            "configured"    : len( clientId ) gt 0 && len( clientSecret ) gt 0,
-            "connected"     : prov == "mock" ? true : len( refresh ) gt 0,
-            "propertyUrl"   : propertyUrl,
-            "hasProperty"   : len( propertyUrl ) gt 0,
-            "lastSyncAt"    : lastSync
+            "provider"       : prov,
+            "configured"     : len( clientId ) gt 0 && len( clientSecret ) gt 0,
+            "connected"      : prov == "mock" ? true : len( refresh ) gt 0,
+            "propertyUrl"    : propertyUrl,
+            "hasProperty"    : len( propertyUrl ) gt 0,
+            "lastSyncAt"     : lastSync,
+            "reauthRequired" : needsReauth,
+            "reauthReason"   : needsReauth ? trim( settingService.get( "gsc.reauth_reason", "" ) ?: "" ) : ""
         };
     }
 

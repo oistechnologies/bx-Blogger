@@ -80,10 +80,18 @@ class accessors="true" singleton {
                 errorReference = arguments.errorReference
             );
 
+            // Subject carries the real message so the inbox is
+            // triageable without opening the mail. Read via fieldOf()
+            // — `Main.onException` hands us a ColdBox ExceptionBean,
+            // not a cfcatch struct, so plain key access silently
+            // yields null here (see fieldOf's docblock).
+            var subjectMessage = fieldOf( arguments.exception, "message" );
+            if ( !len( subjectMessage ) ) subjectMessage = "(unknown)";
+
             variables.emailService.sendAsync(
                 to       = to,
                 subject  = "[" & ( templateData.siteName ) & "] Server error: " &
-                           left( arguments.exception.message ?: "(unknown)", 80 ),
+                           left( subjectMessage, 80 ),
                 template = "error-report",
                 data     = templateData
             );
@@ -115,11 +123,19 @@ class accessors="true" singleton {
      * fingerprints. Message is truncated to the first 200 chars
      * so variable parts (post ids, user emails) don't split one
      * logical bug across many buckets.
+     *
+     * Reads through fieldOf() rather than by key. When both reads
+     * fall through to their defaults every exception hashes to the
+     * SAME fingerprint, which silently collapses the whole site's
+     * errors into one rate-limit bucket — after `maxPerFingerprint
+     * PerHour` the reporter then drops genuinely new bugs on the
+     * floor. That is exactly what plain key access did against a
+     * ColdBox ExceptionBean.
      */
     string function fingerprintOf( required any exception ) {
-        var type    = arguments.exception.type    ?: "unknown";
-        var message = left( arguments.exception.message ?: "", 200 );
-        return lCase( hash( type & "|" & message, "MD5" ) );
+        var exType = fieldOf( arguments.exception, "type", "unknown" );
+        var exMsg  = left( fieldOf( arguments.exception, "message" ), 200 );
+        return lCase( hash( exType & "|" & exMsg, "MD5" ) );
     }
 
     /**
@@ -142,8 +158,8 @@ class accessors="true" singleton {
         try {
             var msg = "Uncaught exception"
                 & ( len( arguments.errorReference ) ? " ref=" & arguments.errorReference : "" )
-                & " type=[" & ( arguments.exception.type    ?: "unknown" ) & "]"
-                & " message=[" & ( arguments.exception.message ?: "(no message)" ) & "]";
+                & " type=[" & fieldOf( arguments.exception, "type", "unknown" ) & "]"
+                & " message=[" & fieldOf( arguments.exception, "message", "(no message)" ) & "]";
             writeLog( file = "bxblogger", type = "error", text = msg );
         }
         catch ( any e ) {}
@@ -169,7 +185,7 @@ class accessors="true" singleton {
         }
         catch ( any e ) {}
 
-        var stack = arguments.exception.stackTrace ?: "";
+        var stack = fieldOf( arguments.exception, "stackTrace" );
         if ( len( stack ) > variables.stackTraceMaxChars ) {
             stack = left( stack, variables.stackTraceMaxChars ) & char( 10 ) & "… (truncated)";
         }
@@ -181,11 +197,83 @@ class accessors="true" singleton {
             "requestMethod"    : requestMethod,
             "requestPath"      : requestPath,
             "clientIp"         : clientIp,
-            "exceptionType"    : arguments.exception.type    ?: "unknown",
-            "exceptionMessage" : arguments.exception.message ?: "(no message)",
-            "exceptionDetail"  : arguments.exception.detail  ?: "",
+            "exceptionType"    : fieldOf( arguments.exception, "type",    "unknown" ),
+            "exceptionMessage" : fieldOf( arguments.exception, "message", "(no message)" ),
+            "exceptionDetail"  : fieldOf( arguments.exception, "detail" ),
             "stackTrace"       : stack
         };
+    }
+
+    /**
+     * Read one field off whatever `Main.onException` handed us.
+     *
+     * Two shapes reach this class and they are NOT interchangeable:
+     *
+     *   1. A cfcatch-style struct — what the specs pass, and what a
+     *      non-request caller (scheduled task, cbq job) reporting a
+     *      caught error would pass. Plain key access works.
+     *   2. A `coldbox.system.web.context.ExceptionBean` — what
+     *      `prc.exception` actually holds on a real 500. It's a
+     *      component: the values sit behind getMessage() /
+     *      getType() / getDetail() / getStackTrace(), and reading
+     *      `bean.message` yields null rather than throwing. That
+     *      null is why every alert this reporter sent read
+     *      "Server error: (unknown)" with an empty body.
+     *
+     * Order matters: getter first for components (a bean may also
+     * answer key access with something useless), key access for
+     * structs, then the bean's raw cfcatch struct as a backstop for
+     * fields the bean has no getter for.
+     *
+     * Never throws — callers are on the onException path.
+     */
+    private string function fieldOf(
+        required any    exception,
+        required string name,
+                 string fallback = ""
+    ) {
+        if ( isNull( arguments.exception ) ) return arguments.fallback;
+
+        if ( isObject( arguments.exception ) ) {
+            var viaGetter = callGetter( arguments.exception, arguments.name );
+            if ( len( viaGetter ) ) return viaGetter;
+
+            // Backstop: most beans keep the original cfcatch around.
+            try {
+                var raw = invoke( arguments.exception, "getExceptionStruct" );
+                if ( !isNull( raw ) && isStruct( raw ) ) {
+                    var fromRaw = raw[ arguments.name ] ?: "";
+                    if ( isSimpleValue( fromRaw ) && len( fromRaw ) ) return fromRaw;
+                }
+            }
+            catch ( any e ) { /* no such method on this bean — fall through */ }
+
+            return arguments.fallback;
+        }
+
+        if ( isStruct( arguments.exception ) ) {
+            try {
+                var fromKey = arguments.exception[ arguments.name ] ?: "";
+                if ( isSimpleValue( fromKey ) && len( fromKey ) ) return fromKey;
+            }
+            catch ( any e ) { /* odd-shaped struct — fall through */ }
+        }
+
+        return arguments.fallback;
+    }
+
+    /**
+     * `get<Name>()` against a component, or "" if the method is
+     * missing / throws / returns something non-simple. Split out so
+     * fieldOf() stays readable.
+     */
+    private string function callGetter( required any target, required string name ) {
+        try {
+            var result = invoke( arguments.target, "get" & arguments.name );
+            if ( !isNull( result ) && isSimpleValue( result ) ) return result;
+        }
+        catch ( any e ) { /* not exposed on this object */ }
+        return "";
     }
 
 }

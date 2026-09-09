@@ -1,0 +1,45 @@
+/**
+ * bx-Blogger — FakeExceptionBean (test fixture)
+ *
+ * Stands in for `coldbox.system.web.context.ExceptionBean`, which is
+ * what `Main.onException` actually hands an ErrorReporter on a real
+ * 500 — NOT the cfcatch-style struct the rest of the reporter specs
+ * pass around.
+ *
+ * The distinction is the whole point of this fixture. A bean exposes
+ * its values through getters; reading `bean.message` returns null
+ * instead of throwing, so a reporter that accesses fields by key
+ * silently degrades to its fallbacks. That produced a run of alert
+ * emails all titled "Server error: (unknown)" with empty bodies, and
+ * — worse — collapsed every distinct exception onto one fingerprint,
+ * so the per-bug rate limiter started dropping genuinely new errors
+ * after ten sends.
+ *
+ * Deliberately does NOT implement `getExceptionStruct()`: that's the
+ * secondary path in EmailErrorReporter.fieldOf(), and leaving it off
+ * keeps these specs honest about the getter path working on its own.
+ *
+ * Lives in tests/support/ (outside the runner's spec glob) because
+ * it's a fixture, not a runnable spec.
+ */
+class accessors="true" {
+
+    property name="type"       type="string";
+    property name="message"    type="string";
+    property name="detail"     type="string";
+    property name="stackTrace" type="string";
+
+    function init(
+        string type       = "fixture.type",
+        string message    = "fixture message",
+        string detail     = "fixture detail",
+        string stackTrace = "fixture stack"
+    ) {
+        variables.type       = arguments.type;
+        variables.message    = arguments.message;
+        variables.detail     = arguments.detail;
+        variables.stackTrace = arguments.stackTrace;
+        return this;
+    }
+
+}

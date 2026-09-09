@@ -46,6 +46,19 @@ class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
             );
             return;
         }
+        // A stored-but-rejected refresh token. Google already told us
+        // this is unrecoverable without operator re-consent, so don't
+        // burn a request (and an ERROR line) rediscovering that on
+        // every run. GscService clears the flag when the connect flow
+        // completes. Admins were notified once, at the transition.
+        if ( st.reauthRequired ?: false ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "GscDailySyncJob: GSC needs reconnecting (invalid_grant) — skipping sync"
+            );
+            return;
+        }
 
         // Pull yesterday's data by default. GSC has a ~2-day
         // reporting lag for some metrics, so a "yesterday"
@@ -68,6 +81,17 @@ class extends="cbq.models.Jobs.AbstractJob" accessors="true" {
                 file = "bxblogger",
                 type = "warning",
                 text = "GscDailySyncJob: hit 429 — aborting today's sync, will retry on next schedule"
+            );
+            return;
+        }
+        // Terminal, not an error: the token died between the status
+        // check above and this call. Warning-level so it doesn't
+        // read as a fault the job could have avoided.
+        catch ( bxBlogger.GscReauthRequired e ) {
+            writeLog(
+                file = "bxblogger",
+                type = "warning",
+                text = "GscDailySyncJob: GSC needs reconnecting (invalid_grant) — skipping sync"
             );
             return;
         }

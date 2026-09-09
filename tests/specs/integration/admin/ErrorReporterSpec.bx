@@ -55,6 +55,15 @@ class extends="tests.support.BaseIntegrationSpec" {
                         noop.report( exception = {} );
                     } ).notToThrow();
                 } );
+
+                it( "never throws on a getter-backed exception bean", function() {
+                    expect( function() {
+                        noop.report(
+                            exception      = beanFixture( "noop.type", "noop message" ),
+                            errorReference = "bean-" & createUUID()
+                        );
+                    } ).notToThrow();
+                } );
             } );
 
             describe( "EmailErrorReporter.fingerprintOf()", function() {
@@ -81,6 +90,36 @@ class extends="tests.support.BaseIntegrationSpec" {
                     var a = email.fingerprintOf( { "type" : "t", "message" : common & "A" } );
                     var b = email.fingerprintOf( { "type" : "t", "message" : common & "B" } );
                     expect( b ).toBe( a, "suffix after char 200 must not change the fingerprint" );
+                } );
+
+                // Regression: prod passes a ColdBox ExceptionBean, not a
+                // struct. Reading its fields by key yields null, which
+                // collapsed EVERY exception onto md5("unknown|") — one
+                // shared rate-limit bucket that silently swallowed new
+                // bugs after 10 sends/hour.
+                it( "reads a getter-backed exception bean, not just a struct", function() {
+                    var bean = beanFixture( "bean.type", "bean message" );
+                    var viaBean   = email.fingerprintOf( bean );
+                    var viaStruct = email.fingerprintOf( { "type" : "bean.type", "message" : "bean message" } );
+                    expect( viaBean ).toBe(
+                        viaStruct,
+                        "a bean and an equivalent struct must fingerprint identically"
+                    );
+                } );
+
+                it( "forks on different bean messages", function() {
+                    var a = email.fingerprintOf( beanFixture( "same.type", "alpha" ) );
+                    var b = email.fingerprintOf( beanFixture( "same.type", "beta"  ) );
+                    expect( b ).notToBe(
+                        a,
+                        "distinct bugs must not share one rate-limit bucket"
+                    );
+                } );
+
+                it( "does not collapse a bean onto the unknown-exception fingerprint", function() {
+                    var real    = email.fingerprintOf( beanFixture( "real.type", "a real failure" ) );
+                    var unknown = email.fingerprintOf( {} );
+                    expect( real ).notToBe( unknown );
                 } );
             } );
 
@@ -120,6 +159,16 @@ class extends="tests.support.BaseIntegrationSpec" {
                         email.report( exception = { /* intentionally empty */ } );
                     } ).notToThrow();
                 } );
+
+                it( "does not throw when given a getter-backed exception bean", function() {
+                    variables.setSvc.delete( "notifications.email_to" );
+                    expect( function() {
+                        email.report(
+                            exception      = beanFixture( "spec.bean", "bean path" ),
+                            errorReference = "bean-" & createUUID()
+                        );
+                    } ).notToThrow();
+                } );
             } );
 
             describe( "WireBox binding", function() {
@@ -134,6 +183,22 @@ class extends="tests.support.BaseIntegrationSpec" {
             } );
 
         } );
+    }
+
+    /**
+     * Build a stand-in for ColdBox's ExceptionBean — a component
+     * whose fields live behind getters rather than struct keys.
+     *
+     * Declared as a spec method rather than inline in the `it()`
+     * closures on purpose: `new`/BIF dispatch from inside a TestBox
+     * closure resolves against BaseSpec and blows up (see the
+     * Testing section of CLAUDE.md).
+     */
+    function beanFixture( required string type, required string message ) {
+        return new tests.support.FakeExceptionBean(
+            type    = arguments.type,
+            message = arguments.message
+        );
     }
 
 }
