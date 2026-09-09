@@ -424,7 +424,7 @@ jobs:
           # guard that keeps cbdebugger out of production: it attaches a
           # TracerAppender to the root logger and retains every log message
           # in the heap forever, which OOM'd both live sites daily.
-          # config/modules/cbdebugger.cfc gates itself on ENVIRONMENT too —
+          # config/modules/cbdebugger.bx gates itself on ENVIRONMENT too —
           # these are two deliberate, independent guards.
           #
           # Validated by the `prod-image-smoke` job, which boots this exact

@@ -52,7 +52,20 @@ RUN npm run build
 # -----------------------------------------------------------------------------
 # Stage 2 — runtime
 # -----------------------------------------------------------------------------
-FROM ortussolutions/commandbox
+# Pinned by digest, deliberately.
+#
+# This was an untagged `ortussolutions/commandbox`, i.e. :latest. CI last ran
+# green on 2026-05-24; by the next run the base had moved from CommandBox 6.3.2
+# to 6.3.4, and the bundled commandbox-migrations stopped reading the
+# `cfmigrations` block in box.json. Since docker-entrypoint.sh runs
+# `box migrate up --force` under `set -euo pipefail`, that turns into a
+# container that will not boot — and nothing in the repo changed to cause it.
+#
+# The digest is the multi-arch index, so it resolves for both amd64 and arm64.
+# To bump: `docker buildx imagetools inspect ortussolutions/commandbox` and take
+# the top-level Digest, then let the prod-image-smoke CI job prove it still
+# boots before merging.
+FROM ortussolutions/commandbox@sha256:c4b8fb0f98c35aafea8807e86d679030560f9fd53b7e34d656122c8e821eb3b8
 
 # Auto-populated by buildx for multi-platform builds. We use them below to
 # detect cross-arch builds (BUILDPLATFORM != TARGETPLATFORM, i.e. QEMU
@@ -102,7 +115,7 @@ COPY --from=theme-builder /build/themes ${APP_DIR}/themes
 # DebuggerService.pushTracer — it appends the whole `arguments` scope to a
 # per-thread array that is never cleared on long-lived scheduler / cbq /
 # async pool threads). Shipping it to production leaked ~500 MB/day and OOM'd
-# both live sites roughly daily. `config/modules/cbdebugger.cfc` gates itself
+# both live sites roughly daily. `config/modules/cbdebugger.bx` gates itself
 # on ENVIRONMENT as well — but note that file was gitignored until this fix and
 # so never reached a built image, which is why the module ran with its own
 # permissive defaults in production. This arg is the guard that does not depend

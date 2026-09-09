@@ -49,7 +49,7 @@ runtime/logs/
 # `config/modules/` is NOT ignored either, as of the cbdebugger heap-leak fix.
 # It used to be, and that was the actual root cause of a recurring production
 # outage: the ENVIRONMENT gate everyone assumed was protecting production lived
-# in `config/modules/cbdebugger.cfc`, which never left anybody's laptop. CI
+# in `config/modules/cbdebugger.bx`, which never left anybody's laptop. CI
 # built images from a clean clone, so the module loaded with its own defaults —
 # `enabled: true` and `tracers.enabled: true` — which is exactly the pair that
 # attaches a leaking TracerAppender to the root logger.

@@ -16,7 +16,7 @@
  * container restart each time.
  *
  * Two independent guards keep it out of production:
- *   1. config/modules/cbdebugger.cfc gates `enabled` + `debugMode` on
+ *   1. config/modules/cbdebugger.bx gates `enabled` + `debugMode` on
  *      ENVIRONMENT, failing safe to production.
  *   2. docker/Dockerfile builds the released image with
  *      `box install --production`, so the module is absent entirely.
@@ -56,22 +56,71 @@ class extends="tests.support.BaseIntegrationSpec" {
         return readJson( "server.json" ).jvm.args;
     }
 
+    /**
+     * Live cbdebugger module settings as ColdBox resolved them, or null when
+     * the module is not installed — which is the correct state for an image
+     * built with `box install --production`.
+     */
+    private any function liveDebuggerSettings() {
+        var mods = getController().getSetting( "modules" );
+        if ( !structKeyExists( mods, "cbdebugger" ) ) return javaCast( "null", "" );
+        return mods.cbdebugger.settings;
+    }
+
+    private boolean function isDevEnvironment() {
+        return lCase( trim( getSystemSetting( "ENVIRONMENT", "production" ) ) ) == "development";
+    }
+
     function run() {
-        describe( "config/modules/cbdebugger.cfc", function() {
+        describe( "config/modules/cbdebugger.bx — source", function() {
 
             it( "binds the master switches to the environment, not a literal", function() {
-                var src = flatSource( "config/modules/cbdebugger.cfc" );
+                var src = flatSource( "config/modules/cbdebugger.bx" );
                 expect( src ).toInclude( "enabled : isDev" );
                 expect( src ).toInclude( "debugMode : isDev" );
+                expect( src ).toInclude( "tracers : { enabled : isDev" );
             } );
 
             it( "fails safe to production when ENVIRONMENT is unset", function() {
                 // An unset or misspelled ENVIRONMENT must leave the debugger
                 // OFF, never on — so the getSystemSetting default is
                 // "production", not "development".
-                var src = flatSource( "config/modules/cbdebugger.cfc" );
+                var src = flatSource( "config/modules/cbdebugger.bx" );
                 expect( src ).toInclude( 'getSystemSetting( "ENVIRONMENT", "production" )' );
                 expect( src ).toInclude( '== "development"' );
+            } );
+
+        } );
+
+        describe( "config/modules/cbdebugger.bx — actually applied", function() {
+
+            // Source assertions alone would not have caught the original bug:
+            // the file was perfectly correct, it just never reached the image.
+            // These read the LIVE module settings, so they fail if ColdBox is
+            // not reading the file at all — wrong extension, wrong location,
+            // or gitignored back out of existence.
+
+            it( "is read by ColdBox, not silently replaced by module defaults", function() {
+                var live = liveDebuggerSettings();
+                if ( isNull( live ) ) return;   // module absent (production build)
+
+                // Both of these DIFFER from cbdebugger's own ModuleConfig
+                // defaults, so seeing our values proves our file won.
+                // Module default requestPanelDock is true; ours is false.
+                expect( live.requestPanelDock ).toBeFalse();
+                // Module default collections.enabled is false; ours is true.
+                expect( live.collections.enabled ).toBeTrue();
+            } );
+
+            it( "resolves the gate to the running environment", function() {
+                var live = liveDebuggerSettings();
+                if ( isNull( live ) ) return;
+
+                // The suite runs with ENVIRONMENT=development, so the gate
+                // must have opened. If this fails, the gate is evaluating
+                // against something other than ENVIRONMENT.
+                expect( live.enabled ).toBe( isDevEnvironment() );
+                expect( live.tracers.enabled ).toBe( isDevEnvironment() );
             } );
 
         } );
