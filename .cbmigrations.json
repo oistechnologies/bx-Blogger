@@ -1,0 +1,17 @@
+{
+    "default": {
+        "manager": "cfmigrations.models.QBMigrationManager",
+        "migrationsDirectory": "resources/database/migrations/",
+        "seedsDirectory": "resources/database/seeds/",
+        "properties": {
+            "defaultGrammar": "MySQLGrammar@qb",
+            "migrationsTable": "cfmigrations",
+            "connectionInfo": {
+                "class": "com.mysql.cj.jdbc.Driver",
+                "connectionString": "jdbc:mysql://${DB_HOST}:${DB_PORT}/${DB_DATABASE}?useUnicode=true&characterEncoding=UTF-8&useLegacyDatetimeCode=true&allowPublicKeyRetrieval=true&useSSL=false",
+                "username": "${DB_USERNAME}",
+                "password": "${DB_PASSWORD}"
+            }
+        }
+    }
+}
