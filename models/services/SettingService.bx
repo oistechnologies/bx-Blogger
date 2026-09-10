@@ -15,6 +15,12 @@
  * needs to show up on the next request, not 30 minutes later.
  * Matches the pattern ThemeOptionsService + MenuService use.
  *
+ * The wholesale flush is skipped for the machine-bookkeeping keys
+ * in `variables.nonRenderingKeys` (OAuth tokens, sync timestamps,
+ * the GA realtime baseline). Those are written on hot paths — the
+ * every-15-minutes anomaly detector alone was flushing the whole
+ * page cache 96 times a day — and none of them is ever rendered.
+ *
  * The service is the only authoritative writer to the `settings`
  * table. If you find yourself reaching for qb or Quick here,
  * stop — either extend the service or add a test-only back door
@@ -41,6 +47,40 @@ class accessors="true" singleton {
 
     variables.cacheTtlMinutes = 60;
     variables.validTypes      = [ "string", "int", "bool", "email" ];
+
+    /**
+     * Keys that are pure machine bookkeeping — nothing in them ever
+     * reaches rendered HTML, so writing one must NOT flush the page
+     * cache.
+     *
+     * This is not a micro-optimization. `GaAnomalyDetectionJob` runs
+     * every 15 minutes and writes `ga.realtime_baseline` on each
+     * pass, so the blanket flush in invalidate() was wiping the
+     * entire page cache 96 times a day while WarmPageCacheJob only
+     * re-warms hourly — the cache spent most of its life cold. OAuth
+     * refreshes (`*.access_token`, `*.token_expires_at`) did the same
+     * thing on every token renewal.
+     *
+     * The list is a deliberate allowlist-of-exceptions rather than a
+     * prefix rule: the default stays "flush, because a setting might
+     * be on a page", and a key only stops flushing once someone has
+     * actually confirmed it isn't rendered. Adding a key here is a
+     * reviewable one-line decision; getting it wrong serves stale
+     * HTML, so err toward leaving a key off.
+     */
+    variables.nonRenderingKeys = [
+        "ga.realtime_baseline",
+        "ga.access_token",
+        "ga.token_expires_at",
+        "ga.last_sync_at",
+        "ga.reauth_required",
+        "ga.reauth_reason",
+        "gsc.access_token",
+        "gsc.token_expires_at",
+        "gsc.last_sync_at",
+        "gsc.reauth_required",
+        "gsc.reauth_reason"
+    ];
 
     // --------------------------------------------------------------------
     // Read
@@ -173,9 +213,24 @@ class accessors="true" singleton {
 
     function invalidate( required string key ) {
         variables.cache.clear( cacheKey( arguments.key ) );
-        // Settings can affect public HTML — flush the page cache so
-        // changes show up immediately.
+
+        // Most settings can affect public HTML — flush the page cache
+        // so changes show up immediately. The exceptions are the
+        // machine-bookkeeping keys written on hot paths; see
+        // variables.nonRenderingKeys for why a blanket flush here was
+        // keeping the page cache permanently cold.
+        if ( variables.nonRenderingKeys.findNoCase( arguments.key ) ) return;
+
         variables.pageCacheService.invalidateAll();
+    }
+
+    /**
+     * True when writing `key` leaves the page cache intact. Public so
+     * the policy is assertable from specs without reaching into
+     * `variables`, and so callers can reason about it.
+     */
+    boolean function affectsRenderedOutput( required string key ) {
+        return variables.nonRenderingKeys.findNoCase( arguments.key ) == 0;
     }
 
     // --------------------------------------------------------------------

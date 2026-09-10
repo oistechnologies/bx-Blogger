@@ -31,6 +31,16 @@ class extends="tests.support.BaseIntegrationSpec" {
                 .from( "settings" )
                 .where( "setting_key", "like", "tests.%" )
                 .delete();
+
+            // The page-cache-flush specs write the real key that
+            // GaAnomalyDetectionJob uses, since the point is to
+            // exercise the actual hot path rather than a stand-in.
+            // It's a self-healing EWMA value, but don't leave spec
+            // state behind.
+            getInstance( "QueryBuilder@qb" ).newQuery()
+                .from( "settings" )
+                .where( "setting_key", "ga.realtime_baseline" )
+                .delete();
         }
         catch ( any e ) {
             writeLog( file = "testbox", text = "SettingServiceSpec cleanup failed: " & e.message );
@@ -205,6 +215,55 @@ class extends="tests.support.BaseIntegrationSpec" {
                     expect( bundle[ "tests.all.b" ].value ).toBe( 7 );
                     expect( bundle[ "tests.all.b" ].type ).toBe( "int" );
                 } );
+            } );
+
+            /**
+             * Regression: invalidate() used to flush the whole page
+             * cache on EVERY write. GaAnomalyDetectionJob writes
+             * ga.realtime_baseline every 15 minutes, so the page cache
+             * was being wiped 96×/day against an hourly re-warm — it
+             * spent most of its life cold. OAuth token refreshes hit
+             * the same path.
+             */
+            describe( "page-cache flush policy", function() {
+
+                it( "flushes for an ordinary setting that could be rendered", function() {
+                    expect( svc.affectsRenderedOutput( "tests.flush.ordinary" ) ).toBeTrue();
+                } );
+
+                it( "does not flush for machine-bookkeeping keys", function() {
+                    expect( svc.affectsRenderedOutput( "ga.realtime_baseline" ) ).toBeFalse();
+                    expect( svc.affectsRenderedOutput( "ga.access_token"      ) ).toBeFalse();
+                    expect( svc.affectsRenderedOutput( "gsc.token_expires_at" ) ).toBeFalse();
+                    expect( svc.affectsRenderedOutput( "gsc.last_sync_at"     ) ).toBeFalse();
+                } );
+
+                it( "leaves cached pages intact when a bookkeeping key is written", function() {
+                    var pageCache = getInstance( "cachebox:pageCache" );
+                    pageCache.set( "spec-page-entry", "cached html", 5, 0 );
+                    expect( pageCache.lookup( "spec-page-entry" ) ).toBeTrue( "precondition: entry is cached" );
+
+                    // The exact write GaAnomalyDetectionJob makes.
+                    svc.set( key = "ga.realtime_baseline", value = "12.50", type = "string" );
+
+                    expect( pageCache.lookup( "spec-page-entry" ) ).toBeTrue(
+                        "writing ga.realtime_baseline must not flush the page cache"
+                    );
+                    pageCache.clear( "spec-page-entry" );
+                } );
+
+                it( "still flushes cached pages when a rendered setting is written", function() {
+                    var pageCache = getInstance( "cachebox:pageCache" );
+                    pageCache.set( "spec-page-entry-2", "cached html", 5, 0 );
+                    expect( pageCache.lookup( "spec-page-entry-2" ) ).toBeTrue( "precondition: entry is cached" );
+
+                    svc.set( key = "tests.flush.sitename", value = "New Site Name", type = "string" );
+
+                    expect( pageCache.lookup( "spec-page-entry-2" ) ).toBeFalse(
+                        "a renderable setting must still bust the page cache"
+                    );
+                } );
+
             } );
 
         } );
