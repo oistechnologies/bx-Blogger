@@ -433,10 +433,44 @@ class {
 					"provider" : "authenticationService@cbauth"
 				},
 				// Global firewall — protects /admin/* by redirecting anonymous
-				// visitors to /login?returnTo=<original>. Phase 2 layers on
-				// permission checks via handler annotations (@secured).
+				// visitors to /login?returnTo=<original>. Protection is
+				// rules-based (see `rules` below); no handler carries a
+				// `@secured` annotation anywhere in this app.
 				"firewall" : {
 					"autoLoadFirewall"             : true,
+					// OFF deliberately — this is load-bearing, not tuning.
+					//
+					// cbsecurity's annotation scanner calls
+					// `handlerService.getHandlerBean( currentEvent )` from
+					// `preProcess`, before ColdBox has dispatched. For a URL
+					// that matches no handler (any 404 — every bot probe,
+					// every dead link) that call resolves the INVALID event,
+					// and ColdBox records it in `request._lastInvalidEvent`
+					// as its recursion guard. ColdBox then dispatches for
+					// real, calls `invalidEvent()` a second time with the
+					// same event, sees the guard already set, and throws:
+					//
+					//   HandlerService.InvalidEventHandlerException
+					//   The invalidEventHandler event (Page.show) is also
+					//   invalid: <slug>
+					//
+					// Net effect: every unmatched URL returns 500 instead of
+					// the themed 404, so crawlers see server errors on dead
+					// links and each probe manufactures an error-report email.
+					//
+					// cbsecurity has its own guard for this
+					// (`enableInvalidHandlerCheck` + `onInvalidEventHandlerBean`)
+					// but it is computed as `coldboxVersion <= 5`, so on
+					// ColdBox 8 the guard is off while the premature
+					// `getHandlerBean()` still runs.
+					//
+					// Turning the scanner off skips that call entirely. It
+					// costs nothing today because no `@secured` annotations
+					// exist. If annotation security is ever added, this has to
+					// go back to `true` AND the double-resolution needs solving
+					// (an explicit catch-all route to `page.show`, so no event
+					// is ever "invalid", is the likely answer).
+					"handlerAnnotationSecurity"    : false,
 					// Event invoked when a rule blocks an unauthenticated request.
 					// security.login renders our login view + captures returnTo.
 					"invalidAuthenticationEvent"   : "security.login",
